@@ -1,0 +1,419 @@
+/*
+ * Settings: a column of rows, each one a name on the left and a control on the
+ * right.
+ *
+ * The whole page is that one shape repeated, which is the point -- a settings
+ * page is read by scanning the left edge for a word, and anything that breaks
+ * the column makes the scan start over. Sections are separated by space and a
+ * label, not by boxes.
+ */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  height: 100vh;
+  overflow: auto;
+  background: var(--bg-base);
+  color: var(--tx);
+  font-family: var(--font);
+  font-size: var(--fs);
+}
+
+/*
+ * Capped and not centred. A settings row is a name and a control at opposite
+ * ends, and stretched to a wide window the two lose all connection to each
+ * other; left-aligned, the page starts where every other page in the window
+ * starts.
+ */
+.page {
+  max-width: 660px;
+  padding: 28px 32px 56px;
+}
+
+h1 {
+  margin: 0 0 28px;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.group { margin-bottom: 34px; }
+
+/*
+ * A group inside a group: the assistant's settings sorted into the four things
+ * they are about, rather than eleven rows in a column with no seam in them.
+ *
+ * Space and a quieter label, like the sections above -- no box, no rule, no
+ * indent. The indent is the tempting one and it is the wrong one: this page is
+ * read by scanning the left edge for a word, and a block that starts further in
+ * drops out of that scan.
+ */
+.subgroup { margin-top: 20px; }
+
+.subgroup-title {
+  margin: 0 0 2px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--tx-dim);
+}
+
+/*
+ * Unavailable, because the switch that governs this is off.
+ *
+ * Faded rather than hidden: what makes a row unavailable is a switch a line or
+ * two above it, and that only reads while both are on screen. The controls
+ * themselves carry `disabled`, so the keyboard and a screen reader are told the
+ * same thing the fade says.
+ *
+ * The opacity lands on the label rather than on the block, so a row that is off
+ * inside a group that is off does not fade twice as far as either.
+ */
+.off .subgroup-title,
+.off .label { opacity: .45; }
+
+.off .c-seg { border-color: transparent; }
+
+/*
+ * The section name, as a label rather than a heading with a rule under it. The
+ * rule was doing the same job as the space above it and doing it louder; what
+ * is left is the tracking and the weight, which is enough to read as a divider
+ * without drawing one.
+ */
+h2 {
+  margin: 0 0 6px;
+  padding: 0;
+  border: 0;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tx-dim);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 28px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.row:last-child { border-bottom: 0; }
+
+.label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.hint {
+  color: var(--tx-dim);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+/*
+ * Every choice on this page wears `.c-seg` from shared/components.css -- the
+ * same control the assistant's thinking window uses, down to the focus ring, so
+ * there is nothing to restate here. Two switches that mean the same thing
+ * should not be two different objects, and a control written down in two files
+ * is a control that goes out of step.
+ */
+
+/* A row that states something rather than offering a control. */
+.row.stacked { align-items: flex-start; }
+
+/* -- terminal appearance --------------------------------------------------- */
+
+/*
+ * The one row that is a column: a name, a picker, and then everything the
+ * picker stands for -- a preview, a font, and twenty colours. A scheme cannot
+ * be chosen from its name alone, and none of the rest fits opposite a label.
+ */
+.scheme-row {
+  flex-direction: column;
+  gap: 14px;
+}
+
+.scheme-row .label { width: 100%; }
+.scheme-row .notice { width: 100%; margin: 0; }
+
+/* Red rather than amber: this one is not a downgrade the user can live with,
+   it is a file that will not open and will not be written to until it does. */
+.notice.error {
+  border-left-color: var(--err);
+  background: var(--err-soft);
+}
+
+/*
+ * The picker and its four verbs on one line, wrapping rather than scrolling:
+ * at this page's width they fit, and if the language makes them longer the
+ * second line is a better answer than a clipped button.
+ */
+.scheme-bar {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.scheme-pick {
+  width: auto;
+  min-width: 12rem;
+  flex: 0 1 auto;
+}
+
+.scheme-fields {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+/* A font size is three characters wide however wide the page is. */
+.field-narrow { flex: 0 0 7rem; }
+
+.field-name {
+  color: var(--tx-dim);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+.field input[type="number"] {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The spinners take a third of the field and nobody clicks them. */
+.field input::-webkit-inner-spin-button,
+.field input::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+/*
+ * The scheme, drawn as a terminal.
+ *
+ * Twenty swatches answer "which red is it". Only this answers "can I read a
+ * build log in it" -- and it is the only place the four non-ANSI colours are
+ * visible as what they actually do, since a foreground is not a chip, it is
+ * every character that has no colour of its own.
+ */
+.scheme-preview {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  line-height: 1.45;
+  white-space: pre;
+  overflow-x: auto;
+  user-select: none;
+}
+
+/* Drawn rather than typed: a block cursor is a rectangle, and no character in
+   the font is reliably one. */
+.scheme-preview .caret {
+  display: inline-block;
+  width: .58em;
+  height: 1.05em;
+  vertical-align: text-bottom;
+}
+
+/*
+ * Two columns of eight -- the plain half and the bright half, side by side, so
+ * a pair can be compared by looking across rather than by scrolling. Below
+ * 560px they stack, which is narrow enough that the settings page is not really
+ * being read anyway.
+ */
+.swatches {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-flow: column;
+  grid-template-rows: repeat(8, auto);
+  gap: 6px 20px;
+}
+
+/* The four non-ANSI ones, two by two, in the same two columns. */
+.swatches-wide { grid-template-rows: repeat(2, auto); }
+
+@media (max-width: 560px) {
+  .swatches { grid-auto-flow: row; grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
+}
+
+.swatch {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 6.4rem;
+  gap: 9px;
+  align-items: center;
+  font-size: var(--fs-sm);
+}
+
+/*
+ * The chip is the colour input itself rather than a swatch beside one. Two
+ * controls for one value is two things to keep in step and one of them is
+ * always a moment behind the other.
+ */
+.swatch-chip {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  cursor: pointer;
+  appearance: none;
+}
+
+.swatch-chip::-webkit-color-swatch-wrapper { padding: 0; }
+
+.swatch-chip::-webkit-color-swatch {
+  border: 0;
+  border-radius: var(--r-sm);
+  /* A hairline, so a swatch that happens to match the page still has an edge --
+   * ANSI black on a dark page, brightWhite on a light one. */
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+.swatch-chip:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ac-ring);
+}
+
+/* Nothing set here: the chip shows what the terminal will use, faded, because
+   the value is the theme's rather than this scheme's. */
+.swatch.unset .swatch-chip { opacity: .45; }
+
+.swatch-name {
+  color: var(--tx);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.swatch-hex {
+  height: 26px;
+  min-width: 0;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--tx-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  transition: border-color .12s ease, box-shadow .12s ease, color .12s ease;
+}
+
+/* A placeholder is words, so it takes the readable dim -- `--tx-faint` is for
+   hairlines and icon strokes and does not clear 4.5:1. */
+.swatch-hex::placeholder {
+  color: var(--tx-dim);
+  text-transform: none;
+}
+
+.swatch-hex:hover { border-color: var(--line-strong); }
+
+.swatch-hex:focus {
+  outline: none;
+  color: var(--tx);
+  border-color: var(--ac);
+  box-shadow: 0 0 0 2px var(--ac-ring);
+}
+
+/* Typed, but not a colour yet. Said while it is being typed rather than
+   silently discarded when the field is left. */
+.swatch-hex.bad {
+  color: var(--err);
+  border-color: var(--err);
+}
+
+.swatch-section {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.swatch-section-title {
+  color: var(--tx-dim);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.value { flex: none; color: var(--tx); }
+.value.degraded { color: var(--warn); }
+
+/* A path is not prose: it should be selectable, and it should not be broken
+   across lines at random. */
+.path {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  user-select: text;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * Shown only when the secrets are in a file rather than the keychain. Amber and
+ * not red: nothing is broken, and the passwords are still protected -- just by
+ * a file permission instead of by the operating system, which is a difference
+ * worth a sentence rather than an alarm.
+ *
+ * A bar down the left rather than a box all the way round. At this width a full
+ * border draws a second frame inside the page and the eye reads the frame
+ * before the sentence.
+ */
+.notice {
+  margin: 4px 0 12px;
+  padding: 11px 14px;
+  border: 0;
+  border-left: 2px solid var(--warn);
+  border-radius: var(--r-sm);
+  background: var(--warn-soft);
+  color: var(--tx);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.notice[hidden] { display: none; }
+
+/*
+ * Every input on this page is a `.c-field` from shared/components.css. What is
+ * left here is width and alignment -- the two things that are about this page's
+ * layout rather than about what a field is.
+ *
+ * A number is sized to the widest value it can hold rather than to the page,
+ * and right-aligned, because these are read against each other down a column
+ * and a left-aligned 48000 next to a 0 makes the column look ragged when it is
+ * not. Tabular figures for the same reason.
+ */
+.field-number {
+  width: 7.5rem;
+  flex: none;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A short list of names, edited as one line. Wider than a number, left-read. */
+.field-text { width: 18rem; flex: none; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

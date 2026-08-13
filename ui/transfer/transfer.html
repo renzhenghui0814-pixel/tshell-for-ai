@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; connect-src 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="../shared/theme.css">
+  <script src="../shared/host.js"></script>
+  <link rel="stylesheet" href="../shared/highlight.css">
+  <link rel="stylesheet" href="../shared/components.css">
+  <script src="../shared/scrollbars.js"></script>
+  <link rel="stylesheet" href="transfer.css">
+</head>
+<body>
+  <!--
+    Must stay first: it puts the shared icon sprite in the document before the
+    parser reaches any `<use>` below it.
+
+    This page used to carry its own sprite here -- thirteen symbols, drawn as
+    solid fills, while the title bar's glyphs were outlines and the chat panel
+    had a second pencil and a second bin of its own. One sprite in shared/, and
+    every `href="#i-..."` on this page and in transfer.js resolves to it
+    unchanged.
+  -->
+  <script src="../shared/icons.js"></script>
+
+  <div class="panes" id="panes">
+    <section class="pane" id="pane-local" data-side="local">
+      <div class="pane-head">
+        <span class="pane-label" data-i18n="localPane"></span>
+        <input class="path" id="path-local" spellcheck="false" data-i18n-aria="localPath">
+        <button class="icon-button quiet up" id="up-local" data-i18n-title="up" data-i18n-aria="up"><svg class="icon"><use href="#i-up"/></svg></button>
+        <button class="icon-button quiet refresh" id="refresh-local" data-i18n-title="refresh" data-i18n-aria="refresh"><svg class="icon"><use href="#i-refresh"/></svg></button>
+        <button class="icon-button quiet hidden-toggle" id="hidden-local" data-i18n-title="showHiddenFiles" data-i18n-aria="showHiddenFiles" aria-pressed="false"><svg class="icon"><use href="#i-eye"/></svg></button>
+      </div>
+      <!-- Clipped, not scrolled by the user: it is dragged sideways from
+           transfer.js to stay over the rows it names. -->
+      <div class="head-clip" id="headclip-local">
+        <div class="col-head" id="head-local">
+          <span></span>
+          <span class="sortable" data-key="name" data-i18n-title="sortByColumn"><b data-i18n="name"></b><svg class="sort"><use href="#i-caret"/></svg></span>
+          <span class="sortable num" data-key="size" data-i18n-title="sortByColumn"><i class="grip" data-col="size"></i><b data-i18n="size"></b><svg class="sort"><use href="#i-caret"/></svg></span>
+          <span class="sortable" data-key="modified" data-i18n-title="sortByColumn"><i class="grip" data-col="mod"></i><b data-i18n="modified"></b><svg class="sort"><use href="#i-caret"/></svg></span>
+        </div>
+      </div>
+      <div class="list" id="list-local" tabindex="0" role="listbox" aria-multiselectable="true">
+        <div class="sizer"><div class="window"></div></div>
+      </div>
+    </section>
+
+    <div class="splitter" id="splitter" data-i18n-title="resizePanes"></div>
+
+    <section class="pane" id="pane-remote" data-side="remote">
+      <div class="pane-head">
+        <span class="pane-label" data-i18n="remotePane"></span>
+        <input class="path" id="path-remote" spellcheck="false" data-i18n-aria="remotePath">
+        <button class="icon-button quiet up" id="up-remote" data-i18n-title="up" data-i18n-aria="up"><svg class="icon"><use href="#i-up"/></svg></button>
+        <button class="icon-button quiet refresh" id="refresh-remote" data-i18n-title="refresh" data-i18n-aria="refresh"><svg class="icon"><use href="#i-refresh"/></svg></button>
+        <button class="icon-button quiet hidden-toggle" id="hidden-remote" data-i18n-title="showHiddenFiles" data-i18n-aria="showHiddenFiles" aria-pressed="false"><svg class="icon"><use href="#i-eye"/></svg></button>
+      </div>
+      <!-- Clipped, not scrolled by the user: it is dragged sideways from
+           transfer.js to stay over the rows it names. -->
+      <div class="head-clip" id="headclip-remote">
+        <div class="col-head" id="head-remote">
+          <span></span>
+          <span class="sortable" data-key="name" data-i18n-title="sortByColumn"><b data-i18n="name"></b><svg class="sort"><use href="#i-caret"/></svg></span>
+          <span class="sortable num" data-key="size" data-i18n-title="sortByColumn"><i class="grip" data-col="size"></i><b data-i18n="size"></b><svg class="sort"><use href="#i-caret"/></svg></span>
+          <span class="sortable" data-key="modified" data-i18n-title="sortByColumn"><i class="grip" data-col="mod"></i><b data-i18n="modified"></b><svg class="sort"><use href="#i-caret"/></svg></span>
+        </div>
+      </div>
+      <div class="list" id="list-remote" tabindex="0" role="listbox" aria-multiselectable="true">
+        <div class="sizer"><div class="window"></div></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="transfer-panel" id="transferPanel" aria-live="polite">
+    <div class="bar-row overall">
+      <span class="label" id="overallLabel"></span>
+      <span class="track"><span class="fill" id="overallFill"></span></span>
+      <span class="meta" id="overallMeta"></span>
+    </div>
+    <div class="bar-row current">
+      <span class="label name" id="currentLabel"></span>
+      <span class="track"><span class="fill" id="currentFill"></span></span>
+      <span class="meta"><span id="currentMeta"></span>
+        <button class="secondary transfer-cancel" id="cancelTransfer" data-i18n="cancel"></button>
+      </span>
+    </div>
+  </div>
+
+  <div class="log-resizer" id="logResizer" data-i18n-title="resizeLog"></div>
+  <div class="log-wrap">
+    <div class="log" id="log"></div>
+    <button class="log-clear" id="clearLog" data-i18n-title="clearLog" data-i18n-aria="clearLog"><svg class="icon"><use href="#i-trash"/></svg></button>
+  </div>
+
+  <div class="menu" id="paneMenu">
+    <div class="menu-item" id="menuTransfer"><svg class="icon" id="menuTransferIcon"><use href="#i-upload"/></svg><span id="menuTransferText"></span></div>
+    <div class="menu-sep" id="menuSepTransfer"></div>
+    <div class="menu-item" id="menuNewFolder"><svg class="icon"><use href="#i-new-folder"/></svg><span data-i18n="newFolder"></span></div>
+    <div class="menu-item" id="menuRename"><svg class="icon"><use href="#i-edit"/></svg><span data-i18n="rename"></span></div>
+    <div class="menu-item danger" id="menuDelete"><svg class="icon"><use href="#i-trash"/></svg><span data-i18n="delete"></span></div>
+    <div class="menu-sep"></div>
+    <div class="menu-item" id="menuRefresh"><svg class="icon"><use href="#i-refresh"/></svg><span data-i18n="refresh"></span></div>
+    <div class="menu-item" id="menuCopyPath"><svg class="icon"><use href="#i-copy"/></svg><span data-i18n="copyPath"></span></div>
+  </div>
+
+  <div class="menu" id="logMenu">
+    <div class="menu-item" id="menuCopyLog"><svg class="icon"><use href="#i-copy"/></svg><span data-i18n="copy"></span></div>
+  </div>
+
+  <div class="preview" id="preview">
+    <div class="preview-bar">
+      <div class="preview-title" id="previewTitle"></div>
+      <button class="secondary" id="toggleCsvView" style="display:none"></button>
+      <select id="previewEncoding" data-i18n-title="previewEncoding" data-i18n-aria="previewEncoding">
+        <option value="utf8">UTF-8</option>
+        <option value="gb2312">GB2312</option>
+      </select>
+      <div class="font-control" data-i18n-title="previewFontSize">
+        <button class="secondary" id="previewFontDown" aria-label="-">-</button>
+        <span class="font-size" id="previewFontSize">12px</span>
+        <button class="secondary" id="previewFontUp" aria-label="+">+</button>
+      </div>
+      <button class="secondary" id="closePreview" data-i18n="close"></button>
+    </div>
+    <div class="code" id="code"></div>
+  </div>
+
+  <div class="modal" id="conflictModal" role="dialog" aria-modal="true" aria-labelledby="conflictTitle">
+    <div class="dialog">
+      <h2 id="conflictTitle" data-i18n="conflictTitle"></h2>
+      <p class="question" id="conflictQuestion"></p>
+      <p class="warning" id="conflictWarning" style="display:none"></p>
+      <div class="compare">
+        <div><span class="tag" data-i18n="conflictTarget"></span><span class="detail" id="conflictTargetDetail"></span></div>
+        <div><span class="tag" data-i18n="conflictSource"></span><span class="detail" id="conflictSourceDetail"></span></div>
+      </div>
+      <div class="dialog-actions">
+        <span class="remaining" id="conflictRemaining"></span>
+        <span class="spacer"></span>
+        <button class="secondary" id="conflictSkipAll" data-i18n="skipAll"></button>
+        <button class="secondary" id="conflictOverwriteAll" data-i18n="overwriteAll"></button>
+        <button class="secondary" id="conflictCancelAll" data-i18n="cancelAll"></button>
+        <button class="secondary" id="conflictSkip" data-i18n="skip"></button>
+        <button id="conflictOverwrite" data-i18n="overwrite"></button>
+      </div>
+    </div>
+  </div>
+  <!-- Must load first: transfer.js binds its helpers at evaluation time. -->
+  <script src="../shared/highlight.js"></script>
+  <script src="transfer.js"></script>
+</body>
+</html>

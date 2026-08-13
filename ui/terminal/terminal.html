@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; connect-src 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="../shared/theme.css">
+  <script src="../shared/host.js"></script>
+  <link rel="stylesheet" href="../vendor/xterm/xterm.css">
+  <!-- After xterm's own sheet, so the shared scrollbar wins over the native one
+       xterm asks for on its viewport. -->
+  <link rel="stylesheet" href="../shared/components.css">
+  <link rel="stylesheet" href="terminal.css">
+</head>
+<body>
+  <div id="terminal"></div>
+
+  <script src="../vendor/xterm/xterm.js"></script>
+  <script src="../vendor/xterm/addon-fit.js"></script>
+  <script src="terminal.js"></script>
+</body>
+</html>

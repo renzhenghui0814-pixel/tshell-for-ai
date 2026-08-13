@@ -1,0 +1,38 @@
+/*
+ * Token colours for the shared highlighter. Kept beside highlight.js so the two
+ * cannot drift apart, and loaded by every page that highlights anything.
+ *
+ * These used to be VS Code's own Dark+ and Light+ numbers, written out twice --
+ * once for dark and once again under `body.vscode-light` -- because a webview
+ * was never given the editor's token theme and the `--vscode-*` variables only
+ * ever covered widgets, never syntax.
+ *
+ * We own the palette now, so both of those reasons are gone. The colours come
+ * from the `--syn-*` tokens in theme.css, which already flip with the theme, and
+ * the whole light half of this file went with them: fifteen rules that existed
+ * only to restate the same fifteen roles in other numbers, and that could drift
+ * from their dark twins one careless edit at a time.
+ *
+ * Roles, not hues. A keyword and a tag are both blue because they are both
+ * "grammar"; a string and a number differ because confusing a literal for a
+ * count is a real mistake with a real cost.
+ */
+
+.tok-comment { color: var(--syn-comment); }
+.tok-string { color: var(--syn-orange); }
+.tok-number { color: var(--syn-green); }
+/* Flow apart from declaration: `if` and `return` should not read as `const`. */
+.tok-control { color: var(--syn-purple); }
+.tok-keyword { color: var(--syn-blue); }
+.tok-type { color: var(--syn-teal); }
+.tok-function { color: var(--syn-yellow); }
+.tok-variable { color: var(--syn-sky); }
+.tok-decorator { color: var(--syn-yellow); }
+.tok-preprocessor { color: var(--syn-purple); }
+.tok-tag { color: var(--syn-blue); }
+.tok-attr { color: var(--syn-sky); }
+.tok-section { color: var(--syn-teal); font-weight: 600; }
+.tok-key { color: var(--syn-sky); }
+/* Punctuation carries no meaning of its own; it should recede far enough that
+ * the names either side of it are what the eye lands on. */
+.tok-operator { color: var(--tx-dim); }

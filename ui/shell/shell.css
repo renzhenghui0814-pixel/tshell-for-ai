@@ -1,0 +1,751 @@
+/*
+ * The window frame: a title strip, the server list on the left, a stack of
+ * tabbed panes on the right, and a status line under all of it.
+ *
+ * This is the one piece of front end VS Code used to supply and we now have to
+ * draw ourselves. It deliberately stays thin -- it owns layout and nothing else,
+ * because everything with behaviour lives in the pages it hosts.
+ *
+ * Surfaces do the separating here, not lines. The title bar, the sidebar, the
+ * tab strip and the status bar all sit on `--bg-elev`; the pane area and the
+ * terminals in it sit on `--bg-base` below them; the active tab lifts to
+ * `--bg-raise` above. Hairlines appear only where two things at the *same*
+ * height meet and there is nothing else to tell them apart -- the sidebar and
+ * the pane area, the columns either side of a splitter.
+ */
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg-base);
+  color: var(--tx);
+  font-family: var(--font);
+  font-size: var(--fs);
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ------------------------------------------------------------- title bar --- */
+
+/*
+ * Everything left of the buttons is drag surface, which is why the text inside
+ * it takes no pointer events -- a click that lands on a <span> is a click that
+ * does not drag.
+ */
+.titlebar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  flex: none;
+  padding: 0 0 0 11px;
+  background: var(--bg-elev);
+  user-select: none;
+}
+
+.app-icon {
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+.brand {
+  font-weight: 600;
+  font-size: 12.5px;
+  letter-spacing: .01em;
+  pointer-events: none;
+}
+
+.build {
+  color: var(--tx-dim);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/*
+ * Transparent to the pointer like the rest of the bar's furniture. Tauri decides
+ * a drag by looking at what was clicked, so anything sitting on the bar that is
+ * not a button has to let the click reach the bar itself -- and this element is
+ * the widest thing on it.
+ */
+.spacer {
+  flex: 1;
+  align-self: stretch;
+  pointer-events: none;
+}
+
+/*
+ * Centred on the window, not on what is left between the two clusters -- those
+ * are different widths and always will be. The container itself is transparent
+ * to the pointer so the bar around the buttons still drags the window.
+ */
+.titlebar-center {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.titlebar-center .chrome-button {
+  pointer-events: auto;
+  margin-right: 0;
+}
+
+/* The window's own two switches, beside the name. A little air after the
+ * version so they read as a pair of controls rather than more of the title. */
+.titlebar-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 6px;
+}
+
+.titlebar-tools .chrome-button { margin-right: 0; }
+
+.chrome-button {
+  border: none;
+  background: transparent;
+  color: var(--tx-dim);
+  border-radius: var(--r-sm);
+  height: 26px;
+  min-width: 28px;
+  margin-right: 3px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color .12s ease, color .12s ease;
+}
+
+.chrome-button .glyph {
+  width: 15px;
+  height: 15px;
+}
+
+.chrome-button:hover { background: var(--hover); color: var(--tx); }
+.chrome-button:active { background: var(--active); }
+
+.chrome-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ac-ring);
+}
+
+/*
+ * The two terminal actions keep colours of their own: everything else on this
+ * bar is chrome, and these two are the only things on it that *do* something to
+ * the tab in front. Violet for the assistant; green for the transfer, which is
+ * the same green the status dot uses for a live connection.
+ */
+.chrome-button.accent-ai { color: var(--ai); }
+.chrome-button.accent-transfer { color: var(--ok); }
+
+/*
+ * They keep their colour under the pointer. The base rule brightens a chrome
+ * button towards `--tx` on hover, which for these two meant the one thing that
+ * identifies them draining away at the moment of reaching for them; only the
+ * backing plate should change.
+ */
+.chrome-button.accent-ai:hover { color: var(--ai); }
+.chrome-button.accent-transfer:hover { color: var(--ok); }
+
+/* Dimmed in place: a bar whose buttons come and go is a bar that moves. */
+.chrome-button:disabled {
+  opacity: .32;
+  cursor: default;
+}
+
+.chrome-button:disabled:hover { background: transparent; }
+.chrome-button[hidden] { display: none; }
+
+/* Dimmed while the panel it refers to is away. The glyph also changes -- the
+ * rail empties -- which is the part that survives being colour-blind. */
+.chrome-button.off { color: var(--tx-faint); }
+
+/* ------------------------------------------------------- window controls --- */
+
+.window-controls {
+  display: flex;
+  align-self: stretch;
+  margin-left: 5px;
+}
+
+/*
+ * 46x36 to match the bar's height; 46 wide is what Windows uses and matching it
+ * is the difference between a title bar that reads as the system's and one that
+ * reads as a web page pretending to be one. No border radius, for the same
+ * reason -- the close button has to reach the window's corner.
+ */
+.window-button {
+  width: 46px;
+  border: none;
+  background: transparent;
+  color: var(--tx-dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: background-color .12s ease, color .12s ease;
+}
+
+.window-button svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.window-button:hover { background: var(--hover); color: var(--tx); }
+.window-button:active { background: var(--active); }
+
+.window-button.danger:hover {
+  background: #c42b1c;
+  color: #ffffff;
+}
+
+.glyph-restore { display: none; }
+
+body.maximized .glyph-maximize { display: none; }
+body.maximized .glyph-restore { display: block; }
+
+/* -------------------------------------------------------------- workbench --- */
+
+.workbench {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.sidebar {
+  width: 280px;
+  flex: none;
+  min-width: 200px;
+  background: var(--bg-elev);
+  display: flex;
+}
+
+.sidebar iframe {
+  flex: 1;
+  border: none;
+  width: 100%;
+  height: 100%;
+}
+
+/*
+ * Hidden, not unmounted. The panel keeps its iframe, its scroll position and
+ * whatever dialog was open, and bringing it back costs nothing.
+ */
+.sidebar[hidden], .splitter[hidden] { display: none; }
+
+/*
+ * Four pixels of grab area, drawn as one pixel of line.
+ *
+ * `--line-strong` rather than `--line`: this is the seam between two frames
+ * that each fill their own box, and at 6% it was close enough to nothing that
+ * two terminals side by side ran into each other. The accent still lands under
+ * the pointer, so the line says where the boundary is and the highlight says it
+ * can be moved.
+ */
+.splitter {
+  flex: none;
+  width: 4px;
+  margin: 0 -2px 0 -1px;
+  cursor: col-resize;
+  background: transparent;
+  border-left: 1px solid var(--line-strong);
+  z-index: 2;
+  transition: border-color .12s ease;
+}
+
+.splitter:hover, .splitter.dragging { border-left-color: var(--ac); }
+
+/*
+ * The pane area is one grid, two rows deep: tab bars along the top, pane
+ * contents underneath. Columns are tracks -- column, splitter, column,
+ * splitter, column -- and shell.js writes the template as columns come and go.
+ *
+ * `auto` for the first row rather than a fixed height, so that with no columns
+ * at all the row collapses and the empty window has no orphan strip across it.
+ *
+ * `position: relative` is for the drag indicator, which is absolutely positioned
+ * and so takes no part in the grid.
+ */
+.panes {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  grid-template-columns: minmax(0, 1fr);
+  background: var(--bg-base);
+}
+
+/* ------------------------------------------------------------------ tabs --- */
+
+/*
+ * `width: 100%` and not merely the grid's own stretching: the bar is a scroll
+ * container, and it has to be the column's full width whether its tabs fall
+ * short of the edge or run past it.
+ */
+.tabbar {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px;
+  background: var(--bg-elev);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/*
+ * A thinner bar than the shared 10px, because of what it has to fit into: the
+ * strip is 38px and the tabs in it are 28px, so a full-height bar would sit
+ * tight under them and read as an underline on whichever tab it happened to be
+ * beneath. At 4px it reads as what it is -- there is more of this than fits.
+ *
+ * It was hidden altogether before, on the grounds that the wheel and a drag
+ * already scroll the strip. Both still do; what neither does is *say* that
+ * there is anything to scroll to, and a tab you do not know exists is a tab you
+ * do not go looking for.
+ *
+ * The one bar in the window that does not hide itself. Everywhere else a
+ * scrollbar answers "where am I in this", which is a question you only ask
+ * while you are looking; here it answers "there are tabs you cannot see", which
+ * is a thing you need to know *before* you go looking for the tab you want. A
+ * bar that only appears once the pointer is already in the strip tells you
+ * after the fact.
+ *
+ * The thumb's transparent border is narrowed to 1px, or 2px of air each side
+ * would leave nothing of a 4px track to see.
+ */
+.tabbar::-webkit-scrollbar { height: 4px; }
+
+.tabbar::-webkit-scrollbar-thumb {
+  border-width: 1px;
+  background: var(--scroll);
+  background-clip: content-box;
+}
+
+.tabbar::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-hover);
+  background-clip: content-box;
+}
+
+/*
+ * `flex: none` is what makes the bar scroll rather than squeeze. Left to the
+ * default a tab shrinks, so twenty of them share the width as twenty slivers
+ * and the container never overflows -- meaning the scrollbar never appears and
+ * no tab is readable. Fixed widths overflow honestly, and the bar scrolls.
+ */
+.tab {
+  flex: none;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 7px 0 11px;
+  max-width: 210px;
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--tx-dim);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color .12s ease, color .12s ease;
+}
+
+.tab:hover { background: var(--hover); color: var(--tx); }
+
+/*
+ * The active tab is the one thing in the strip that is *above* it. The ring and
+ * the small shadow are what sell that -- with a flat fill it reads as a
+ * highlighted item in a list instead of a sheet in front of the others.
+ */
+.tab.active {
+  background: var(--bg-raise);
+  color: var(--tx);
+  box-shadow: 0 0 0 1px var(--line-strong), var(--sh-tab);
+}
+
+.tab .tab-glyph {
+  width: 13px;
+  height: 13px;
+  opacity: .7;
+  flex: none;
+}
+
+.tab.active .tab-glyph { opacity: 1; color: var(--ac); }
+
+/*
+ * The accent ring marks the tab that has the focus, not merely the tab that is
+ * showing. With several columns open every one of them has something on screen,
+ * and the difference that matters is which one the title bar's two actions will
+ * act on and where the next tab will open.
+ */
+.tabbar.focused .tab.active {
+  box-shadow: 0 0 0 1px var(--ac), var(--sh-tab);
+}
+
+/* Nothing to drag towards while a tab is in flight; the ghost stands in. */
+.tabbar.dragging .tab { cursor: grabbing; }
+
+.tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-close {
+  border: none;
+  background: transparent;
+  color: inherit;
+  border-radius: 4px;
+  width: 17px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+  line-height: 1;
+  font-size: 13px;
+  cursor: pointer;
+  opacity: .55;
+  transition: background-color .12s ease, opacity .12s ease;
+}
+
+.tab-close:hover {
+  background: var(--active);
+  opacity: 1;
+}
+
+/*
+ * Panes are grid items in row 2, several to a cell -- one per tab in that
+ * column -- with all but the active one displaying as nothing. `min-width: 0`
+ * because an iframe's automatic minimum size is 300px wide, which would stop a
+ * `1fr` track from ever shrinking past it.
+ */
+.panes > iframe {
+  border: none;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.panes > iframe[hidden] { display: none; }
+
+/* The divider between two columns: a 4px track to grab, drawn as one pixel of
+ * line, the same trick and the same weight as the sidebar splitter above. */
+.col-splitter {
+  cursor: col-resize;
+  background: transparent;
+  border-left: 1px solid var(--line-strong);
+  z-index: 2;
+  transition: border-color .12s ease;
+}
+
+.col-splitter:hover, .col-splitter.dragging { border-left-color: var(--ac); }
+
+/* ------------------------------------------------------------ status bar --- */
+
+/*
+ * One line about the tab in front: whether it is connected, to what, in what
+ * encoding, at what size. Every field comes off the shell's own `pane` record,
+ * which already held all of it.
+ */
+/*
+ * Separated by space, not by rules.
+ *
+ * The first version drew a hairline down the right of every field and cancelled
+ * it on `:last-child`, which is wrong the moment a field is hidden -- and here
+ * they are hidden constantly, because a chat tab has no connection state and
+ * only a terminal has a size. `:last-child` still named the hidden one, so its
+ * neighbour kept a divider with nothing after it.
+ *
+ * `gap` has no such failure mode: an element with `display: none` generates no
+ * box, so no gap is reserved either side of it and the fields close up by
+ * themselves. Fewer rules, and one whole class of "last visible item" bug that
+ * cannot come back.
+ */
+.statusbar {
+  flex: none;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 14px;
+  background: var(--bg-elev);
+  border-top: 1px solid var(--line);
+  color: var(--tx-dim);
+  font-size: var(--fs-xs);
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.statusbar[hidden] { display: none; }
+
+.status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1;
+  /* Digits that do not change width, so a terminal being resized does not
+   * shuffle everything to its right. */
+  font-variant-numeric: tabular-nums;
+}
+
+.status-item[hidden] { display: none; }
+
+/* The one field that may be too long for the bar -- a long user@host. It gives
+ * up its width before anything else does. */
+#st-who {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-block;
+  line-height: 26px;
+  font-family: var(--font-mono);
+}
+
+.status-state.is-ok { color: var(--ok); }
+.status-state.is-err { color: var(--err); }
+
+.status-grow { flex: 1; }
+
+/* ------------------------------------------------------- menus and modals --- */
+
+/*
+ * The tab context menu, and the invisible sheet under it that closes it.
+ *
+ * The sheet is not a nicety: the panes are iframes, and a click that lands
+ * inside one is a click this document never hears about. Without something
+ * covering them the menu would stay up while the user typed into a terminal.
+ */
+.menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 199;
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 200;
+  min-width: 172px;
+  padding: 5px;
+  background: var(--bg-float);
+  color: var(--tx);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-pop);
+  font-size: var(--fs-sm);
+  user-select: none;
+  outline: none;
+}
+
+.context-menu button {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.context-menu button:hover:not(:disabled) {
+  background: var(--ac);
+  color: var(--ac-tx);
+}
+
+.context-menu button:disabled {
+  opacity: .38;
+  cursor: default;
+}
+
+.menu-separator {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--line);
+}
+
+/*
+ * The dialogs the window has to draw for itself, standing where VS Code's
+ * `showInputBox` and `showWarningMessage` used to. The sheet dims the whole
+ * window, panes included -- it is above them, which a modal has to be, since a
+ * frame that could still be typed into would not be one.
+ */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(6, 8, 14, 0.55);
+}
+
+:root[data-theme="light"] .modal-backdrop { background: rgba(24, 28, 48, 0.28); }
+
+.modal {
+  width: min(420px, calc(100vw - 48px));
+  padding: 20px;
+  background: var(--bg-float);
+  color: var(--tx);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-dlg);
+  user-select: none;
+}
+
+.modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 7px;
+}
+
+.modal-message {
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  color: var(--tx-dim);
+  /* A group name is the user's, so it can be long and it can lack spaces. */
+  overflow-wrap: anywhere;
+}
+
+.modal-input {
+  width: 100%;
+  height: 30px;
+  margin-top: 14px;
+  padding: 0 10px;
+  background: var(--bg-inset);
+  color: var(--tx);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: var(--fs-sm);
+  user-select: text;
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+
+.modal-input:focus {
+  outline: none;
+  border-color: var(--ac);
+  box-shadow: 0 0 0 2px var(--ac-ring);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.modal-button {
+  min-width: 78px;
+  height: 28px;
+  padding: 0 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--tx);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: background-color .12s ease, border-color .12s ease;
+}
+
+.modal-button:hover { background: var(--hover); }
+
+.modal-button.primary {
+  background: var(--ac);
+  border-color: transparent;
+  color: var(--ac-tx);
+  font-weight: 500;
+}
+
+.modal-button.primary:hover { background: var(--ac-hover); }
+
+/* Deletions are not undoable here -- there is no bin to take them out of. */
+.modal-button.primary.danger { background: var(--err); }
+.modal-button.primary.danger:hover { background: var(--err-hover); }
+
+.modal-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ac-ring);
+}
+
+/* -------------------------------------------------------------- dragging --- */
+
+/*
+ * What a drag is offering, drawn over the pane area: either a rectangle for the
+ * space the tab would take, or a line for where it would land among its
+ * neighbours. Positioned against `.panes`, so shell.js works in that box's
+ * coordinates and not the window's.
+ */
+.drop-mark {
+  position: absolute;
+  z-index: 50;
+  pointer-events: none;
+  border-radius: var(--r-sm);
+}
+
+.drop-mark.area {
+  background: var(--ac);
+  opacity: .18;
+  outline: 1px solid var(--ac);
+}
+
+.drop-mark.line {
+  width: 2px;
+  border-radius: 2px;
+  background: var(--ac);
+}
+
+.drop-mark[hidden] { display: none; }
+
+/*
+ * The tab under the cursor while it is in flight. Fixed rather than absolute:
+ * the drag can leave the pane area, and the ghost should follow the cursor out
+ * over the title bar rather than stop at the edge.
+ */
+.tab-ghost {
+  position: fixed;
+  z-index: 100;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  height: 28px;
+  max-width: 210px;
+  padding: 0 11px;
+  background: var(--bg-raise);
+  color: var(--tx);
+  border: 1px solid var(--ac);
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: .95;
+  box-shadow: var(--sh-pop);
+}

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>tshell</title>
+  <link rel="stylesheet" href="shared/theme.css">
+  <script src="shared/schemes.js"></script>
+  <link rel="stylesheet" href="shared/components.css">
+  <script src="shared/scrollbars.js"></script>
+  <link rel="stylesheet" href="shell/shell.css">
+</head>
+<body>
+  <!--
+    First thing in the body, and it has to stay first.
+
+    icons.js inserts the shared `<symbol>` sprite as body's first child. Running
+    it here means the sprite is in the document before the parser reaches any of
+    the `<use href="#i-...">` below, so each reference finds its target already
+    there rather than depending on the browser re-resolving a reference whose
+    target turned up later. Move this to the end of the body and the title bar
+    renders empty on the first frame.
+  -->
+  <script src="shared/icons.js"></script>
+
+  <!--
+    The window's own title bar. `decorations` is off, so this strip is the whole
+    frame: it drags the window, it carries the title, and the three buttons on
+    the right are the system ones. Drawing it ourselves is what lets it follow
+    the theme -- the native bar could not.
+  -->
+  <header class="titlebar" data-tauri-drag-region>
+    <img class="app-icon" src="vendor/icon.png" alt="">
+    <span class="brand">tshell</span>
+    <span class="build" id="build">—</span>
+
+    <!--
+      The two window-wide switches, next to the name rather than out by the
+      minimise button.
+
+      Neither belongs to the tab in front: one folds the server panel away and
+      one opens settings, and both apply to the window however many tabs are in
+      it. Sitting them beside the title puts them with the thing they act on,
+      and leaves the right-hand end of the bar to the buttons the operating
+      system owns.
+    -->
+    <div class="titlebar-tools">
+      <button type="button" id="toggle-sidebar" class="chrome-button" title="Toggle server panel">
+        <svg class="glyph" viewBox="0 0 16 16" aria-hidden="true"><use href="#i-panel" id="sidebar-glyph"/></svg>
+      </button>
+      <button type="button" id="settings" class="chrome-button" title="Settings">
+        <svg class="glyph" viewBox="0 0 16 16" aria-hidden="true"><use href="#i-gear"/></svg>
+      </button>
+    </div>
+
+    <span class="spacer"></span>
+
+    <!--
+      The two actions that belong to whichever terminal is in front. They used to
+      float over the terminal itself; centred here they stay in one place as tabs
+      change, and they are dimmed rather than hidden when the front tab is not a
+      terminal, so the bar does not shift about.
+    -->
+    <div class="titlebar-center">
+      <button type="button" id="act-ai" class="chrome-button accent-ai" disabled>
+        <svg class="glyph" viewBox="0 0 16 16" aria-hidden="true"><use href="#i-ai"/></svg>
+      </button>
+      <button type="button" id="act-transfer" class="chrome-button accent-transfer" disabled>
+        <svg class="glyph" viewBox="0 0 16 16" aria-hidden="true"><use href="#i-transfer"/></svg>
+      </button>
+    </div>
+
+    <!--
+      Kept out of the shared icon set on purpose. These three are system
+      furniture rather than product iconography: 1px lines, square ends, drawn
+      at the metrics Windows uses, in a 46x32 hit area. The rest of the window's
+      glyphs are round-capped 1.4px strokes, and drawing these that way is the
+      difference between a title bar that reads as the system's and one that
+      reads as a web page imitating one.
+    -->
+    <div class="window-controls">
+      <button type="button" id="win-min" class="window-button" aria-label="Minimize">
+        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6h8" /></svg>
+      </button>
+      <button type="button" id="win-max" class="window-button" aria-label="Maximize">
+        <svg class="glyph-maximize" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" /></svg>
+        <svg class="glyph-restore" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="4.5" width="5" height="5" /><path d="M4.5 2.5h5v5" /></svg>
+      </button>
+      <button type="button" id="win-close" class="window-button danger" aria-label="Close">
+        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" /></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="workbench">
+    <aside class="sidebar" id="sidebar"></aside>
+    <div class="splitter" id="splitter" role="separator" aria-orientation="vertical"></div>
+    <!--
+      One grid, and every frame in the window is a direct child of it.
+
+      The columns are grid tracks, so moving a tab from one column to another is
+      a change of `grid-column` on its iframe -- a style change, with the element
+      staying exactly where it is in the DOM. That matters more than it looks:
+      re-parenting an <iframe> discards its browsing context, which would drop the
+      SSH session and wipe the scrollback every time a tab was dragged.
+
+      shell.js fills this in; there is nothing to write here.
+    -->
+    <section class="panes" id="panes"></section>
+  </main>
+
+  <!--
+    What the front tab is connected to, and how.
+
+    It reads its fields off the shell's own `pane` object -- state, server,
+    encoding, the size the pty was last told -- so nothing had to be asked of
+    Rust and nothing had to be added to the pages. In particular it is *not*
+    inside terminal.html: the terminal fits xterm to its container, with a
+    deliberate bail-out for containers measuring zero, and putting a 24px strip
+    inside that box would have made this a question about the fit addon.
+
+    Hidden until there is a tab to describe, so an empty window is an empty
+    window rather than an empty window with a bar under it.
+  -->
+  <footer class="statusbar" id="statusbar" hidden>
+    <span class="status-item status-state" id="st-state">
+      <i class="c-dot" id="st-dot"></i><span id="st-state-text"></span>
+    </span>
+    <span class="status-item" id="st-who"></span>
+    <span class="status-item" id="st-encoding"></span>
+    <span class="status-grow"></span>
+    <span class="status-item" id="st-size"></span>
+  </footer>
+
+  <script src="shell/shell.js"></script>
+</body>
+</html>

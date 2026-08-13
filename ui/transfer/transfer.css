@@ -1,0 +1,682 @@
+/*
+ * The two-sided file panel.
+ *
+ * Colours come from theme.css through the `--vscode-*` names this file was
+ * written against; those are aliases onto the product's own tokens now, so this
+ * page followed the new palette without a single colour being edited here.
+ * Buttons, fields, menus and the dialog take their shapes from
+ * shared/components.css. What is left below is this page's own layout: the
+ * split, the virtualised list, and the progress panel.
+ */
+
+* { box-sizing: border-box; }
+
+:root {
+  --row-h: 26px;
+  --split: 1fr;
+  --log-height: 170px;
+  --gutter: 10px;
+  --hairline: var(--line);
+  --z-menu: 30;
+  --z-overlay: 40;
+  --z-modal: 50;
+}
+
+body {
+  display: grid;
+  grid-template-rows: minmax(120px, 1fr) auto 5px var(--log-height);
+  height: 100vh;
+  /* The host injects a default body padding that would inset the whole page. */
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  /* The chrome is not text. Only the places worth copying opt back in below. */
+  user-select: none;
+}
+
+.log,
+.code,
+.csv-table,
+.compare .detail,
+input { user-select: text; }
+
+/* -- shared controls ---------------------------------------------------- */
+
+input {
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  color: var(--tx);
+  background: var(--bg-inset);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: var(--fs-sm);
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+
+select {
+  height: 28px;
+  padding: 0 8px;
+  color: var(--tx);
+  background: var(--bg-inset);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+/* A ring outside the box rather than an outline inside it: the fields here sit
+ * in a grid row with buttons either side, and an inset outline on focus made
+ * the path field look one pixel shorter than its neighbours. */
+input:focus-visible,
+select:focus-visible {
+  outline: none;
+  border-color: var(--ac);
+  box-shadow: 0 0 0 2px var(--ac-ring);
+}
+
+button {
+  cursor: pointer;
+  /* A minimum, not a fixed height: a button with more than one line of content
+   * in it must be able to grow rather than clip. */
+  min-height: 28px;
+  padding: 0 13px;
+  color: var(--ac-tx);
+  background: var(--ac);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background-color .12s ease, color .12s ease;
+}
+
+button:hover { background: var(--vscode-button-hoverBackground); }
+button:disabled { opacity: .45; cursor: default; }
+
+button.quiet {
+  color: var(--vscode-foreground);
+  background: transparent;
+  border-color: transparent;
+}
+
+button.quiet:hover { background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground)); }
+button.quiet.on { color: var(--ac); background: var(--ac-soft); }
+
+/* Outlined, not filled. A dialog here can offer five of these at once -- skip,
+ * skip all, overwrite all, cancel all -- and five filled slabs in a row give no
+ * clue which one is the answer to the question being asked. */
+button.secondary {
+  color: var(--tx);
+  background: transparent;
+  border-color: var(--line-strong);
+  font-weight: 400;
+}
+
+button.secondary:hover { background: var(--hover); }
+
+button:focus-visible,
+[tabindex]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ac-ring);
+}
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: var(--r-sm);
+  color: var(--tx-dim);
+}
+
+.icon-button:hover { color: var(--tx); }
+
+/* No `fill` here. The shared sprite sets fill and stroke on a group inside each
+ * symbol, which beats anything inherited from this element -- and it has to,
+ * because most of the set is stroked and two of them are filled. */
+.icon { width: 15px; height: 15px; flex: none; }
+
+/* -- panes -------------------------------------------------------------- */
+
+/*
+ * Rows are pinned explicitly because the progress panel is display:none when
+ * idle, and a hidden element generates no grid item at all -- without this the
+ * log divider and header would slide up into the wrong tracks.
+ */
+.panes { grid-row: 1; }
+.transfer-panel { grid-row: 2; }
+.log-resizer { grid-row: 3; }
+.log-wrap { grid-row: 4; }
+
+.panes {
+  display: grid;
+  grid-template-columns: var(--split) 5px minmax(180px, 1fr);
+  min-height: 0;
+}
+
+.pane {
+  --w-size: 86px;
+  --w-mod: 148px;
+
+  /*
+   * The name column has a floor and the other two do not.
+   *
+   * Grid takes the slack out of `fr` tracks before it touches a fixed one, so
+   * with the name as a bare `1fr` it was the only column that gave way: a
+   * narrow pane ended up as a list of `20...` and `sp...` beside two columns of
+   * perfectly legible timestamps. That is backwards. Which file it is comes
+   * first; how big it is and when it changed are what you look at second, and
+   * they are the ones that should be squeezed.
+   *
+   * Below the floor the pane scrolls sideways rather than truncating further --
+   * `--min-w` is the width at which every column is at its own minimum, so
+   * there is always a scroll position that shows a whole file name.
+   */
+  --w-name: 150px;
+  --cols: 24px minmax(var(--w-name), 1fr) minmax(0, var(--w-size)) minmax(0, var(--w-mod));
+  --min-w: calc(
+    24px + var(--w-name) + var(--w-size) + var(--w-mod) + 30px + 2 * var(--gutter)
+  );
+
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  /* The hidden overflow guarantees a pane can never paint over its neighbour. */
+  overflow: hidden;
+}
+
+/*
+ * The list scrolls both ways; the headings are dragged along.
+ *
+ * The pane itself was the horizontal scroller for a while, with the head, the
+ * headings and the list all holding the same minimum width. That put the
+ * list's vertical bar at the right-hand edge of the *content* rather than of
+ * the pane, so it was off screen until you had scrolled all the way right --
+ * which is the wrong place for the one bar you reach for constantly.
+ *
+ * With the list owning both axes, both of its bars sit against the edges of the
+ * box you can see, where bars belong. The cost is that the headings are no
+ * longer in the same scroller as the rows they name, so transfer.js keeps their
+ * `scrollLeft` equal. That is two lines, and it buys back the bar.
+ */
+.head-clip { overflow: hidden; }
+.col-head { min-width: var(--min-w); }
+
+/*
+ * No band behind it. The row is a label, a field and three buttons, and every
+ * one of those already reads as itself -- the field has a border and an inset
+ * fill, the buttons light up under the pointer. The tint was a second way of
+ * saying "this is a header" on top of the rule that already says it, and two
+ * panes each wearing a stripe put four horizontal bands across a window whose
+ * subject is the two lists underneath them.
+ */
+.pane-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  gap: 6px;
+  align-items: center;
+  padding: 7px var(--gutter);
+  border-bottom: 1px solid var(--hairline);
+}
+
+/* The active pane is marked by this label alone -- no frame around the pane. */
+.pane-label {
+  color: var(--vscode-descriptionForeground);
+  font-size: .92em;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: color .15s ease;
+}
+
+.pane.active .pane-label { color: var(--vscode-textLink-foreground); font-weight: 600; }
+
+.col-head {
+  display: grid;
+  grid-template-columns: var(--cols);
+  gap: 10px;
+  padding: 5px var(--gutter);
+  color: var(--vscode-descriptionForeground);
+  background: var(--vscode-editor-background);
+  border-bottom: 1px solid var(--hairline);
+  font-size: .85em;
+  font-weight: 400;
+  user-select: none;
+}
+
+.col-head > span {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+/* Sits over the gap to the left of a column, and resizes that column. */
+.grip {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  left: -10px;
+  width: 11px;
+  cursor: col-resize;
+}
+
+.grip::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 50%;
+  width: 1px;
+  background: var(--hairline);
+  opacity: 0;
+  transition: opacity .15s ease;
+}
+
+.col-head:hover .grip::after { opacity: 1; }
+.grip:hover::after { background: var(--vscode-focusBorder); width: 2px; opacity: 1; }
+
+.col-head > span:hover { color: var(--vscode-foreground); }
+/* The caret is the one glyph in the set that is a solid fill rather than an
+ * outline, because at 8px an outlined triangle is a smudge. */
+.col-head .sort { width: 8px; height: 8px; opacity: 0; transition: transform .15s ease; }
+.col-head .sorted .sort { opacity: 1; }
+.col-head .sorted.desc .sort { transform: rotate(180deg); }
+.col-head .num { justify-content: flex-end; }
+
+.list {
+  position: relative;
+  min-height: 0;
+  overflow: auto;
+  outline: none;
+}
+
+/* The sizer holds the full scroll height while only visible rows exist, and the
+ * full width of a row while the pane is narrower than one. */
+.sizer { position: relative; width: 100%; min-width: var(--min-w); }
+.window { position: absolute; top: 0; left: 0; right: 0; }
+
+.row {
+  display: grid;
+  grid-template-columns: var(--cols);
+  gap: 10px;
+  align-items: center;
+  height: var(--row-h);
+  padding: 0 var(--gutter);
+  cursor: default;
+  user-select: none;
+  white-space: nowrap;
+  border-radius: var(--r-sm);
+}
+
+.row:hover { background: var(--vscode-list-hoverBackground); }
+
+.row.selected {
+  color: var(--vscode-list-activeSelectionForeground);
+  background: var(--vscode-list-inactiveSelectionBackground);
+}
+
+/* The focused pane's selection gets the accent hairline as well as the tint,
+ * which is what distinguishes it from the other pane's remembered selection. */
+.pane.active .row.selected {
+  background: var(--ac-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ac) 30%, transparent);
+}
+
+/* The keyboard cursor. Only drawn while something is selected, so an idle pane
+ * shows no stray ring. */
+.row.lead { box-shadow: inset 0 0 0 1px var(--vscode-list-focusOutline, var(--vscode-focusBorder)); }
+.row.drop-target { background: var(--vscode-list-dropBackground, var(--vscode-list-hoverBackground)); }
+
+.row .icon { width: 15px; height: 15px; }
+.row.selected .icon,
+.row.selected .num { color: inherit; }
+.row .name { overflow: hidden; text-overflow: ellipsis; }
+.row.dir .name { font-weight: 500; }
+.row .num { text-align: right; font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground); }
+.row.selected .num { color: inherit; opacity: .8; }
+
+/* File kind colours, taken from the theme's chart palette so they follow it. */
+/*
+ * File kinds, on the syntax hues rather than the interface's semantic ones. A
+ * folder being blue and an archive purple is a taxonomy, not a judgement -- the
+ * red here means "binary", and borrowing --err for it would put the colour of
+ * failure on every .so in the tree.
+ */
+.ic-dir { color: var(--syn-blue); }
+.ic-code { color: var(--syn-green); }
+.ic-markup { color: var(--syn-orange); }
+.ic-data { color: var(--syn-yellow); }
+.ic-archive { color: var(--syn-purple); }
+.ic-binary { color: var(--syn-red); }
+.ic-doc { color: var(--tx-dim); }
+.ic-plain { color: var(--tx-dim); }
+
+.pane-empty {
+  padding: 16px var(--gutter);
+  color: var(--vscode-descriptionForeground);
+}
+
+/* Hairline dividers with a comfortable grab area around them. */
+.splitter,
+.log-resizer {
+  position: relative;
+  background: transparent;
+}
+
+.splitter { cursor: col-resize; }
+.log-resizer { cursor: row-resize; }
+
+.splitter::after,
+.log-resizer::after {
+  content: '';
+  position: absolute;
+  background: var(--hairline);
+  transition: background-color .15s ease;
+}
+
+.splitter::after { top: 0; bottom: 0; left: 50%; width: 1px; transform: translateX(-50%); }
+.log-resizer::after { left: 0; right: 0; top: 50%; height: 1px; transform: translateY(-50%); }
+.splitter:hover::after { background: var(--ac); width: 2px; }
+.log-resizer:hover::after { background: var(--ac); height: 2px; }
+
+.panes.dragging .row { cursor: copy; }
+
+/* -- transfer progress -------------------------------------------------- */
+
+.transfer-panel {
+  display: none;
+  gap: 6px;
+  padding: 10px var(--gutter);
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  border-top: 1px solid var(--hairline);
+}
+
+.transfer-panel.open { display: grid; }
+
+.bar-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.bar-row .label { color: var(--vscode-foreground); white-space: nowrap; }
+.bar-row .label.name { min-width: 0; max-width: 30ch; overflow: hidden; text-overflow: ellipsis; }
+.bar-row .meta { white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+/*
+ * Both of these are spans, so they must be blockified explicitly: an inline box
+ * ignores width and height outright, which would leave the fill invisible and
+ * stretch the track to a line box.
+ */
+.track {
+  display: block;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--line-strong);
+  overflow: hidden;
+}
+
+.bar-row.overall .track { height: 7px; }
+
+.fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--ac);
+  transition: width .12s linear;
+}
+.bar-row.current .fill { opacity: .72; }
+.transfer-cancel { min-height: 22px; padding: 0 10px; font-size: var(--fs-xs); }
+
+/* -- log ---------------------------------------------------------------- */
+
+/* No title bar over the log; the clear action floats in the top-right corner. */
+.log-wrap {
+  position: relative;
+  min-height: 0;
+  background: var(--vscode-terminal-background, var(--vscode-editor-background));
+}
+
+.log {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  padding: 8px var(--gutter) 10px;
+  color: var(--vscode-terminal-foreground, var(--vscode-foreground));
+  font-family: var(--vscode-editor-font-family);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.log-clear {
+  position: absolute;
+  top: 6px;
+  right: 12px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--tx-dim);
+  background: var(--bg-base);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  opacity: .55;
+  transition: opacity .15s ease, color .15s ease, background-color .15s ease;
+}
+
+.log-wrap:hover .log-clear { opacity: 1; }
+
+.log-clear:hover {
+  color: var(--err);
+  background: var(--hover);
+  opacity: 1;
+}
+
+.log-line { display: flex; gap: 10px; padding: 0 5px; border-radius: 4px; white-space: pre-wrap; word-break: break-word; }
+.log-line:hover { background: var(--vscode-list-hoverBackground); }
+.log-time { flex: none; opacity: .7; font-variant-numeric: tabular-nums; user-select: none; }
+.log-msg { flex: 1 1 auto; min-width: 0; }
+
+/* -- context menu ------------------------------------------------------- */
+
+.menu {
+  position: fixed;
+  display: none;
+  z-index: var(--z-menu);
+  min-width: 168px;
+  padding: 5px;
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-pop);
+}
+
+.menu.open { display: block; }
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.menu-item .icon { opacity: .75; }
+.menu-item:hover .icon { opacity: 1; }
+
+/* A menu row is a single line of text, so the selection here is a solid fill --
+ * the argument against filling the two-line rows in the file list does not
+ * apply, and a tint would be too quiet for a menu. */
+.menu-item:hover {
+  color: var(--ac-tx);
+  background: var(--ac);
+}
+
+.menu-item.danger { color: var(--err); }
+.menu-item.danger:hover { color: var(--err-tx); background: var(--err); }
+.menu-sep { height: 1px; margin: 5px 4px; background: var(--line); }
+
+/* -- preview overlay ---------------------------------------------------- */
+
+.preview {
+  position: fixed;
+  inset: 24px;
+  display: none;
+  grid-template-rows: auto minmax(0, 1fr);
+  z-index: var(--z-overlay);
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-base);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-dlg);
+}
+
+.preview.open { display: grid; }
+
+.preview-bar {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto auto auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.preview-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); }
+.font-control { display: inline-grid; grid-template-columns: auto 42px auto; gap: 4px; align-items: center; }
+.font-control button { min-width: 26px; height: 24px; padding: 0 7px; }
+.font-size { text-align: center; font-size: var(--fs-sm); color: var(--tx-dim); font-variant-numeric: tabular-nums; }
+
+.code {
+  overflow: auto;
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+  font-size: var(--preview-font-size, 12px);
+  line-height: 1.35;
+}
+
+.code-line { display: grid; grid-template-columns: 54px minmax(0, 1fr); min-height: 18px; }
+
+.line-number {
+  padding: 0 10px 0 6px;
+  text-align: right;
+  user-select: none;
+  color: var(--tx-faint);
+  background: var(--bg-base);
+  border-right: 1px solid var(--line);
+}
+
+.line-code { padding: 0 10px; white-space: pre; }
+
+/* Token colours now live in media/shared/highlight.css, loaded alongside this file. */
+
+.csv-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+
+.csv-table th,
+.csv-table td { max-width: 320px; padding: 4px 8px; border: 1px solid var(--vscode-panel-border); white-space: pre-wrap; vertical-align: top; }
+.csv-table th { position: sticky; top: 0; z-index: 1; background: var(--vscode-sideBar-background); font-weight: 700; }
+
+.csv-table .row-index {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  min-width: 54px;
+  text-align: right;
+  color: var(--vscode-editorLineNumber-foreground);
+  background: var(--vscode-editorGutter-background, var(--vscode-editor-background));
+}
+
+.csv-table th.row-index { z-index: 3; background: var(--vscode-sideBar-background); }
+.unsupported-preview { display: grid; place-items: center; min-height: 220px; padding: 24px; color: var(--vscode-descriptionForeground); text-align: center; }
+
+/* -- conflict dialog ---------------------------------------------------- */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  display: none;
+  place-items: center;
+  z-index: var(--z-modal);
+  padding: 20px;
+  background: rgba(6, 8, 14, .55);
+}
+
+:root[data-theme="light"] .modal { background: rgba(24, 28, 48, .28); }
+
+.modal.open { display: grid; }
+
+.dialog {
+  width: min(560px, 100%);
+  padding: 20px 22px 16px;
+  background: var(--bg-float);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-dlg);
+}
+
+.dialog h2 { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
+.dialog .question { margin: 0 0 12px; word-break: break-all; color: var(--tx-dim); line-height: 1.6; }
+
+/* Amber, and set as a bar rather than a line of coloured text: it is the one
+ * thing in this dialog that says the two files are not what they look like. */
+.dialog .warning {
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border-left: 2px solid var(--warn);
+  border-radius: var(--r-sm);
+  background: var(--warn-soft);
+  color: var(--tx);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+}
+
+.compare { display: grid; gap: 6px; margin-bottom: 14px; font-size: var(--fs-sm); }
+
+.compare div {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 10px;
+  padding: 7px 10px;
+  background: var(--bg-inset);
+  border-left: 2px solid var(--line-strong);
+  border-radius: var(--r-sm);
+}
+
+.compare .tag { color: var(--tx-dim); font-weight: 600; }
+.compare .detail { white-space: pre-wrap; word-break: break-all; }
+.dialog-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: center; }
+.dialog-actions .spacer { flex: 1 1 auto; }
+.remaining { color: var(--tx-dim); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}

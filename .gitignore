@@ -1,0 +1,16 @@
+/src-tauri/target/
+/src-tauri/gen/
+node_modules/
+
+# Every runtime file lives under the OS data directory (`dirs::data_dir()`),
+# never in the repo. Listed anyway so a copy made for debugging can never be
+# committed -- `secrets.json` in particular is the fallback the keychain-less
+# path writes to.
+tshell.config.json
+tshell.schemes.json
+secrets.json
+trusted.json
+memory/
+skills/
+chats/
+logs/

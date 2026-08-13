@@ -1,0 +1,116 @@
+* { box-sizing: border-box; }
+
+html, body { width: 100%; height: 100%; }
+
+body {
+  position: relative;
+  margin: 0;
+  overflow: hidden;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  font-family: var(--vscode-font-family);
+}
+
+#terminal {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  background: var(--vscode-editor-background);
+  overflow: hidden;
+}
+
+.xterm { height: 100%; padding: 0; }
+.xterm .xterm-viewport, .xterm .xterm-screen { background: var(--vscode-editor-background) !important; }
+
+/*
+ * No native scrollbar anywhere on this page.
+ *
+ * There is exactly one thing to scroll here and xterm does not scroll it with a
+ * native bar: the scrollback lives in its own buffer and what you drag is a div
+ * inside `.xterm-scrollable-element`, styled below. Every native bar on this
+ * page is therefore a bar for something that is not being scrolled.
+ *
+ * One of them was showing. `.xterm-viewport` is `overflow-y: scroll` -- not
+ * `auto` -- so a track is reserved whatever happens, and the shared sheet makes
+ * that track 10px. It is meant to stay empty because the viewport is not meant
+ * to overflow; it overflows anyway, because a row is 15.6px (13px at a line
+ * height of 1.2) and a whole number of those in a pixel-height box leaves a
+ * fraction over almost every time. A one-pixel overflow gives a thumb nearly
+ * the full height of the terminal: a pale line down the screen, immediately
+ * left of the real scrollbar, following nothing and draggable by nobody.
+ *
+ * Written against everything rather than against that one element, because
+ * which element reserves the track is xterm's business and has changed between
+ * its versions. Nothing on this page has a native bar worth keeping, so there
+ * is no need to be precise about it.
+ */
+::-webkit-scrollbar { width: 0; height: 0; }
+
+/*
+ * The overview ruler, which was drawing the white line down the right of every
+ * terminal.
+ *
+ * It is only switched on at all because setting its width is how xterm's
+ * scrollbar width gets set (see terminal.js), and with no decorations
+ * registered there is nothing for it to show. It draws anyway: before any
+ * decoration is considered it fills a one-pixel column at x=0 of its own canvas
+ * with `overviewRulerBorder`, and nothing was passing that colour in, so xterm
+ * fell back to the foreground -- `#E7EAF2`. A near-white hairline, full height,
+ * immediately left of the scrollbar, because the canvas is 10px wide and pinned
+ * to `right: 0`.
+ *
+ * `!important` because xterm assigns `display` *inline* whenever the buffer
+ * changes -- `block` for the normal buffer, `none` for the alternate one -- and
+ * a plain rule here loses to that. This is the second of the two places in the
+ * project that earns one; the other is directly above.
+ *
+ * terminal.js also passes `overviewRulerBorder` now, so the colour is right
+ * even where this rule is not reached.
+ */
+.xterm-decoration-overview-ruler { display: none !important; }
+
+/*
+ * The terminal's scrollbar.
+ *
+ * `.xterm-viewport` does say `overflow-y: scroll`, but its scrollbar is never
+ * the one you see: xterm keeps the scrollback in its own buffer, the viewport
+ * never actually overflows, and what is drawn instead is a div inside
+ * `.xterm-scrollable-element`, inherited from VS Code's scrollbar. So none of
+ * the `::-webkit-scrollbar` rules in shared/components.css apply here -- there
+ * is no native scrollbar for them to reach -- and neither would
+ * `scrollbar-width`. Measured before believing it: `offsetWidth - clientWidth`
+ * on the viewport is 10px, exactly what the shared sheet asks for, while the
+ * bar on screen was 14.
+ *
+ * Its width is an xterm option (`overviewRuler.width`, set in terminal.js) and
+ * its colour comes through the theme object. What is left for CSS is the shape:
+ * the same 2px inset and round ends the shared thumb has, so a terminal and the
+ * file list beside it are scrolled by the same-looking control.
+ */
+.xterm .xterm-scrollable-element > .scrollbar > .slider {
+  /* The 2px border has to come out of the 10px xterm sets inline, not add to
+   * it, or the bar gets wider than the one it is meant to match. */
+  box-sizing: border-box;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  /*
+   * `!important` earns its place exactly once in this project, here.
+   *
+   * xterm paints the slider by assigning the `background` *shorthand* inline,
+   * and a shorthand resets every longhand it covers -- including background-clip,
+   * back to `border-box`. Being inline, that reset outranks an ordinary rule
+   * here, so the transparent border was being painted over instead of showing
+   * through and the slider stayed a solid 10px slab. An important declaration
+   * in an author sheet is the one thing that outranks a plain inline one.
+   */
+  background-clip: content-box !important;
+}
+
+/*
+ * The two floating actions that used to sit here -- the assistant and the file
+ * transfer -- are now buttons on the window's title bar. A terminal page draws
+ * nothing but the terminal.
+ */

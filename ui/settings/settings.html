@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; connect-src 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="../shared/theme.css">
+  <link rel="stylesheet" href="../shared/components.css">
+  <script src="../shared/scrollbars.js"></script>
+  <script src="../shared/schemes.js"></script>
+  <script src="../shared/host.js"></script>
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <div class="page">
+    <h1 id="page-title"></h1>
+
+    <section class="group">
+      <h2 id="appearance-title"></h2>
+      <div class="row">
+        <div class="label">
+          <span id="language-label"></span>
+          <span id="language-hint" class="hint"></span>
+        </div>
+        <div class="c-seg" id="language-choice" role="group"></div>
+      </div>
+      <div class="row">
+        <div class="label">
+          <span id="theme-label"></span>
+          <span id="theme-hint" class="hint"></span>
+        </div>
+        <div class="c-seg" id="theme-choice" role="group"></div>
+      </div>
+
+      <!--
+        The terminal's appearance, as schemes.
+
+        Stacked rather than a control on the right like the two above: the
+        choice is the smallest part of it. The rest is what the choice stands
+        for -- a preview, a font, and twenty colours -- and none of that fits
+        opposite a label. Everything here takes effect on every open terminal as
+        it is edited, so what is below the picker is a preview of something
+        already true.
+      -->
+      <div class="row stacked scheme-row">
+        <div class="label">
+          <span id="scheme-label"></span>
+          <span id="scheme-hint" class="hint"></span>
+        </div>
+
+        <!-- Shown only when the schemes file is on disk but would not parse.
+             While it is up, nothing here is saved: the built-in schemes still
+             paint, and the file is left exactly as it is. -->
+        <div id="scheme-error" class="notice" hidden></div>
+
+        <div class="scheme-bar">
+          <select class="c-field scheme-pick" id="scheme-pick"></select>
+          <button type="button" class="c-btn" id="scheme-new"></button>
+          <button type="button" class="c-btn" id="scheme-copy"></button>
+          <button type="button" class="c-btn" id="scheme-reset"></button>
+          <button type="button" class="c-btn" id="scheme-delete"></button>
+        </div>
+
+        <div class="scheme-fields">
+          <label class="field">
+            <span class="field-name" id="scheme-name-label"></span>
+            <input class="c-field" type="text" id="scheme-name" spellcheck="false" autocomplete="off">
+          </label>
+          <label class="field">
+            <span class="field-name" id="scheme-font-label"></span>
+            <!-- A list, not a closed dropdown: the suggestions are what this
+                 machine has, and a font stack with fallbacks in it is still a
+                 legitimate thing to type. -->
+            <input class="c-field" type="text" id="scheme-font" list="scheme-fonts"
+                   spellcheck="false" autocomplete="off">
+            <datalist id="scheme-fonts"></datalist>
+          </label>
+          <label class="field field-narrow">
+            <span class="field-name" id="scheme-size-label"></span>
+            <input class="c-field" type="number" id="scheme-size" min="6" max="48" step="0.5">
+          </label>
+        </div>
+
+        <!-- What the sixteen actually look like next to each other, on this
+             scheme's own background and in this scheme's own font. A row of
+             swatches answers "which red is it"; only this answers "can I read
+             a build log in it". -->
+        <div class="scheme-preview" id="scheme-preview" aria-hidden="true"></div>
+
+        <div class="swatches" id="scheme-ansi"></div>
+
+        <div class="swatch-section">
+          <div class="swatch-section-title" id="scheme-extra-title"></div>
+          <div class="swatches swatches-wide" id="scheme-extra"></div>
+        </div>
+      </div>
+    </section>
+
+    <!--
+      The assistant's settings that have no home in the chat panel.
+
+      Its toolbar already owns the four a user changes while working -- the
+      model, the mode, thinking, and which skills are on -- and those stay there,
+      next to the conversation they apply to. What lands here is the rest: the
+      budgets and limits nobody adjusts mid-task, and the log, which is a switch
+      you throw to look into a problem rather than one you live with.
+    -->
+    <!--
+      Four sub-groups under one switch.
+
+      `data-needs` names the flag a block depends on: while that flag is off,
+      every control inside is disabled and the words above it fade. Greyed
+      rather than hidden, because a row that vanishes takes its own explanation
+      with it -- the reason it is unavailable is the switch above it, and that
+      only reads while both are on screen.
+
+      The switch that governs a block sits *outside* the block it governs.
+      Inside it would disable itself the moment it was turned off, and there
+      would be no way back.
+    -->
+    <section class="group" id="ai-section" hidden>
+      <h2 id="ai-title"></h2>
+
+      <div class="row">
+        <div class="label">
+          <span id="ai-enabled-label"></span>
+          <span id="ai-enabled-hint" class="hint"></span>
+        </div>
+        <div class="c-seg" data-toggle="enabled" role="group"></div>
+      </div>
+
+      <div class="subgroup" data-needs="enabled">
+        <h3 class="subgroup-title" id="ai-general-title"></h3>
+
+        <div class="row">
+          <div class="label">
+            <span id="ai-steps-label"></span>
+            <span id="ai-steps-hint" class="hint"></span>
+          </div>
+          <input class="c-field field-number" type="number" min="0" max="1000" step="1"
+                 data-number="agent.maxSteps">
+        </div>
+
+        <div class="row">
+          <div class="label">
+            <span id="ai-timeout-label"></span>
+            <span id="ai-timeout-hint" class="hint"></span>
+          </div>
+          <input class="c-field field-number" type="number" min="1" max="600" step="1"
+                 data-seconds="agent.commandTimeoutMs">
+        </div>
+
+        <div class="row">
+          <div class="label">
+            <span id="ai-output-label"></span>
+            <span id="ai-output-hint" class="hint"></span>
+          </div>
+          <input class="c-field field-number" type="number" min="500" max="60000" step="500"
+                 data-number="agent.outputBudget">
+        </div>
+
+        <div class="row">
+          <div class="label">
+            <span id="ai-context-label"></span>
+            <span id="ai-context-hint" class="hint"></span>
+          </div>
+          <input class="c-field field-number" type="number" min="0" max="400000" step="1000"
+                 data-number="agent.contextBudget">
+        </div>
+
+        <div class="row">
+          <div class="label">
+            <span id="ai-terminal-label"></span>
+            <span id="ai-terminal-hint" class="hint"></span>
+          </div>
+          <div class="c-seg" data-toggle="sendTerminalOutput" role="group"></div>
+        </div>
+
+        <!-- Only means anything while the switch above it is on, so it is only
+             available while the switch above it is on. -->
+        <div class="row" data-needs="sendTerminalOutput">
+          <div class="label">
+            <span id="ai-lines-label"></span>
+            <span id="ai-lines-hint" class="hint"></span>
+          </div>
+          <input class="c-field field-number" type="number" min="1" max="200" step="1"
+                 data-number="outputLines">
+        </div>
+
+        <div class="row">
+          <div class="label">
+            <span id="ai-readonly-label"></span>
+            <span id="ai-readonly-hint" class="hint"></span>
+          </div>
+          <input class="c-field field-text" type="text" id="ai-readonly"
+                 spellcheck="false" autocomplete="off">
+        </div>
+      </div>
+
+      <div class="subgroup" data-needs="enabled">
+        <h3 class="subgroup-title" id="ai-memory-title"></h3>
+
+        <div class="row">
+          <div class="label">
+            <span id="ai-memory-label"></span>
+            <span id="ai-memory-hint" class="hint"></span>
+          </div>
+          <div class="c-seg" data-toggle="memory.enabled" role="group"></div>
+        </div>
+
+        <div class="row" data-needs="memory.enabled">
+          <div class="label">
+            <span id="ai-global-label"></span>
+            <span id="ai-global-hint" class="hint"></span>
+          </div>
+          <input class="c-field field-number" type="number" min="0" max="20000" step="100"
+                 data-number="memory.globalBudget">
+        </div>
+
+        <div class="row" data-needs="memory.enabled">
+          <div class="label">
+            <span id="ai-server-label"></span>
+            <span id="ai-server-hint" class="hint"></span>
+          </div>
+          <input class="c-field field-number" type="number" min="0" max="20000" step="100"
+                 data-number="memory.serverBudget">
+        </div>
+      </div>
+
+      <div class="subgroup" data-needs="enabled">
+        <h3 class="subgroup-title" id="ai-skills-title"></h3>
+
+        <div class="row">
+          <div class="label">
+            <span id="ai-skills-label"></span>
+            <span id="ai-skills-hint" class="hint"></span>
+          </div>
+          <div class="c-seg" data-toggle="skills.enabled" role="group"></div>
+        </div>
+
+        <div class="row" data-needs="skills.enabled">
+          <div class="label">
+            <span id="ai-maxchars-label"></span>
+            <span id="ai-maxchars-hint" class="hint"></span>
+          </div>
+          <input class="c-field field-number" type="number" min="500" max="200000" step="500"
+                 data-number="skills.maxChars">
+        </div>
+      </div>
+
+      <div class="subgroup" data-needs="enabled">
+        <h3 class="subgroup-title" id="ai-log-title"></h3>
+
+        <div class="row">
+          <div class="label">
+            <span id="ai-log-label"></span>
+            <span id="ai-log-hint" class="hint"></span>
+          </div>
+          <div class="c-seg" data-toggle="log.enabled" role="group"></div>
+        </div>
+
+        <div class="row" data-needs="log.enabled">
+          <div class="label">
+            <span id="ai-keep-label"></span>
+            <span id="ai-keep-hint" class="hint"></span>
+          </div>
+          <input class="c-field field-number" type="number" min="1" max="500" step="1"
+                 data-number="log.keep">
+        </div>
+      </div>
+    </section>
+
+    <!--
+      Where your secrets and your config actually are. This is not a preference
+      -- there is nothing here to change -- it is a statement, and it exists
+      because one of the two answers is worse than the other and the user is
+      entitled to know which one they got.
+    -->
+    <section class="group">
+      <h2 id="storage-title"></h2>
+      <div class="row">
+        <div class="label">
+          <span id="secrets-label"></span>
+          <span id="secrets-hint" class="hint"></span>
+        </div>
+        <span id="secrets-value" class="value"></span>
+      </div>
+      <div id="secrets-warning" class="notice" hidden></div>
+      <div class="row stacked">
+        <div class="label">
+          <span id="config-label"></span>
+          <span id="config-value" class="hint path"></span>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="settings.js"></script>
+</body>
+</html>

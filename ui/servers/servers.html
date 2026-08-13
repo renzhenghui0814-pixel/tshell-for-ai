@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; connect-src 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="../shared/theme.css">
+  <link rel="stylesheet" href="../shared/components.css">
+  <script src="../shared/scrollbars.js"></script>
+  <script src="../shared/host.js"></script>
+  <link rel="stylesheet" href="servers.css">
+</head>
+<body>
+  <!-- Must stay first: it puts the icon sprite in the document before the
+       parser reaches any `<use>` below it. See shared/icons.js. -->
+  <script src="../shared/icons.js"></script>
+
+  <!--
+    A header of nothing but its title, and a box to narrow the list with.
+
+    Adding a group and opening the config file both live on the right-click menu
+    of the blank space below, which is where every other action in this panel
+    already is; they are not repeated as buttons up here.
+  -->
+  <div class="top">
+    <div id="title" class="title" data-i18n="serversTitle"></div>
+  </div>
+
+  <!--
+    Filtering, not searching: it narrows what is already on screen rather than
+    going anywhere. Matches on the display name, the host and the username at
+    once, because which of those a person remembers a machine by varies by the
+    machine.
+  -->
+  <div class="search">
+    <svg class="search-glyph" viewBox="0 0 16 16" aria-hidden="true"><use href="#i-search"/></svg>
+    <input id="search" class="search-input" type="text" autocomplete="off" spellcheck="false"
+           data-i18n-placeholder="searchServers" data-i18n-title="searchServers">
+    <button type="button" id="searchClear" class="search-clear" hidden>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><use href="#i-close"/></svg>
+    </button>
+  </div>
+
+  <div id="groups" class="tree"></div>
+  <div id="status" class="status"></div>
+
+  <div id="serverModal" class="modal">
+    <div class="dialog">
+      <!-- Says "add" or "edit" depending on what it was opened for. -->
+      <div id="serverDialogTitle" class="dialog-title"></div>
+      <input id="serverId" type="hidden">
+      <input id="serverGroupId" type="hidden">
+
+      <!--
+        Three sections rather than one run of eleven fields. The run was in the
+        order the code happened to need them; these are the three questions a
+        person actually answers -- what to call it, where it is, and how to get
+        in -- and the third one changes shape depending on the second.
+      -->
+      <div class="form-section">
+        <label id="serverNameLabel" class="c-label" for="serverName" data-i18n="name"></label>
+        <input id="serverName" class="c-field" data-i18n-placeholder="serverPlaceholder">
+      </div>
+
+      <div class="form-section">
+        <div class="form-row host-row">
+          <div class="grow">
+            <label id="hostLabel" class="c-label" for="host" data-i18n="host"></label>
+            <input id="host" class="c-field" placeholder="192.168.1.10">
+          </div>
+          <div class="port">
+            <label id="portLabel" class="c-label" for="port" data-i18n="port"></label>
+            <input id="port" class="c-field" type="number" value="22">
+          </div>
+        </div>
+        <label id="usernameLabel" class="c-label" for="username" data-i18n="username"></label>
+        <input id="username" class="c-field" placeholder="root / ubuntu">
+      </div>
+
+      <div class="form-section">
+        <label id="authTypeLabel" class="c-label" for="authType" data-i18n="authType"></label>
+        <select id="authType" class="c-field">
+          <option value="password" data-i18n="passwordAuth"></option>
+          <option value="privateKey" data-i18n="privateKeyAuth"></option>
+        </select>
+
+        <label id="passwordLabel" class="c-label" for="password" data-i18n="password"></label>
+        <input id="password" class="c-field" type="password">
+
+        <label id="privateKeyPathLabel" class="c-label" for="privateKeyPath" data-i18n="privateKeyPath"></label>
+        <input id="privateKeyPath" class="c-field" placeholder="C:\Users\you\.ssh\id_rsa">
+
+        <label id="privateKeyPassphraseLabel" class="c-label" for="privateKeyPassphrase" data-i18n="privateKeyPassphrase"></label>
+        <input id="privateKeyPassphrase" class="c-field" type="password">
+      </div>
+
+      <div class="form-section">
+        <label id="encodingLabel" class="c-label" for="encoding" data-i18n="encoding"></label>
+        <!-- Encoding names are the names of the encodings, in every language. -->
+        <select id="encoding" class="c-field">
+          <option value="utf-8">UTF-8</option>
+          <option value="gb18030">GB2312 / GBK</option>
+        </select>
+      </div>
+
+      <div class="actions">
+        <button id="cancelServer" class="c-btn" data-i18n="cancel"></button>
+        <button id="saveServer" class="c-btn c-btn-primary" data-i18n="save"></button>
+      </div>
+    </div>
+  </div>
+
+  <div id="contextMenu" class="context-menu c-menu"></div>
+  <script src="servers.js"></script>
+</body>
+</html>

@@ -1,0 +1,353 @@
+/*
+ * The server panel: a filter box and a tree of groups.
+ *
+ * It sits on `--bg-elev`, the same surface as the title bar and the tab strip
+ * above it, so the whole frame of the window reads as one piece and the pane
+ * area is the hole in the middle where the work happens.
+ *
+ * Buttons, fields, menus and the dialog come from shared/components.css. What is
+ * left here is this panel's own shapes: the tree, the two-line server row, and
+ * the filter.
+ */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  padding: 12px 10px 18px;
+  color: var(--tx);
+  background: var(--bg-elev);
+  font-family: var(--font);
+  font-size: var(--fs);
+}
+
+/* -- header and filter ----------------------------------------------------- */
+
+.top {
+  display: flex;
+  align-items: center;
+  padding: 2px 8px 12px;
+}
+
+/* Set as a label rather than a heading: it names the panel once and then gets
+ * out of the way of the list, which is the thing being read. */
+.title {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--tx-dim);
+}
+
+.search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin: 0 2px 14px;
+}
+
+.search-glyph {
+  position: absolute;
+  left: 9px;
+  width: 13px;
+  height: 13px;
+  color: var(--tx-faint);
+  pointer-events: none;
+}
+
+.search-input {
+  width: 100%;
+  height: 30px;
+  padding: 0 28px 0 28px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  color: var(--tx);
+  font: inherit;
+  font-size: var(--fs-sm);
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+
+.search-input::placeholder { color: var(--tx-dim); }
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--ac);
+  box-shadow: 0 0 0 2px var(--ac-ring);
+}
+
+.search-input:focus + .search-clear,
+.search-input:not(:placeholder-shown) + .search-clear { color: var(--tx-dim); }
+
+.search-clear {
+  position: absolute;
+  right: 5px;
+  width: 19px;
+  height: 19px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--tx-faint);
+  cursor: pointer;
+}
+
+.search-clear svg { width: 11px; height: 11px; }
+.search-clear:hover { background: var(--hover); color: var(--tx); }
+.search-clear[hidden] { display: none; }
+
+/* -- tree ------------------------------------------------------------------ */
+
+.tree { display: grid; gap: 4px; }
+details.group { padding: 1px 0; }
+
+summary.group-head {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  gap: 7px;
+  align-items: center;
+  list-style: none;
+  cursor: pointer;
+  padding: 7px 8px;
+  border-radius: var(--r-sm);
+  transition: background-color .12s ease;
+}
+
+summary.group-head:hover { background: var(--hover); }
+summary.group-head::-webkit-details-marker { display: none; }
+
+summary.group-head:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ac-ring);
+}
+
+.chevron {
+  width: 13px;
+  height: 13px;
+  color: var(--tx-faint);
+  transition: transform .16s ease;
+}
+
+details[open] > .group-head .chevron { transform: rotate(90deg); }
+
+.group-name {
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  letter-spacing: .01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A property of the group, not a warning about it -- hence a tinted accent pill
+ * rather than the grey slug it was. */
+.group-count {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  background: var(--ac-soft);
+  color: var(--ac);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.children {
+  margin-left: 8px;
+  padding: 3px 0 6px;
+  display: grid;
+  gap: 3px;
+}
+
+/* -- dragging --------------------------------------------------------------- */
+
+/*
+ * Where the row would land, drawn as a line between two rows rather than as a
+ * highlight on one of them. The question a drag is asking is "between which
+ * two?", and a filled row answers a different question -- "which one?" -- which
+ * is the one the drop menu answers when you land on a group.
+ *
+ * `--ac` on a 2px rule is a non-text use, so the 4.5:1 floor does not apply to
+ * it; it only has to be findable against `--bg-elev`, and it is.
+ */
+.dragging { opacity: .45; }
+
+.drop-before,
+.drop-after,
+.drop-into { position: relative; }
+
+.drop-before::before,
+.drop-after::after,
+.drop-into::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--ac);
+  pointer-events: none;
+}
+
+.drop-before::before { top: -2px; }
+.drop-after::after { bottom: -2px; }
+
+/* Into a group: under its header, which is where its first server would go. */
+.drop-into::after {
+  bottom: -3px;
+  left: 8px;
+}
+
+/* -- server row ------------------------------------------------------------ */
+
+.server {
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 10px;
+  border-radius: var(--r-sm);
+  background: transparent;
+  transition: background-color .12s ease;
+}
+
+.server:hover { background: var(--hover); }
+
+.server:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ac-ring);
+}
+
+/*
+ * Selected is a tint and a hairline, not a solid fill.
+ *
+ * The row is two lines -- the name, and `root@10.0.0.11` under it in the dim
+ * colour. Filled solid with the accent, that second line has to be dragged up
+ * to near-white to survive, and at that point it is no longer a second line:
+ * both read at once and the row has lost the hierarchy that made it scannable.
+ * This marks the row just as clearly and leaves both levels where they were.
+ */
+.server.selected {
+  background: var(--ac-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ac) 34%, transparent);
+}
+
+.server-main { min-width: 0; cursor: pointer; }
+
+/* A small status dot reads faster in a dense list than an outlined box. */
+.server-icon {
+  justify-self: center;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.server-name {
+  font-size: var(--fs);
+  font-weight: 500;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-meta {
+  margin-top: 2px;
+  color: var(--tx-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server.selected .server-meta { color: var(--tx-dim); }
+
+.empty {
+  color: var(--tx-dim);
+  padding: 6px 8px;
+  font-size: var(--fs-sm);
+}
+
+.status {
+  margin-top: 10px;
+  padding: 0 2px;
+  color: var(--err);
+  min-height: 18px;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+/* -- server dialog --------------------------------------------------------- */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  display: none;
+  place-items: center;
+  background: rgba(6, 8, 14, .55);
+  padding: 12px;
+  z-index: 40;
+}
+
+:root[data-theme="light"] .modal { background: rgba(24, 28, 48, .28); }
+
+.modal.open { display: grid; }
+
+.dialog {
+  width: min(384px, 100%);
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  padding: 20px;
+  border-radius: var(--r-lg);
+  background: var(--bg-float);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--sh-dlg);
+}
+
+.dialog-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+/* The gap between two questions is bigger than the gap between two fields that
+ * answer the same one. That spacing is the only thing grouping them -- no rules,
+ * no boxes, which at this width would be four nested frames. */
+.form-section { margin-bottom: 18px; }
+.form-section .c-label { margin-top: 12px; }
+.form-section .c-label:first-child { margin-top: 0; }
+
+.form-row { display: flex; gap: 8px; align-items: flex-end; }
+.form-row .grow { flex: 1; min-width: 0; }
+.host-row .port { width: 78px; flex: none; }
+
+/* Same width for both, so the pair does not jump when the dialog is opened for
+ * an edit rather than an add. */
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.actions .c-btn { min-width: 82px; }
+
+/* -- context menu ---------------------------------------------------------- */
+
+.context-menu {
+  position: fixed;
+  display: none;
+  z-index: 50;
+}
+
+.context-menu.open { display: block; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

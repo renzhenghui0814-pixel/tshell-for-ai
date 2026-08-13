@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; connect-src 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="../shared/theme.css">
+  <script src="../shared/host.js"></script>
+  <link rel="stylesheet" href="../shared/highlight.css">
+  <link rel="stylesheet" href="../shared/components.css">
+  <script src="../shared/scrollbars.js"></script>
+  <link rel="stylesheet" href="chat.css">
+</head>
+<body>
+  <!--
+    Must stay first: it puts the shared icon sprite in the document before the
+    parser reaches any `<use>` below it.
+
+    Fourteen symbols used to be declared here, and thirteen more on the transfer
+    page, with a pencil and a bin drawn twice over. They are all in shared/ now,
+    and every `href="#i-..."` on this page and in chat.js -- including the ones
+    chat.js swaps at runtime, `#i-send` for `#i-stop` and the three mode glyphs
+    -- resolves to that one sprite without being touched.
+  -->
+  <script src="../shared/icons.js"></script>
+
+  <!--
+    No title bar. The tab already says which conversation this is and which
+    machine it is on, in the one place VS Code puts that, and a strip repeating
+    it took a row off the top of every panel to do so. What was in it -- the
+    three things you do to a conversation rather than in one -- has moved down
+    beside the thing you do them around.
+  -->
+  <div class="thread" id="thread" tabindex="0">
+    <!--
+      The mark goes in on its own element rather than inside the paragraph:
+      applyStrings() sets `textContent` on everything carrying `data-i18n`, so
+      anything sharing that node would be wiped the moment the language is
+      applied. chat.js fills `#emptyMark` from window.tshellMark().
+    -->
+    <div class="empty" id="empty">
+      <div class="empty-mark" id="emptyMark"></div>
+      <p class="empty-text" data-i18n="agentEmpty"></p>
+    </div>
+  </div>
+
+  <!--
+    One control, not a text box with a toolbar under it: the border is on the box
+    and the two halves sit inside it, so what the eye reads is a single place
+    where writing happens and what it costs is reported.
+
+    No rule between it and the thread either. The thread ends where the box
+    begins, and a line drawn between them only says something both already say.
+  -->
+  <footer class="composer">
+    <div class="composer-box" id="composerBox">
+      <textarea id="input" rows="1" spellcheck="false" data-i18n-placeholder="agentPlaceholder"></textarea>
+      <!--
+        Everything you do to a conversation, on one row under the thing you say
+        into it: start another, go back to an old one, open what it remembers,
+        decide whether to watch it think. The cost follows them, reading left to
+        right as one group of settings and their running total.
+
+        The right end is what the next message will be: which model answers it,
+        and the button that sends it.
+      -->
+      <div class="composer-status">
+        <button class="icon-button" id="newChat" data-i18n-title="agentNewChat">
+          <svg class="icon"><use href="#i-plus"/></svg>
+        </button>
+        <button class="icon-button" id="history" data-i18n-title="agentHistory">
+          <svg class="icon"><use href="#i-history"/></svg>
+        </button>
+        <button class="icon-button" id="memory" data-i18n-title="memoryTitle">
+          <svg class="icon"><use href="#i-memory"/></svg>
+        </button>
+        <button class="icon-button" id="skills" data-i18n-title="skillTitle">
+          <svg class="icon"><use href="#i-skill"/></svg>
+        </button>
+        <button class="icon-button" id="think" aria-pressed="false" data-i18n-title="agentThinkMode">
+          <svg class="icon"><use href="#i-think"/></svg>
+        </button>
+        <!--
+          How much gets asked, and the list the middle mode reads. The glyph on
+          the first is swapped for the mode in force rather than lit like the
+          thinking toggle: this one is never off, it is only ever one of three,
+          and a pressed state cannot say which.
+        -->
+        <button class="icon-button" id="mode" data-i18n-title="agentModeTitle">
+          <svg class="icon"><use href="#i-mode-ask" id="modeIcon"/></svg>
+        </button>
+        <button class="icon-button" id="trust" data-i18n-title="trustTitle">
+          <svg class="icon"><use href="#i-trust"/></svg>
+        </button>
+        <!--
+          How the last answer arrived. Sits with the token counts because it
+          belongs to the same question -- what did that request actually cost and
+          do -- and because an answer that came in one piece is a fact about the
+          endpoint, not an event in the conversation.
+        -->
+        <span class="composer-transport" id="composerTransport" hidden></span>
+        <span class="composer-usage" id="composerUsage"></span>
+        <!--
+          How much conversation the next message carries. Beside the cost rather
+          than among it: what it counts is what is being held, not what was spent
+          holding it, and it goes up while a task runs and stays up afterwards.
+        -->
+        <span class="composer-context" id="composerContext" hidden></span>
+        <!-- Not an icon: which model is answering is worth reading, not decoding. -->
+        <button class="model-chip" id="model" data-i18n-title="agentModelTitle"></button>
+        <!--
+          One button in two states rather than two buttons. Send and stop are the
+          same affordance at different moments -- the thing you press to change
+          what the assistant is doing -- and swapping the glyph in place keeps it
+          under the finger that is already there.
+        -->
+        <button class="icon-button submit" id="send" data-i18n-title="agentSend">
+          <svg class="icon"><use href="#i-send" id="submitIcon"/></svg>
+        </button>
+      </div>
+    </div>
+  </footer>
+
+  <!--
+    The permission prompt. It is modal on purpose: a command that changes the
+    machine should interrupt, not sit in the thread waiting to be noticed.
+  -->
+  <div class="backdrop" id="confirm" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+      <div class="dialog-title" id="confirmTitle" data-i18n="agentConfirmTitle"></div>
+      <code class="dialog-command" id="confirmCommand"></code>
+      <!-- Only for the file actions: what the file will hold, or what is being swapped. -->
+      <div class="dialog-file" id="confirmBody" hidden></div>
+      <div class="dialog-why" id="confirmWhy"></div>
+      <div class="dialog-options" id="confirmOptions"></div>
+      <div class="dialog-hint" data-i18n="agentConfirmHint"></div>
+    </div>
+  </div>
+
+  <!--
+    Past conversations. Modal like the permission prompt and for the same reason:
+    picking one replaces what is on screen, so it should not be a side panel the
+    thread keeps scrolling behind.
+  -->
+  <div class="backdrop" id="historyPanel" hidden>
+    <div class="dialog history" role="dialog" aria-modal="true" aria-labelledby="historyTitle">
+      <div class="dialog-head">
+        <div class="dialog-title" id="historyTitle" data-i18n="agentHistoryTitle"></div>
+        <button class="icon-button" id="historyClose" data-i18n-title="agentHistoryClose">
+          <svg class="icon"><use href="#i-close"/></svg>
+        </button>
+      </div>
+      <div class="history-empty" id="historyEmpty" data-i18n="agentHistoryEmpty" hidden></div>
+      <div class="history-list" id="historyList"></div>
+    </div>
+  </div>
+
+  <!--
+    Memory, skills and models. One shape for all three and for the history above
+    them: a backdrop, a heading, a scrolling list of rows, and whatever the list
+    cannot do at the bottom. They are alternatives to each other, so opening one
+    closes the rest, and none of them can be open while a confirmation is.
+  -->
+  <div class="backdrop" id="memoryPanel" hidden>
+    <div class="dialog history" role="dialog" aria-modal="true" aria-labelledby="memoryWindowTitle">
+      <div class="dialog-head">
+        <div class="dialog-title" id="memoryWindowTitle" data-i18n="memoryWindowTitle"></div>
+        <button class="icon-button" id="memoryClose" data-i18n-title="agentHistoryClose">
+          <svg class="icon"><use href="#i-close"/></svg>
+        </button>
+      </div>
+      <div class="history-empty" id="memoryNotice" hidden></div>
+      <div class="history-list" id="memoryList"></div>
+    </div>
+  </div>
+
+  <div class="backdrop" id="skillPanel" hidden>
+    <div class="dialog history" role="dialog" aria-modal="true" aria-labelledby="skillWindowTitle">
+      <div class="dialog-head">
+        <div class="dialog-title" id="skillWindowTitle" data-i18n="skillWindowTitle"></div>
+        <button class="icon-button" id="skillClose" data-i18n-title="agentHistoryClose">
+          <svg class="icon"><use href="#i-close"/></svg>
+        </button>
+      </div>
+      <div class="history-empty" id="skillNotice" hidden></div>
+      <div class="history-list" id="skillList"></div>
+      <div class="panel-foot">
+        <button class="panel-action" id="skillFolder" data-i18n="skillOpenFolder"></button>
+      </div>
+    </div>
+  </div>
+
+  <!--
+    Thinking. Two questions that look like one and are not: whether the model
+    thinks, which costs money and time and is sent to the endpoint, and whether
+    you watch it, which costs nothing and stays here. They share a window because
+    they share a subject, and the second is drawn apart from the first because
+    turning it off is not turning thinking off.
+  -->
+  <div class="backdrop" id="thinkPanel" hidden>
+    <div class="dialog history" role="dialog" aria-modal="true" aria-labelledby="thinkWindowTitle">
+      <div class="dialog-head">
+        <div class="dialog-title" id="thinkWindowTitle" data-i18n="thinkWindowTitle"></div>
+        <button class="icon-button" id="thinkClose" data-i18n-title="agentHistoryClose">
+          <svg class="icon"><use href="#i-close"/></svg>
+        </button>
+      </div>
+      <div class="history-list" id="thinkList"></div>
+      <div class="panel-foot">
+        <div class="panel-note" id="thinkNote" data-i18n="thinkVscodeHint"></div>
+      </div>
+    </div>
+  </div>
+
+  <!--
+    The three modes. Not a toggle in a settings file: it is the one control that
+    decides whether anything gets to stop the assistant, so it is a window that
+    states what each one costs you, in the panel where the work is happening.
+  -->
+  <div class="backdrop" id="modePanel" hidden>
+    <div class="dialog history" role="dialog" aria-modal="true" aria-labelledby="modeWindowTitle">
+      <div class="dialog-head">
+        <div class="dialog-title" id="modeWindowTitle" data-i18n="modeWindowTitle"></div>
+        <button class="icon-button" id="modeClose" data-i18n-title="agentHistoryClose">
+          <svg class="icon"><use href="#i-close"/></svg>
+        </button>
+      </div>
+      <div class="history-list" id="modeList"></div>
+    </div>
+  </div>
+
+  <!--
+    What the trust mode reads, for the server this panel belongs to. The pencil
+    hands off to the file for anything this list cannot do -- reordering, a
+    comment, trusting something by typing it rather than by writing to it once.
+  -->
+  <div class="backdrop" id="trustPanel" hidden>
+    <div class="dialog history" role="dialog" aria-modal="true" aria-labelledby="trustWindowTitle">
+      <div class="dialog-head">
+        <div class="dialog-title" id="trustWindowTitle" data-i18n="trustWindowTitle"></div>
+        <button class="icon-button" id="trustEdit" data-i18n-title="trustOpenFile">
+          <svg class="icon"><use href="#i-edit"/></svg>
+        </button>
+        <button class="icon-button" id="trustClose" data-i18n-title="agentHistoryClose">
+          <svg class="icon"><use href="#i-close"/></svg>
+        </button>
+      </div>
+      <div class="history-empty" id="trustNotice" hidden></div>
+      <div class="history-list" id="trustList"></div>
+    </div>
+  </div>
+
+  <div class="backdrop" id="modelPanel" hidden>
+    <div class="dialog history" role="dialog" aria-modal="true" aria-labelledby="modelWindowTitle">
+      <div class="dialog-head">
+        <div class="dialog-title" id="modelWindowTitle" data-i18n="agentModelWindowTitle"></div>
+        <button class="icon-button" id="modelClose" data-i18n-title="agentHistoryClose">
+          <svg class="icon"><use href="#i-close"/></svg>
+        </button>
+      </div>
+      <div class="history-list" id="modelList"></div>
+      <div class="panel-foot">
+        <button class="panel-action" id="modelAdd" data-i18n="agentModelAdd"></button>
+        <!--
+          The key is typed here rather than in a native input box, which is what
+          moving this menu into the panel costs. It is a password field, it is
+          wiped the moment it is sent, and nothing ever sends one back: the rows
+          above are told whether a key is set and never what it is.
+        -->
+        <div class="model-form" id="modelForm" hidden>
+          <label class="model-label" data-i18n="agentModelEndpoint" for="modelBaseUrl"></label>
+          <input class="model-input" id="modelBaseUrl" type="text" spellcheck="false" placeholder="https://api.deepseek.com/v1">
+          <label class="model-label" data-i18n="agentModelName" for="modelName"></label>
+          <input class="model-input" id="modelName" type="text" spellcheck="false" placeholder="deepseek-chat">
+          <label class="model-label" data-i18n="agentModelKey" for="modelKey"></label>
+          <input class="model-input" id="modelKey" type="password" spellcheck="false" autocomplete="off">
+          <div class="model-hint" data-i18n="agentModelKeyHint"></div>
+          <div class="model-buttons">
+            <button class="panel-action primary" id="modelSave" data-i18n="agentModelSave"></button>
+            <button class="panel-action" id="modelCancel" data-i18n="agentModelCancel"></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- Must load first: markdown.js highlights through the former, chat.js renders through the latter. -->
+  <script src="../shared/highlight.js"></script>
+  <script src="../shared/markdown.js"></script>
+  <script src="chat.js"></script>
+</body>
+</html>

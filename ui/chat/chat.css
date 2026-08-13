@@ -1,0 +1,1403 @@
+/*
+ * The assistant panel.
+ *
+ * Colours arrive through the `--vscode-*` names this file was written against,
+ * which theme.css now aliases onto the product's own tokens -- so the palette
+ * changed underneath this page without a colour being edited in it. Buttons,
+ * fields, menus and dialogs take their shapes from shared/components.css.
+ *
+ * What is left here is the thread: the bubbles, the action cards, the composer,
+ * and the panels that slide over them.
+ */
+
+* { box-sizing: border-box; }
+
+:root {
+  --gutter: 12px;
+  --hairline: var(--line);
+}
+
+body {
+  display: grid;
+  /*
+   * Thread, composer. Spelled out rather than left to implicit rows: only the
+   * thread may take the slack, and a row the template does not name gets its
+   * size from the browser rather than from this line.
+   */
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+
+/*
+ * `min-height`, never `height`.
+ *
+ * Not every button here is a label on one line: a row in the history list is a
+ * button with a title and the machine-and-date under it, and a fixed 28px
+ * clipped the second line into the first. A minimum keeps the ordinary buttons
+ * on the same 28px as the rest of the product and lets the ones with a block
+ * inside them grow to fit it.
+ *
+ * `font-weight` is on the filled variants only, for the same reason: the
+ * history rows are buttons and their titles are not headings.
+ */
+button {
+  cursor: pointer;
+  min-height: 28px;
+  padding: 0 13px;
+  color: var(--ac-tx);
+  background: var(--ac);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background-color .12s ease, color .12s ease;
+}
+
+button:hover { background: var(--ac-hover); }
+
+button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ac-ring);
+}
+
+button:disabled { opacity: .38; cursor: default; }
+
+/*
+ * Outlined rather than filled, and it matters more here than anywhere else in
+ * the product: an action card asks a question with two answers on it, and the
+ * one that runs the command should be the only filled thing in the panel.
+ */
+button.quiet,
+button.secondary {
+  color: var(--tx);
+  background: transparent;
+  border-color: var(--line-strong);
+  font-weight: 400;
+}
+
+button.quiet:hover,
+button.secondary:hover { background: var(--hover); }
+
+button.stop { color: var(--err); background: transparent; border-color: var(--line-strong); font-weight: 400; }
+button.stop:hover { background: var(--err-soft); }
+
+/* No `fill`. The shared sprite carries fill and stroke on a group inside each
+ * symbol, which beats anything inherited from here -- and has to, since most of
+ * the set is stroked and two of them are solid. */
+.icon { width: 14px; height: 14px; vertical-align: -2px; margin-right: 5px; }
+
+/* -- icon buttons -------------------------------------------------------- */
+
+/* Quiet by default: these sit under the composer, not in a bar of their own. */
+.icon-button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--tx-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  transition: background-color .12s ease, color .12s ease;
+}
+
+.icon-button:hover { color: var(--tx); background: var(--hover); }
+.icon-button .icon { margin: 0; width: 15px; height: 15px; }
+.icon-button.danger:hover { color: var(--err); background: var(--err-soft); }
+
+.icon-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ac-ring);
+}
+.toggle { display: flex; align-items: center; gap: 5px; color: var(--vscode-descriptionForeground); font-size: .9em; cursor: pointer; white-space: nowrap; }
+
+/* -- thread ------------------------------------------------------------- */
+
+.thread {
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--gutter);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  outline: none;
+  /*
+   * Chromium re-adjusts scrollTop by itself to keep whatever is on screen in
+   * place when content above the viewport changes height. A card growing as its
+   * output arrives is exactly that, and the adjustment lands on top of the
+   * scrolling this panel does deliberately: the two pull against each other and
+   * the thread stops responding to the wheel while a task streams. Following the
+   * end of the thread is this file's job, so the anchoring is turned off.
+   */
+  overflow-anchor: none;
+  /*
+   * `contain: paint` belongs here on paper -- nothing in the thread paints
+   * outside it -- and it is deliberately not used. The promise it makes lets the
+   * compositor keep tiles it would otherwise redraw, and with a scroll position
+   * written from script while cards are still being inserted, those stale tiles
+   * are what ends up on screen: the thread looks frozen, rows overlap rows that
+   * have already scrolled away, and only a hover or a window resize repaints it.
+   */
+}
+
+/*
+ * Without this the flex items shrink to fit instead of overflowing, so the
+ * thread squashes its own cards rather than becoming scrollable.
+ */
+.thread > * { flex: none; }
+
+.empty { margin: auto; padding: 24px; color: var(--vscode-descriptionForeground); text-align: center; max-width: 42ch; line-height: 1.6; }
+.empty-text { margin: 0; }
+
+/*
+ * The mark above the help text.
+ *
+ * `--brand` and not `--ai`: this is the application's own logo rather than a
+ * label for the assistant, and the logo is the same orange in both themes --
+ * see the note on the token. `--ai` would darken it under the light theme and
+ * stop it matching the icon in the taskbar.
+ *
+ * Sized in `em` off the panel's own text so it stays in proportion when the
+ * window is small, and capped in px so it does not become a poster on a wide
+ * one. `height: auto` on the svg with the width set is what keeps the blocks
+ * square; the viewBox is 17 wide by 15 tall and forcing both axes would shear
+ * every one of them.
+ */
+.empty-mark { margin: 0 0 20px; display: flex; justify-content: center; }
+.empty-mark svg { width: min(8.5em, 116px); height: auto; color: var(--brand); }
+
+/* -- timeline ------------------------------------------------------------ */
+
+/*
+ * One rail down the left of the thread, a dot against every step.
+ *
+ * The dot carries what a row of badges used to spell out: dark green ran on its
+ * own, orange-red had to be answered, grey changed nothing. It says it in the
+ * same three pixels on every row, where the badges said it in three different
+ * widths of text and pushed the thing the reader actually came for further right
+ * on every line. The chevrons went with them -- a row that opens is a row that
+ * opens whether or not there is an arrow saying so, and eighteen arrows down the
+ * left of a long task are eighteen things that are not the task.
+ */
+/*
+ * A wrapper, always, and never the card itself. A card sets `overflow: hidden`
+ * so its rounded corner clips the code block inside it, and that clips its own
+ * pseudo-elements with it: the dot ends up painted inside the card's background
+ * and the line to the next step is cut off at the border. This has no background,
+ * no radius and nothing to clip, so the rail runs beside the content.
+ */
+/*
+ * `--dot-top` is where the first line of text sits, which differs by what is in
+ * the row. Both the dot and the top of the rail are placed from it, so the two
+ * can never drift apart.
+ */
+.step { position: relative; padding-left: 22px; --dot-top: 7px; }
+.step:has(> .card) { --dot-top: 14px; }
+.step:has(> .turn) { --dot-top: 15px; }
+.step:has(> .memory-row) { --dot-top: 11px; }
+
+.step::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: var(--dot-top);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--step-dot, var(--vscode-descriptionForeground));
+  /* Over the rail, so the line runs behind the dot and not through it. */
+  z-index: 1;
+}
+
+/*
+ * The rail. Spanning the whole row and reaching past it by the thread's own gap
+ * is what makes consecutive segments meet, and it means no segment has to know
+ * how tall its neighbour is or where its dot sits.
+ */
+.step::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 0;
+  bottom: -10px;
+  width: 1px;
+  background: var(--hairline);
+}
+
+/*
+ * The two ends of the rail stop at their own dot rather than running past it.
+ * The conversation starts where the user first said something and ends at the
+ * last thing that happened; a line reaching above the first dot or below the
+ * last one is drawn towards nothing.
+ *
+ * `.empty` is the thread's first child and never its last, so `+ .step` always
+ * names the first real step and `:last-child` always names the final one.
+ */
+.thread > .empty + .step::after { top: var(--dot-top); }
+.thread > .step:last-child::after { bottom: auto; height: calc(var(--dot-top) + 4px); }
+/* The only step there is: a rail with one dot on it is a dot. */
+.thread > .empty + .step:last-child::after { display: none; }
+
+/*
+ * The user's own message. The rail runs through it rather than restarting after
+ * it: everything hanging below one of these is there because of it, and a line
+ * broken at every question would be cut exactly where the reason for the next
+ * dozen steps is written.
+ */
+/*
+ * The four states a step can be in, on the semantic tokens rather than on four
+ * numbers picked here. These dots are the fastest read in the panel -- they are
+ * what the eye follows down the rail -- so they should be the same green that
+ * means "fine" and the same red that means "no" everywhere else in the window.
+ */
+.step.sent { --step-dot: var(--ac); }
+/* Waiting on the user. */
+.step.needs { --step-dot: var(--warn); }
+/* Turned down and never run. */
+.step.blocked { --step-dot: var(--err); }
+/* Ran on its own, because it could not change anything. */
+.step.ran { --step-dot: var(--ok); }
+
+.turn { display: flex; }
+.turn.user { justify-content: flex-end; }
+
+/*
+ * The user's own message, and the one place in the product that keeps a solid
+ * accent fill.
+ *
+ * Set explicitly rather than through `list.activeSelectionBackground`, which is
+ * what it used to borrow. That alias is a tint now -- deliberately, so that the
+ * two-line rows in the server tree and the file panel keep their hierarchy when
+ * selected -- and a chat bubble is the opposite case: one short run of text,
+ * which needs to read as a block that somebody said, not as a row that happens
+ * to be highlighted.
+ */
+.bubble {
+  max-width: 88%;
+  padding: 8px 12px;
+  border-radius: var(--r-lg);
+  /* Square off the corner nearest the rail, so the bubble points at its own
+   * dot instead of floating free of it. */
+  border-top-right-radius: var(--r-sm);
+  background: var(--ac);
+  color: var(--ac-tx);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/*
+ * The assistant just talks: no bubble, no label, no card. Only the user is boxed.
+ *
+ * It takes the whole width rather than shrinking to its longest line, which is
+ * what a flex item does by default. Prose reads the same either way -- it wraps
+ * where it always did -- but a code block is a control, and a control that stops
+ * halfway across the panel looks like a mistake.
+ */
+.turn.assistant .bubble {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  padding: 2px 2px;
+  color: var(--vscode-foreground);
+  background: none;
+  border-radius: 0;
+  line-height: 1.55;
+  user-select: text;
+  /* Rendered markdown brings its own block spacing; pre-wrap would double it. */
+  white-space: normal;
+}
+
+/* -- rendered markdown --------------------------------------------------- */
+
+/*
+ * Spacing is collapsed at the edges so a reply never opens or closes with a gap
+ * the surrounding thread has already provided.
+ */
+.md-p, .md-list, .md-quote, .md-block, .md-table-wrap, .md-h { margin: 0 0 10px; }
+.turn.assistant .bubble > :last-child { margin-bottom: 0; }
+
+/* Kept from the source text: in a chat reply a line break is usually deliberate. */
+.md-p { white-space: pre-wrap; }
+
+.md-h { margin-top: 14px; font-weight: 600; line-height: 1.35; }
+.turn.assistant .bubble > .md-h:first-child { margin-top: 0; }
+
+/*
+ * Headings step down in weight rather than size. A side panel is too narrow for
+ * a 2em h1, and the model's h1 and h3 rarely mean what they would in a document.
+ */
+.md-h1 { font-size: 1.2em; }
+.md-h2 { font-size: 1.1em; }
+.md-h3 { font-size: 1em; }
+.md-h4, .md-h5, .md-h6 { font-size: 1em; color: var(--vscode-descriptionForeground); }
+
+.md-list { padding-left: 22px; }
+.md-list li { margin: 3px 0; }
+.md-list .md-list { margin: 3px 0 0; }
+
+.md-quote {
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--hairline);
+  color: var(--vscode-descriptionForeground);
+  white-space: pre-wrap;
+}
+
+.md-hr { height: 0; margin: 12px 0; border: 0; border-top: 1px solid var(--hairline); }
+
+/* -- table ---------------------------------------------------------------- */
+
+/*
+ * The scroller is the wrapper, not the table, so a wide table slides sideways
+ * inside the message instead of widening the thread.
+ */
+.md-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+}
+
+.md-table { border-collapse: collapse; width: 100%; font-size: .95em; }
+
+.md-table th,
+.md-table td {
+  padding: 5px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--hairline);
+  /* Columns such as a port or a PID are unreadable once they wrap. */
+  white-space: nowrap;
+}
+
+.md-table th {
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  font-weight: 600;
+}
+
+.md-table tbody tr:last-child td { border-bottom: 0; }
+.md-table tbody tr:hover td { background: var(--vscode-list-hoverBackground); }
+
+/* Scoped to the table so these outrank the left-alignment default above. */
+.md-table .md-al-center { text-align: center; }
+.md-table .md-al-right { text-align: right; }
+
+.md-code {
+  padding: 1px 5px;
+  border-radius: var(--r-sm);
+  background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12.5px;
+  word-break: break-word;
+}
+
+/* -- fenced code block ---------------------------------------------------- */
+
+.md-block {
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+}
+
+.md-block-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px 3px 10px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border-bottom: 1px solid var(--hairline);
+}
+
+.md-block-lang {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--vscode-descriptionForeground);
+  font-size: .8em;
+  text-transform: lowercase;
+}
+
+/* Quiet until pointed at, so a wall of code blocks is not a wall of buttons. */
+.md-copy {
+  flex: none;
+  padding: 2px 8px;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  font-size: .8em;
+  opacity: .75;
+}
+
+.md-block:hover .md-copy { opacity: 1; border-color: var(--hairline); }
+.md-copy:hover { color: var(--vscode-foreground); background: var(--vscode-list-hoverBackground); }
+.md-copy.done { color: var(--syn-green); opacity: 1; }
+
+/*
+ * Two columns that scroll differently: the whole thing scrolls down, and only the
+ * code scrolls sideways, so the numbers stay where the eye left them. Both sides
+ * inherit the same font and line height from here, which is the entire reason a
+ * number and its line stay level.
+ */
+.md-pre {
+  display: flex;
+  align-items: flex-start;
+  margin: 0;
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 8px 0;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre;
+  user-select: text;
+}
+
+/*
+ * Not selectable and not copyable: the copy button sends the code alone, and a
+ * mouse drag across the block should do the same.
+ */
+.md-gutter {
+  flex: none;
+  padding: 0 10px;
+  border-right: 1px solid var(--hairline);
+  color: var(--vscode-editorLineNumber-foreground, var(--vscode-descriptionForeground));
+  text-align: right;
+  user-select: none;
+}
+
+.md-scroll { flex: 1 1 auto; min-width: 0; overflow-x: auto; padding: 0 10px; }
+
+/*
+ * VS Code's own webview stylesheet gives every <code> element a background and a
+ * foreground of its own. On an inline element spanning many lines that paints a
+ * separate box behind each one, and it repaints the text the highlighter has
+ * just coloured. Both are undone here; the block's background is the block's.
+ */
+.md-pre code {
+  color: inherit;
+  background: none;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.note {
+  color: var(--vscode-descriptionForeground);
+  font-size: .92em;
+  padding: 2px 2px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.note.error { color: var(--vscode-errorForeground); }
+/* A wait with a reason, which is the difference between it and a hang. */
+.note.retry { color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground)); }
+/*
+ * A setting the endpoint would not take. The same warning colour as a retry and
+ * for the same reason: nothing failed, but what follows is not quite what was
+ * asked for, and the grey of an ordinary note would let it pass unread.
+ */
+.note.warn { color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground)); }
+
+/*
+ * The caret that marks text still arriving. Hung off the last block rather than
+ * off the bubble, so it sits at the end of the sentence being written instead of
+ * on a line of its own below everything. Nothing is added to the text itself,
+ * which stays exactly what the model sent and copies cleanly.
+ */
+/*
+ * The two halves a streaming answer is built from. `display: contents` takes the
+ * containers out of the box tree entirely, so the blocks inside them lay out and
+ * space themselves exactly as if the split were not there -- which is the point:
+ * it exists so the renderer can leave finished blocks alone, and the reader
+ * should never be able to tell where the line between them falls.
+ */
+.md-done, .md-live { display: contents; }
+
+.bubble.streaming .md-live > :last-child::after {
+  content: '';
+  display: inline-block;
+  width: .45em;
+  height: .95em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: currentColor;
+  opacity: .55;
+  animation: caret 1.1s step-end infinite;
+}
+@keyframes caret { 0%, 45% { opacity: .55; } 50%, 100% { opacity: 0; } }
+
+/*
+ * The model's own thinking. Folded shut, because it is the road and not the
+ * destination -- but folded shut with a number on it that keeps moving, which is
+ * the whole reason it is here: a step that thinks for two minutes draws nothing
+ * else, and a still panel is indistinguishable from a hung one.
+ */
+/* No rule of its own down the left any more: the timeline is that line now. */
+.reason { margin: 0; }
+
+.reason-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--vscode-descriptionForeground);
+  font-size: .92em;
+  padding: 1px 0;
+}
+
+.reason-head::-webkit-details-marker { display: none; }
+.reason-label { font-style: italic; }
+.reason-count { font-variant-numeric: tabular-nums; opacity: .75; }
+/* Once the step has moved on there is nothing left ticking, so it recedes. */
+.reason.done .reason-head { opacity: .65; }
+
+/*
+ * Rendered as markdown, like every other thing the model writes: a model that
+ * reasons in headings and code blocks reasons in headings and code blocks, and
+ * showing that as flat text is showing it worse than it was written. Quieter and
+ * a size down from an answer, because it is working-out and not a reply.
+ */
+.reason-body {
+  max-height: 260px;
+  overflow: auto;
+  margin: 4px 0 6px;
+  padding-right: 4px;
+  font-size: .9em;
+  line-height: 1.55;
+  color: var(--vscode-descriptionForeground);
+}
+
+.reason-body > :first-child { margin-top: 0; }
+.reason-body > :last-child { margin-bottom: 0; }
+
+/*
+ * What a step is doing while it does nothing visible. Shown in place of the
+ * thinking card when that is switched off, which is the usual case: the elapsed
+ * seconds and the token count are what answer "is it still alive", and they
+ * answer it without pouring pages of reasoning into the thread to do it.
+ */
+.note.thinking .think-meta { opacity: .75; font-variant-numeric: tabular-nums; }
+
+/*
+ * The pulsing dot that used to sit in front of "thinking" is gone: the timeline
+ * already draws a dot against that row, and two of them side by side read as two
+ * things happening. What says the panel is alive now is the elapsed seconds
+ * beside the label, which is more use than a pulse anyway -- it says how long.
+ */
+
+/* -- memory --------------------------------------------------------------
+   A single row, weighted below a command card and above a note: something the
+   assistant did, but not to the machine and not worth stopping for. */
+
+.memory-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  border-radius: var(--r-md);
+  font-size: .92em;
+  color: var(--vscode-descriptionForeground);
+  background: color-mix(in srgb, var(--vscode-editorWidget-background, var(--vscode-editor-background)) 70%, transparent);
+}
+
+.memory-icon { width: 12px; height: 12px; margin: 0; flex: none; opacity: .8; }
+.memory-row.ok .memory-icon { color: var(--syn-green); }
+.memory-row.warn .memory-icon, .memory-row.warn .memory-label { color: var(--syn-orange); }
+.memory-row.bad .memory-icon, .memory-row.bad .memory-label { color: var(--vscode-errorForeground); }
+.memory-row.muted { opacity: .75; }
+
+.memory-label { flex: none; font-weight: 600; color: var(--vscode-foreground); }
+.memory-row.muted .memory-label { font-weight: 500; color: var(--vscode-descriptionForeground); }
+
+.memory-scope {
+  flex: none;
+  padding: 0 6px;
+  border-radius: var(--r-lg);
+  font-size: .85em;
+  background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+}
+
+/* The fact itself gives way first: the label and the buttons must stay readable
+   in a narrow panel, and the whole line is in the file the Open button points at. */
+.memory-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+.memory-row.undone .memory-text { text-decoration: line-through; }
+
+.memory-actions { flex: none; display: flex; gap: 2px; }
+
+.memory-action {
+  padding: 1px 7px;
+  border: none;
+  border-radius: var(--r-sm);
+  color: var(--info);
+  background: none;
+  font: inherit;
+  font-size: .95em;
+  cursor: pointer;
+}
+
+.memory-action:hover { background: var(--vscode-list-hoverBackground); }
+.memory-action:disabled { opacity: .5; cursor: default; background: none; }
+
+/* -- command card ------------------------------------------------------- */
+
+.card {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--bg-raise);
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.card-head::-webkit-details-marker { display: none; }
+.card-head:hover { background: var(--vscode-list-hoverBackground); }
+.card-why { flex: 1 1 auto; min-width: 0; color: var(--vscode-foreground); font-size: .92em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card[open] .card-why { white-space: normal; }
+
+/*
+ * Why this one was not put to the user. Quiet -- it is a footnote on a step that
+ * already happened, not a warning about one about to -- but it does not shrink
+ * away with the reason text beside it, because the reason is what it qualifies.
+ */
+.card-badge {
+  flex: none;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  color: var(--tx-dim);
+  font-size: .74em;
+  white-space: nowrap;
+}
+
+.command {
+  display: block;
+  padding: 9px 11px;
+  background: var(--bg-inset);
+  border-top: 1px solid var(--hairline);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+}
+
+.card-actions { display: flex; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--hairline); }
+.card-actions .spacer { flex: 1 1 auto; }
+
+.result-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-top: 1px solid var(--hairline);
+  color: var(--vscode-descriptionForeground);
+  font-size: .9em;
+}
+
+.result-head .exit { font-variant-numeric: tabular-nums; }
+.result-head .exit.bad { color: var(--err); }
+
+.output {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 9px 11px;
+  background: var(--bg-inset);
+  color: var(--tx);
+  border-top: 1px solid var(--hairline);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+/* -- composer ----------------------------------------------------------- */
+
+/*
+ * No border-top and no panel background: the thread runs straight into the box,
+ * which is the only thing here with an edge of its own.
+ */
+.composer {
+  padding: 4px var(--gutter) 10px;
+  background: var(--vscode-editor-background);
+}
+
+.composer-box {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg-inset);
+  /* Lifted onto the box, so the whole control lights up rather than the text area inside it. */
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+
+/* The ring as well as the border, matching every other field in the product --
+ * this one is the largest control in the window and had the quietest focus. */
+.composer-box:focus-within {
+  border-color: var(--ac);
+  box-shadow: 0 0 0 2px var(--ac-ring);
+}
+
+/*
+ * Grows with what is typed into it and stops at a height that still leaves the
+ * thread worth reading. Borderless and transparent because the box around it is
+ * already the control; two nested outlines would only argue with each other.
+ */
+textarea {
+  display: block;
+  width: 100%;
+  max-height: 200px;
+  padding: 9px 11px 4px;
+  resize: none;
+  overflow-y: auto;
+  color: var(--tx);
+  background: transparent;
+  border: none;
+  outline: none;
+  font: inherit;
+  font-size: var(--fs);
+  line-height: 1.55;
+}
+
+textarea::placeholder { color: var(--tx-dim); }
+
+/*
+ * A hairline between writing and reporting. The two halves are one control, but
+ * they are not one thing: above it is what you are about to say, below it is what
+ * has already been spent, and without a line the counters read as part of the
+ * message being typed.
+ */
+/*
+ * It wraps. The panel is a column the user drags to whatever width they have
+ * room for, and this row carries eight things -- counters, a model name and
+ * five buttons -- none of which is optional. On one line the buttons at the end
+ * were simply cut off by the panel's edge: not elided, not scrolled to, gone,
+ * with the send button among them.
+ *
+ * The counters give way first (they shrink and elide, below), and only when
+ * there is nothing left to take does the row break. What lands on the second
+ * line is whatever did not fit, in order, which keeps the send button next to
+ * the box it sends.
+ */
+.composer-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  row-gap: 1px;
+  padding: 3px 6px 4px;
+  border-top: 1px solid var(--hairline);
+}
+
+/*
+ * Sits against the buttons it belongs with and takes the slack after it, which
+ * is what splits the row into its two halves: the conversation's settings and
+ * what they have cost on the left, what the next message will do on the right.
+ */
+/*
+ * Muted when the stream behaved, and only then. An answer arriving token by
+ * token is the expected case and wants confirming, not flagging; one handed over
+ * whole is the case someone is trying to explain to themselves, so it takes the
+ * warning colour and stops reading as decoration.
+ */
+/*
+ * `0 1 auto` and not `0 0 auto`: this is a word about how the last answer
+ * arrived, and it is the first thing that should give way when the panel is
+ * narrowed. Elided rather than wrapped -- half of it still says which of the
+ * two cases you are in, and the title carries the whole.
+ */
+.composer-transport {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0 6px;
+  color: var(--vscode-descriptionForeground);
+  font-size: .82em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.composer-transport.warn {
+  color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
+}
+
+.composer-usage {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-right: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 6px;
+  color: var(--vscode-descriptionForeground);
+  font-size: .82em;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * What the next message carries, sitting immediately before the model that will
+ * carry it. It does not take the flexible width the usage above it does: the
+ * counts either side of it can be elided, this is four characters and cannot.
+ */
+.composer-context {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  color: var(--vscode-descriptionForeground);
+  font-size: .82em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.composer-context[hidden] { display: none; }
+
+/*
+ * The model, named rather than iconised, because two endpoints serving models
+ * with similar names are told apart by reading them. Truncated hard: the name is
+ * a reminder of a choice already made, and the title carries the whole of it.
+ */
+.model-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-right: 2px;
+  padding: 2px 7px;
+  border: 0;
+  border-radius: var(--r-lg);
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  font: inherit;
+  font-size: .82em;
+  opacity: .8;
+  cursor: pointer;
+}
+
+.model-chip:hover { opacity: 1; }
+
+/* A toolbar under a text box, not a title bar: smaller, and quieter until used. */
+.composer-status .icon-button { width: 24px; height: 24px; opacity: .7; }
+.composer-status .icon-button:hover { opacity: 1; }
+/* Pressed reads as lit: full strength and the accent, against the row's .7 grey. */
+.composer-status .icon-button[aria-pressed="true"] {
+  opacity: 1;
+  color: var(--vscode-textLink-foreground);
+}
+
+.icon-button.submit { flex: none; padding: 3px; border-radius: var(--r-sm); }
+.icon-button.submit .icon { width: 16px; height: 16px; margin: 0; }
+.icon-button.submit:disabled { opacity: .35; cursor: default; }
+/* Stopping is the destructive half of the same button, and says so. */
+.icon-button.submit.running { color: var(--vscode-errorForeground); }
+/*
+ * Auto mode, on the toolbar. Full strength rather than the row's .7, because a
+ * mode that has switched the asking off should not be the quietest thing there.
+ * The glyph has already changed shape; this is the second thing saying it, for
+ * the sweep of an eye that never reaches the shape.
+ */
+.composer-status .icon-button.danger-on { opacity: 1; color: var(--vscode-errorForeground); }
+
+/* -- permission dialog --------------------------------------------------- */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--gutter);
+  background: rgba(0, 0, 0, .45);
+}
+
+.backdrop[hidden] { display: none; }
+
+.dialog {
+  width: min(560px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 14px 16px 12px;
+  border: 1px solid var(--vscode-focusBorder);
+  border-radius: var(--r-lg);
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .38);
+}
+
+.dialog-title { font-weight: 600; margin-bottom: 10px; }
+
+.dialog-command {
+  display: block;
+  padding: 8px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+}
+
+.dialog-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.dialog-head .dialog-title { flex: 1 1 auto; margin-bottom: 0; }
+
+.file-meta {
+  margin-bottom: 6px;
+  color: var(--vscode-descriptionForeground);
+  font-size: .85em;
+  word-break: break-all;
+}
+
+.dialog-file[hidden] { display: none; }
+
+.dialog-file { margin-top: 8px; }
+
+/*
+ * The same view is drawn in the prompt and in the thread, so the height it is
+ * allowed is set per place rather than here. In the thread it is a card among
+ * cards and is capped like the output of a command; only the prompt measures
+ * itself against the viewport, and only the prompt has a reason to -- there the
+ * content competes with the answers for a fixed amount of room.
+ */
+/*
+ * The code block, now two columns: numbers and code.
+ *
+ * It used to wrap. It cannot any more, because a wrapped line takes two rows
+ * while its number takes one, and the gutter would walk out of step a third of
+ * the way down. Long lines scroll sideways instead, which is what an editor
+ * does with them anyway -- and the numbers stay put while they do.
+ */
+.file-body {
+  display: flex;
+  align-items: flex-start;
+  max-height: 320px;
+  overflow: auto;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 12px;
+  user-select: text;
+}
+
+.file-body > pre {
+  margin: 0;
+  font: inherit;
+  white-space: pre;
+}
+
+.file-gutter {
+  flex: none;
+  /* Held against the left edge while the code scrolls under it. */
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  padding-right: 10px;
+  margin-right: 10px;
+  border-right: 1px solid var(--hairline);
+  background: inherit;
+  color: var(--vscode-editorLineNumber-foreground, var(--vscode-descriptionForeground));
+  text-align: right;
+  /* A number is a label on the line, never part of what you copy out of it. */
+  user-select: none;
+}
+
+.file-code { flex: 1 1 auto; min-width: 0; }
+
+/*
+ * The prompt is the one place a viewport-relative height belongs: the dialog is
+ * sized against the viewport too, so the two move together. In the thread it was
+ * the only such height there, which made every diff in the conversation resize at
+ * once whenever the panel did -- a relayout of the whole thread, and the cue for
+ * the stale tiles that left one card drawn over another.
+ */
+.dialog-file .file-body { max-height: 40vh; }
+
+.file-part + .file-part { margin-top: 8px; }
+
+.file-part-label {
+  margin-bottom: 3px;
+  font-size: .82em;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* The label keeps the meaning the border used to carry, at a tenth of the ink. */
+.file-part.del .file-part-label { color: var(--err); }
+.file-part.add .file-part-label { color: var(--ok); }
+
+/*
+ * What a block is stands behind the code, not in front of it: a tint for the
+ * whole area and an ordinary border. Painting the text itself red or green cost
+ * the syntax colours, and a red border around red text was saying the same thing
+ * three times. The diff editor's own backgrounds are used where the theme
+ * defines them, so these read as the same green and red as a diff in a tab.
+ */
+.file-view.write .file-body,
+.file-view.append .file-body,
+.file-part.add .file-body {
+  background: var(--vscode-diffEditor-insertedLineBackground, rgba(70, 149, 74, .18));
+}
+
+.file-part.del .file-body {
+  background: var(--vscode-diffEditor-removedLineBackground, rgba(200, 72, 62, .18));
+}
+
+/* -- history ------------------------------------------------------------- */
+
+.dialog.history { display: flex; flex-direction: column; max-height: min(560px, 100%); }
+.history-list { overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.history-empty { padding: 18px 4px; color: var(--vscode-descriptionForeground); text-align: center; }
+.history-empty[hidden] { display: none; }
+
+.history-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+}
+
+.history-row:hover { background: var(--vscode-list-hoverBackground); }
+.history-row.current { border-color: var(--hairline); }
+
+/* The row is the button: the whole thing is the target, not a link inside it. */
+.history-open {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: block;
+  padding: 9px 11px;
+  text-align: left;
+  color: var(--tx);
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-sm);
+  font-weight: 400;
+}
+
+.history-open:hover { background: transparent; }
+/* The two lines are a title and a footnote, and the gap between them has to be
+ * smaller than the gap between one row and the next -- otherwise the footnote
+ * reads as belonging to the row below it. 4px inside, 4px of list gap plus
+ * 18px of padding outside. */
+.history-title {
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-meta {
+  margin-top: 4px;
+  color: var(--tx-dim);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* -- memory, skill and model windows -------------------------------------- */
+
+/*
+ * The same list as the history above, with the row's second job on the right.
+ * A row here is not a single target the way a conversation is -- it has a body
+ * you read and one or two things you do to it -- so the text is a block and the
+ * actions sit beside it rather than the whole row being one button.
+ */
+.panel-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 7px 9px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+}
+
+.panel-row:hover { background: var(--vscode-list-hoverBackground); }
+.panel-row.current { border-color: var(--hairline); }
+/* The one mode that can let something through unwatched, named in colour too. */
+.panel-row.mode-auto .panel-title { color: var(--vscode-errorForeground); }
+
+/*
+ * The second question, in the space the list was using.
+ *
+ * Not a dialog stacked on a dialog: the window already has the user's whole
+ * attention, and a second backdrop over the first reads as a stutter rather than
+ * as the weight this answer actually carries.
+ */
+.mode-warning { padding: 10px 8px; }
+.mode-warning .panel-title { color: var(--vscode-errorForeground); font-weight: 600; }
+.mode-warning .panel-meta { margin: 6px 0 12px; }
+.mode-warning .panel-buttons { justify-content: flex-start; }
+.panel-row.off .panel-text { opacity: .55; }
+.panel-row.broken .panel-title { color: var(--vscode-descriptionForeground); }
+
+.panel-text { flex: 1 1 auto; min-width: 0; }
+.panel-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/*
+ * A note wraps. The ellipsis is for a name you can recognise from its first
+ * half; it has no business on the one thing this window exists to let you read.
+ */
+.panel-row.note .panel-title { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
+
+/* Wraps rather than truncating: a description is why you would pick the thing. */
+.panel-meta {
+  margin-top: 2px;
+  color: var(--vscode-descriptionForeground);
+  font-size: .82em;
+  overflow-wrap: anywhere;
+}
+
+.panel-buttons { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+/* Nothing to do to this row, so no gutter is held open for it. */
+.panel-buttons:empty { display: none; }
+
+.panel-action {
+  padding: 3px 9px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--vscode-foreground);
+  font-size: .86em;
+  white-space: nowrap;
+}
+
+.panel-action:hover { background: var(--vscode-list-hoverBackground); }
+
+/*
+ * The segmented control is `.c-seg` in shared/components.css now -- the
+ * settings page wears the same one, and a control that has to look identical in
+ * two places is a control that must be written down once.
+ *
+ * What stays here is the two things that are this panel's rather than the
+ * control's: its type scale, which is relative to a panel that sizes itself off
+ * the host, and the track losing its outline on a row that is already faded.
+ */
+.c-seg-item { font-size: .86em; padding: 3px 11px; }
+.panel-row.off .c-seg { border-color: transparent; }
+.panel-action.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: transparent; }
+.panel-action.primary:hover { background: var(--vscode-button-hoverBackground); }
+.panel-action.danger { color: var(--vscode-errorForeground); }
+
+/*
+ * Small enough to sit inside a heading or beside one line, still a real target.
+ * Quiet until pointed at, including the destructive one: a trash can burning red
+ * on every row it appears on is a warning nobody is reading by the third time.
+ */
+.panel-icon { width: 22px; height: 22px; border-radius: var(--r-sm); }
+.panel-icon .icon { width: 13px; height: 13px; }
+
+/*
+ * A section heading inside the list, for the two memory scopes.
+ *
+ * A scope is a file, so the rule is that file's edge: everything under it is its
+ * contents, and the pencil at the end of the rule opens it.
+ */
+.panel-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 14px 4px 5px;
+  padding: 0 4px 4px 5px;
+  border-bottom: 1px solid var(--hairline);
+  font-size: .82em;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground);
+}
+
+.panel-group:first-child { margin-top: 2px; }
+.panel-group-empty { padding: 3px 9px; }
+
+/* Editing happens where the line is, so the list never moves under the cursor. */
+.panel-edit {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--vscode-focusBorder);
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font-family: inherit;
+  font-size: inherit;
+  resize: vertical;
+}
+
+.panel-foot { border-top: 1px solid var(--hairline); margin-top: 8px; padding-top: 8px; }
+
+/*
+ * A sentence in the foot rather than a button: what it says is a limit of the
+ * window above it -- which of these settings the model you picked can even hear
+ * -- and there is nothing to press about it.
+ */
+.panel-note {
+  color: var(--vscode-descriptionForeground);
+  font-size: .82em;
+  line-height: 1.45;
+}
+
+.model-form { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.model-form[hidden] { display: none; }
+.model-label { font-size: .82em; color: var(--vscode-descriptionForeground); }
+
+.model-input {
+  padding: 5px 7px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--hairline);
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font-family: inherit;
+}
+
+.model-input:focus { outline: none; border-color: var(--vscode-focusBorder); }
+.model-hint { font-size: .8em; color: var(--vscode-descriptionForeground); margin-top: 2px; }
+.model-buttons { display: flex; gap: 6px; margin-top: 6px; }
+
+/* A file change inside a card is one more section of it, framed like the rest. */
+.card .file-view { padding: 8px 10px; border-top: 1px solid var(--hairline); }
+
+/* -- transfers ------------------------------------------------------------ */
+
+.card .transfer-view { padding: 8px 10px; border-top: 1px solid var(--hairline); }
+
+.transfer-meta {
+  color: var(--vscode-descriptionForeground);
+  font-size: .85em;
+  word-break: break-all;
+}
+
+.transfer-bars[hidden] { display: none; }
+.transfer-bars { margin-top: 8px; display: grid; gap: 8px; }
+
+/*
+ * The name and the numbers share a line above their bar. The name gives up its
+ * width first: a path is elided from the left, where the leading directories
+ * matter less than the file at the end, while "4.2 MB / 18.9 MB" is unreadable
+ * the moment anything is taken off it.
+ */
+.transfer-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  font-size: .85em;
+}
+
+.transfer-row[hidden] { display: none; }
+
+.transfer-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transfer-stat {
+  color: var(--vscode-descriptionForeground);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/*
+ * The track is dimmed with a translucent colour rather than with `opacity`,
+ * which would take the fill down with it: opacity applies to a subtree, and no
+ * value on the child can win it back.
+ */
+.bar {
+  grid-column: 1 / -1;
+  height: 4px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--vscode-foreground) 14%, transparent);
+  overflow: hidden;
+}
+
+.bar > i {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: var(--r-sm);
+  background: var(--ac);
+  /*
+   * Follows the ticks rather than jumping between them. They arrive about seven
+   * times a second, and the transition is kept just under that interval so a bar
+   * is always still moving toward the last figure it was given.
+   */
+  transition: width .12s linear;
+}
+
+.dialog-why { margin-top: 8px; color: var(--vscode-descriptionForeground); font-size: .92em; word-break: break-word; }
+.dialog-why:empty { display: none; }
+.dialog-options { display: grid; gap: 4px; margin-top: 12px; }
+
+/*
+ * Options are keyboard-first, the way the same prompt behaves in a terminal:
+ * the highlighted row is the one Enter takes, and each row has its own number.
+ */
+.dialog-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  text-align: left;
+  color: var(--vscode-foreground);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+}
+
+.dialog-option:hover { background: var(--vscode-list-hoverBackground); }
+
+.dialog-option[aria-selected="true"] {
+  color: var(--vscode-list-activeSelectionForeground);
+  background: var(--vscode-list-activeSelectionBackground);
+  border-color: var(--vscode-focusBorder);
+}
+
+.dialog-option .key { flex: none; opacity: .7; font-variant-numeric: tabular-nums; }
+.dialog-hint { margin-top: 10px; color: var(--vscode-descriptionForeground); font-size: .85em; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}

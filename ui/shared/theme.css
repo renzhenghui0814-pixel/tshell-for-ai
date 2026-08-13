@@ -1,0 +1,362 @@
+/*
+ * The palette, in two layers.
+ *
+ * LAYER 1 -- semantic tokens (`--bg-elev`, `--tx-dim`, `--ac`). These name a
+ * role, not a colour, and they are the only thing that differs between dark and
+ * light. New code should use these.
+ *
+ * LAYER 2 -- the `--vscode-*` names, kept as aliases onto layer 1. Every
+ * stylesheet under ui/ was written against VS Code's theme variables, 369
+ * references across six files, and renaming them would have meant touching
+ * every rule in every page. Instead the old names now point at the new roles.
+ * The pages do not know the palette changed.
+ *
+ * The aliases are declared once, not once per theme, because they resolve to
+ * layer-1 tokens rather than to literal colours -- flipping `data-theme` flips
+ * layer 1 and every alias follows. The previous version of this file had to
+ * restate all 64 values in both themes, which is exactly the shape of thing
+ * that drifts: change one and forget its twin, and the bug only shows up for
+ * whoever is using the other theme.
+ *
+ * Dark is the default. Light is opt-in via `data-theme="light"` on <html>, set
+ * by host.js. There is deliberately no `prefers-color-scheme` branch: the theme
+ * is a setting the user chooses in Settings and it does not follow the OS.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* -- type ---------------------------------------------------------------- */
+  --font: "Segoe UI", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", "Courier New", monospace;
+  --fs: 13px;      /* body */
+  --fs-sm: 12px;   /* secondary */
+  --fs-xs: 11px;   /* micro labels, uppercase with tracking */
+  --fs-mono: 12.5px;
+
+  /*
+   * -- surfaces ------------------------------------------------------------
+   *
+   * Five steps, ordered by height. Dark raises by getting lighter; light raises
+   * by getting whiter, which means the direction inverts: under `data-theme`
+   * light the sidebar (`elev`) is *darker* than the editor (`base`). That reads
+   * backwards next to the dark set and it is meant to -- it is how light UIs
+   * have always worked, and doing it the other way makes a white sidebar float
+   * off a white page with nothing to sit it on.
+   */
+  --bg-inset: #080A0E;   /* recessed: inputs, code blocks */
+  --bg-base: #0C0E13;    /* the window's ground, and the terminal's */
+  --bg-elev: #141821;    /* title bar, sidebar, tab strip, status bar */
+  --bg-raise: #1C212C;   /* the active tab, cards */
+  --bg-raise-hi: #232936;/* a solid hover for things already on `raise` */
+  --bg-float: #212736;   /* dialogs and menus, above everything */
+
+  /*
+   * -- text ----------------------------------------------------------------
+   *
+   * Two levels for reading and one for not.
+   *
+   * `--tx` and `--tx-dim` both clear 4.5:1 on every surface above, and between
+   * them they cover everything a person is meant to read -- a name and the
+   * `root@10.0.0.11` under it, a label and its value.
+   *
+   * `--tx-faint` does not clear it and is not meant to: it is for icon strokes
+   * sitting beside text that carries the meaning, for hairline furniture, and
+   * for disabled controls, which WCAG exempts. Putting words in it is a bug.
+   * The first pass at this palette had the host line, the placeholders and the
+   * version string in it, all of them between 2.4:1 and 3.3:1.
+   */
+  --tx: #E7EAF2;
+  --tx-dim: #8A93A6;
+  --tx-faint: #5B6376;
+
+  /* -- lines --------------------------------------------------------------- */
+  --line: rgba(255, 255, 255, 0.06);
+  --line-strong: rgba(255, 255, 255, 0.11);
+
+  /*
+   * -- accent --------------------------------------------------------------
+   *
+   * Focus, selection, and primary actions. Nothing else. It is worth the
+   * restraint: a colour that appears in ten places has no power in any of them.
+   */
+  --ac: #6E7CF7;
+  --ac-hover: #808CF9;
+  --ac-soft: rgba(110, 124, 247, 0.15);
+  --ac-ring: rgba(110, 124, 247, 0.42);
+  /*
+   * Dark ink on the accent, not white.
+   *
+   * An indigo bright enough to read as text on `--bg-base` is also too bright
+   * to put white on: white here measures 3.57:1, and on `--ac-hover` -- which
+   * is *lighter* -- 2.98:1, so the label got harder to read at the moment the
+   * pointer was on it. Every primary button, every menu row under the cursor
+   * and the user's own chat bubble is this pair.
+   *
+   * The alternative was to darken the accent until white cleared, but the same
+   * token is the colour of focused borders, active tab glyphs and the group
+   * counts, all of which are read *as* text on a dark ground -- darkening it
+   * far enough to carry white would have taken it below 4.5:1 there. Light mode
+   * has no such squeeze and keeps white.
+   */
+  --ac-tx: #0B0E16;
+
+  /* -- semantic ------------------------------------------------------------ */
+  --ok: #35D6A4;
+  --ok-soft: rgba(53, 214, 164, 0.16);
+  --warn: #F5B546;
+  --warn-soft: rgba(245, 181, 70, 0.16);
+  --err: #FF6B6B;
+  --err-hover: #FF8080;
+  --err-soft: rgba(255, 107, 107, 0.15);
+  /* Same squeeze as `--ac-tx`, same answer: white on this red measures 2.6:1. */
+  --err-tx: #180708;
+  --info: #58B6F0;
+  /*
+   * The assistant's own colour, and deliberately the orange of the application
+   * icon rather than a hue of its own. The two marks sit three characters apart
+   * on the title bar and the assistant is the product's headline feature; they
+   * should read as one family. Not the accent either -- that one means
+   * "focused", and these appear side by side.
+   */
+  --ai: #F97316;
+
+  /*
+   * The plate of the application icon, to the digit, and the one token in this
+   * file that is the same value in both themes.
+   *
+   * Everything else here is a role -- "the assistant's colour", "an error" --
+   * and a role is allowed to be a different orange or a different red depending
+   * on what it is being read against. This is not a role, it is the logo: the
+   * .ico in the taskbar and the plate on media/tshell.svg do not darken when
+   * the user picks the light theme, and neither should a drawing of the same
+   * mark. Use it only where the thing being drawn *is* the mark. `--ai` is the
+   * one to reach for anywhere the meaning is "the assistant".
+   */
+  --brand: #F97316;
+
+  /*
+   * The terminal's cursor and its selection, for a scheme that does not name
+   * its own. Tokens rather than two literals in terminal.js because the
+   * settings page has to draw the same two in its preview, and a colour written
+   * out twice is a colour that goes out of step. xterm cannot read these
+   * itself -- it draws into a canvas -- so both pages read them from here and
+   * hand them over as script values.
+   */
+  --term-cursor: #6E7CF7;
+  --term-select: rgba(110, 124, 247, 0.32);
+
+  /* -- interaction --------------------------------------------------------- */
+  --hover: rgba(255, 255, 255, 0.055);
+  --active: rgba(255, 255, 255, 0.09);
+  --scroll: rgba(150, 158, 178, 0.30);
+  --scroll-hover: rgba(160, 168, 188, 0.52);
+
+  /* -- geometry ------------------------------------------------------------ */
+  --r-sm: 6px;    /* inputs, buttons, list rows */
+  --r-md: 8px;    /* tabs, cards, menus */
+  --r-lg: 12px;   /* dialogs */
+  --r-pill: 999px;
+
+  --sh-pop: 0 12px 34px rgba(0, 0, 0, 0.36);
+  --sh-dlg: 0 18px 48px rgba(0, 0, 0, 0.46);
+  --sh-tab: 0 1px 3px rgba(0, 0, 0, 0.22);
+
+  /*
+   * -- syntax ---------------------------------------------------------------
+   *
+   * Six hues that stay apart from each other and sit on `--bg-inset`. Given as
+   * literals rather than as aliases of the semantic set: highlighting needs
+   * *distinguishable*, which is a different requirement from *meaningful*, and
+   * borrowing --warn for both a warning and a number makes neither read.
+   */
+  --syn-blue: #6E9BF7;
+  --syn-green: #35D6A4;
+  --syn-orange: #F5A05A;
+  --syn-purple: #C48CF7;
+  --syn-red: #FF6B6B;
+  --syn-yellow: #F5D046;
+  /* Three more that highlighting needs and charts do not: a colour for the
+   * text that is not code, one for type names, and a second, lighter blue so
+   * that a variable and the keyword beside it are not the same blue. */
+  --syn-comment: #717A8F;
+  --syn-teal: #46C9B4;
+  --syn-sky: #9FC6FF;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg-inset: #F7F8FC;
+  --bg-base: #FFFFFF;
+  --bg-elev: #F4F5FA;
+  --bg-raise: #FFFFFF;
+  --bg-raise-hi: #EFF1F7;
+  --bg-float: #FFFFFF;
+
+  --tx: #1A1E2B;
+  --tx-dim: #666E82;
+  --tx-faint: #98A0B2;
+
+  --line: rgba(16, 20, 40, 0.09);
+  --line-strong: rgba(16, 20, 40, 0.14);
+
+  --ac: #5A5FE0;
+  --ac-hover: #4B50D0;
+  --ac-soft: rgba(90, 95, 224, 0.11);
+  --ac-ring: rgba(90, 95, 224, 0.34);
+  --ac-tx: #ffffff;
+
+  /*
+   * Darker than they look like they need to be, and measured rather than
+   * judged. On white these carry words -- "Connected" in the status bar, the
+   * error line under the server list -- and the first pass at this palette had
+   * all three of them between 2.9:1 and 4.3:1, which reads fine to someone with
+   * unimpaired vision on a good monitor and not at all to everyone else.
+   */
+  --ok: #0D7E5C;
+  --ok-soft: rgba(13, 126, 92, 0.13);
+  --warn: #986507;
+  --warn-soft: rgba(152, 101, 7, 0.14);
+  --err: #CF362D;
+  --err-hover: #B22A22;
+  --err-soft: rgba(207, 54, 45, 0.12);
+  --err-tx: #ffffff;
+  --ai: #C2410C;
+  --info: #1B72C4;
+
+  --term-cursor: #5A5FE0;
+  --term-select: rgba(90, 95, 224, 0.22);
+
+  --hover: rgba(16, 20, 40, 0.045);
+  --active: rgba(16, 20, 40, 0.08);
+  --scroll: rgba(60, 68, 90, 0.28);
+  --scroll-hover: rgba(60, 68, 90, 0.48);
+
+  --sh-pop: 0 12px 30px rgba(20, 26, 50, 0.13);
+  --sh-dlg: 0 18px 44px rgba(20, 26, 50, 0.18);
+  --sh-tab: 0 1px 3px rgba(20, 26, 50, 0.09);
+
+  --syn-blue: #3A54D8;
+  --syn-green: #0D815F;
+  --syn-orange: #AB5D09;
+  --syn-purple: #8B36C4;
+  --syn-red: #C7443C;
+  --syn-yellow: #8A6A00;
+  --syn-comment: #697285;
+  --syn-teal: #0B7B70;
+  --syn-sky: #2B5FBF;
+}
+
+/*
+ * ===========================================================================
+ * The `--vscode-*` compatibility layer.
+ *
+ * Keep the names. They are a stable interface now, not a leftover. Two of the
+ * mappings below are not one-to-one and are called out where they sit.
+ * ===========================================================================
+ */
+:root {
+  /* Base */
+  --vscode-font-family: var(--font);
+  --vscode-font-size: var(--fs);
+  --vscode-editor-font-family: var(--font-mono);
+  --vscode-foreground: var(--tx);
+  --vscode-descriptionForeground: var(--tx-dim);
+  --vscode-errorForeground: var(--err);
+  --vscode-editorWarning-foreground: var(--warn);
+  --vscode-focusBorder: var(--ac);
+
+  /* Surfaces */
+  --vscode-editor-background: var(--bg-base);
+  --vscode-sideBar-background: var(--bg-elev);
+  --vscode-editorWidget-background: var(--bg-float);
+  --vscode-editorWidget-border: var(--line-strong);
+  --vscode-editorGutter-background: var(--bg-base);
+  --vscode-editorLineNumber-foreground: var(--tx-faint);
+  --vscode-panel-border: var(--line);
+  --vscode-widget-border: var(--line);
+
+  /* Buttons */
+  --vscode-button-background: var(--ac);
+  --vscode-button-foreground: var(--ac-tx);
+  --vscode-button-hoverBackground: var(--ac-hover);
+  --vscode-button-border: transparent;
+  --vscode-button-secondaryBackground: var(--bg-raise);
+  --vscode-button-secondaryForeground: var(--tx);
+  --vscode-button-secondaryHoverBackground: var(--bg-raise-hi);
+
+  /* Inputs and dropdowns */
+  --vscode-input-background: var(--bg-inset);
+  --vscode-input-foreground: var(--tx);
+  --vscode-input-border: var(--line-strong);
+  --vscode-dropdown-background: var(--bg-inset);
+  --vscode-dropdown-foreground: var(--tx);
+  --vscode-dropdown-border: var(--line-strong);
+
+  /*
+   * Lists.
+   *
+   * DEVIATION, deliberate. VS Code's active selection is a solid blue block
+   * with white text on it. A server row here is two lines -- the name and
+   * `root@10.0.0.11` under it -- and a solid fill flattens the second line into
+   * something you have to squint at. The selection is a tinted panel with a
+   * hairline of accent instead, so the row keeps the same two levels of text it
+   * had when it was not selected.
+   *
+   * This is why the *foreground* below is `--tx` and not white. The two have to
+   * move together: leaving the old white here over the new tinted background
+   * would be the one combination that is unreadable in light mode.
+   */
+  --vscode-list-activeSelectionBackground: var(--ac-soft);
+  --vscode-list-activeSelectionForeground: var(--tx);
+  --vscode-list-inactiveSelectionBackground: var(--active);
+  --vscode-list-hoverBackground: var(--hover);
+  --vscode-list-dropBackground: var(--ac-soft);
+  --vscode-list-focusOutline: var(--ac);
+
+  /* Menus. Selection here *is* solid -- a menu row is one line of text. */
+  --vscode-menu-background: var(--bg-float);
+  --vscode-menu-foreground: var(--tx);
+  --vscode-menu-border: var(--line-strong);
+  --vscode-menu-selectionBackground: var(--ac);
+  --vscode-menu-selectionForeground: var(--ac-tx);
+  --vscode-menu-separatorBackground: var(--line);
+
+  /* Terminal */
+  --vscode-terminal-background: var(--bg-base);
+  --vscode-terminal-foreground: var(--tx);
+  --vscode-terminal-ansiGreen: var(--ok);
+
+  /* Text */
+  --vscode-textLink-foreground: var(--info);
+  --vscode-textBlockQuote-background: var(--bg-elev);
+  --vscode-textCodeBlock-background: var(--bg-inset);
+
+  /*
+   * Chrome. The badge was a grey pill; it is a tinted accent pill now, which is
+   * what the counts beside a group name should have been all along -- they are
+   * a property of the group, not a warning about it.
+   */
+  --vscode-badge-background: var(--ac-soft);
+  --vscode-badge-foreground: var(--ac);
+  --vscode-scrollbarSlider-background: var(--scroll);
+  --vscode-scrollbarSlider-hoverBackground: var(--scroll-hover);
+  --vscode-progressBar-background: var(--ac);
+  --vscode-toolbar-hoverBackground: var(--hover);
+  --vscode-toolbar-activeBackground: var(--active);
+
+  /* Diffs and git decoration, used by the chat panel's edit previews */
+  --vscode-diffEditor-insertedLineBackground: var(--ok-soft);
+  --vscode-diffEditor-removedLineBackground: var(--err-soft);
+  --vscode-gitDecoration-addedResourceForeground: var(--ok);
+  --vscode-gitDecoration-deletedResourceForeground: var(--err);
+
+  /* Charts, used by the syntax highlighter */
+  --vscode-charts-blue: var(--syn-blue);
+  --vscode-charts-green: var(--syn-green);
+  --vscode-charts-orange: var(--syn-orange);
+  --vscode-charts-purple: var(--syn-purple);
+  --vscode-charts-red: var(--syn-red);
+  --vscode-charts-yellow: var(--syn-yellow);
+}

@@ -1,0 +1,521 @@
+/*
+ * The parts every page draws.
+ *
+ * Before this file there was no shared vocabulary: servers.css rounded its
+ * corners at 6-12px and shell.css at 3-4px, buttons were written three times
+ * from scratch, and each page had its own idea of what a focused input looks
+ * like. None of that was visible in any one page -- it was only visible when
+ * you moved between them, which is the whole window.
+ *
+ * Loaded after theme.css and before the page's own stylesheet, so a page can
+ * still override any of it without fighting specificity.
+ *
+ * Class names are prefixed `c-` so they cannot collide with the names the pages
+ * already use for their own layout (`.pane`, `.row`, `.menu-item`, ...). A page
+ * opts in by putting `c-btn` on a button; nothing here applies by accident.
+ */
+
+/* -- primitives ------------------------------------------------------------ */
+
+/*
+ * Scrollbars. Not a nicety: the WebView's default is a wide opaque grey bar
+ * that is the single most obviously un-designed thing in a themed window, and
+ * it appears on every list, every log and every terminal.
+ *
+ * `::-webkit-scrollbar` ONLY. Do not add `scrollbar-width` or `scrollbar-color`
+ * back to this file.
+ *
+ * The two syntaxes are not additive and they are not a fallback pair -- in
+ * Chromium the standard properties *win*, and specifying either of them makes
+ * the engine ignore every `::-webkit-scrollbar` rule on that element. The first
+ * version of this file set both, on the assumption that one would cover for the
+ * other; what it actually did was disable all of the below and hand every
+ * scroll container Chrome's own "thin" scrollbar, which on Windows is a squared
+ * thumb with a stepper arrow at each end -- barely narrower than the default
+ * and nothing like the rest of the window.
+ *
+ * Checked by rendering all four combinations side by side in the engine this
+ * ships on (Chromium 151, which is what WebView2 is). Only the webkit-only
+ * column comes out round-ended, arrowless and 6px.
+ *
+ * Portability is not the reason to prefer the standard properties here: every
+ * platform this runs on is a webkit or blink WebView -- WebView2 on Windows,
+ * WKWebView on macOS, WebKitGTK on Linux -- and all three implement these.
+ */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/*
+ * Absent until the pointer is over the thing that scrolls, which is how the
+ * terminal's has always behaved and now how all of them do.
+ *
+ * A scrollbar is an answer to "where am I", and nobody is asking while their
+ * hands are somewhere else. Standing bars down the side of the server list, the
+ * file list, the thread and the settings page are four vertical lines the eye
+ * has to discount on every glance at the window.
+ *
+ * `:hover` on the scroll container rather than on the bar itself: a bar you can
+ * only summon by finding a 10px strip you cannot see is not a control, it is a
+ * puzzle. The track stays reserved either way, so nothing reflows when it
+ * appears -- what changes is only whether the thumb is painted.
+ *
+ * `background-clip` is restated in each rule because the `background` shorthand
+ * resets it, and without it the thumb becomes a 10px slab.
+ */
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+  /* Drawn inside a transparent border so the thumb is 6px of visible bar with
+   * 2px of air each side, instead of a 10px slab against the content. */
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+/*
+ * `c-scroll-hot` is put on by shared/scrollbars.js and means "the pointer is
+ * inside this box". A class and not `:hover`, because Chromium does not repaint
+ * a custom scrollbar when the hover arrives via a child -- and a list of rows is
+ * nothing but children. See the note at the top of that file.
+ *
+ * `:hover` is kept alongside it for the one case the script cannot cover: the
+ * pointer is on the bar itself, dragging, and has left the box.
+ */
+.c-scroll-hot::-webkit-scrollbar-thumb,
+:hover::-webkit-scrollbar-thumb { background: var(--scroll); background-clip: content-box; }
+
+.c-scroll-hot::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:hover { background: var(--scroll-hover); background-clip: content-box; }
+
+/*
+ * One focus ring for the whole application.
+ *
+ * `:focus-visible` and not `:focus`, so a mouse click on a button does not
+ * light it up -- the ring is for people navigating by keyboard, and showing it
+ * to everyone is how it ends up being removed. Drawn as a shadow rather than an
+ * outline so it never adds to the element's box and never nudges a layout.
+ */
+.c-focusable:focus-visible,
+.c-btn:focus-visible,
+.c-field:focus-visible,
+.c-row:focus-visible,
+.c-menu-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ac-ring);
+  border-color: var(--ac);
+}
+
+.c-icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+/* -- buttons --------------------------------------------------------------- */
+
+.c-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  /* A minimum rather than a fixed height, so a button that ends up with two
+   * lines in it grows instead of clipping them into one. The icon-only variant
+   * below does pin its height, because that one has to stay square. */
+  min-height: 28px;
+  padding: 0 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--tx);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color .12s ease, border-color .12s ease, color .12s ease;
+}
+
+.c-btn:hover { background: var(--hover); }
+.c-btn:active { background: var(--active); }
+
+.c-btn:disabled,
+.c-btn[disabled] {
+  opacity: .38;
+  cursor: default;
+  background: transparent;
+}
+
+.c-btn-primary {
+  background: var(--ac);
+  border-color: transparent;
+  color: var(--ac-tx);
+  font-weight: 500;
+}
+
+.c-btn-primary:hover { background: var(--ac-hover); }
+.c-btn-primary:active { background: var(--ac-hover); }
+
+/* Deletions here are not undoable -- there is no bin to take them back out of,
+ * so the button says so before it is pressed rather than after. */
+.c-btn-danger {
+  background: var(--err);
+  border-color: transparent;
+  color: var(--err-tx);
+  font-weight: 500;
+}
+
+.c-btn-danger:hover { background: var(--err-hover); }
+
+.c-btn-ghost {
+  border-color: transparent;
+  color: var(--tx-dim);
+}
+
+.c-btn-ghost:hover { color: var(--tx); background: var(--hover); }
+
+/*
+ * Icon-only. 28px square, which is under the 44px touch guideline on purpose:
+ * this is a pointer-driven desktop application with no touch target in it, and
+ * a 44px grid would make the title bar twice its height for no one's benefit.
+ * Every one of these carries an `aria-label`, which is the part that matters.
+ */
+.c-btn-icon {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-color: transparent;
+  color: var(--tx-dim);
+}
+
+.c-btn-icon:hover { color: var(--tx); background: var(--hover); }
+.c-btn-icon.c-on { color: var(--ac); background: var(--ac-soft); }
+
+/* -- fields ---------------------------------------------------------------- */
+
+.c-field {
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  color: var(--tx);
+  font: inherit;
+  font-size: var(--fs-sm);
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+
+/* Placeholders are words, so they take the readable dim rather than the faint
+ * that the rest of a field's furniture uses. */
+.c-field::placeholder { color: var(--tx-dim); }
+
+.c-field:focus {
+  outline: none;
+  border-color: var(--ac);
+  box-shadow: 0 0 0 2px var(--ac-ring);
+}
+
+textarea.c-field { height: auto; padding: 8px 10px; resize: vertical; line-height: 1.55; }
+select.c-field { cursor: pointer; }
+
+/* The name of the field, above it. Uppercase and tracked so it reads as a label
+ * at a glance without needing to be as loud as the value it names. */
+.c-label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--tx-dim);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+.c-hint {
+  color: var(--tx-dim);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+}
+
+/* -- segmented ------------------------------------------------------------- */
+
+/*
+ * One track, one word lit: a question answered by picking one of two or three
+ * words. Every switch in the product wears it, which is the point -- a switch
+ * that governs the rows under it reads as governing them only when it and they
+ * look like the same kind of thing.
+ *
+ * The track carries the border so the segments do not each draw their own: a
+ * row of separately outlined buttons reads as three unrelated actions, which is
+ * the opposite of what one of these is.
+ *
+ * Real buttons rather than a styled div, so Tab reaches them, Space works, and
+ * `disabled` means what it says to a screen reader as well as to a mouse.
+ */
+.c-seg {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+}
+
+.c-seg-item {
+  padding: 4px 13px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--tx-dim);
+  font: inherit;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color .12s ease, color .12s ease;
+}
+
+.c-seg-item:not(.c-on):hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--tx);
+}
+
+/*
+ * The chosen word is filled with the accent rather than raised out of the
+ * track. It is louder than a segmented control strictly needs to be, and that
+ * is the trade: these are read at a glance to answer "is this on", and the
+ * answer has to survive being seen out of the corner of an eye.
+ */
+.c-seg-item.c-on,
+.c-seg-item.c-on:hover {
+  background: var(--ac);
+  color: var(--ac-tx);
+  font-weight: 500;
+}
+
+/*
+ * Dimmed with the label it belongs to, not on top of it: whatever marks a row
+ * unavailable already fades its words, and a control that fades twice as far as
+ * its label looks broken rather than switched off.
+ */
+.c-seg-item:disabled { opacity: .5; cursor: default; }
+
+/* Inside the track rather than around it: a ring that crosses the border reads
+   as the whole control being focused instead of the one segment that is. */
+.c-seg-item:focus-visible { outline-offset: -1px; }
+
+/* -- list rows ------------------------------------------------------------- */
+
+.c-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 9px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background-color .12s ease;
+}
+
+.c-row:hover { background: var(--hover); }
+
+/*
+ * DEVIATION from what VS Code does, and the reason the alias for
+ * `list.activeSelectionBackground` in theme.css is a tint rather than a fill.
+ *
+ * A row here is two lines -- a name, and `root@10.0.0.11` under it in the dim
+ * colour. Filled solid with the accent, the second line has to go to something
+ * near-white to survive, and then it is no longer the second line: both read at
+ * once and the row loses its hierarchy. A tint plus a hairline marks the row
+ * just as clearly and leaves the two levels of text exactly as they were.
+ */
+.c-row.c-selected {
+  background: var(--ac-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ac) 34%, transparent);
+}
+
+/* -- status dots ----------------------------------------------------------- */
+
+.c-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--tx-faint);
+  flex: none;
+}
+
+.c-dot.c-ok { background: var(--ok); }
+.c-dot.c-warn { background: var(--warn); }
+.c-dot.c-err { background: var(--err); }
+
+/*
+ * Connecting breathes rather than taking a third colour.
+ *
+ * Movement is caught by peripheral vision well before hue is, and the row that
+ * is mid-connection is precisely the one worth catching out of the corner of an
+ * eye. It is also the only animation in the window that runs unprompted, which
+ * is what keeps it from being noise.
+ */
+.c-dot.c-busy {
+  background: var(--warn);
+  animation: c-breathe 1.5s ease-in-out infinite;
+}
+
+@keyframes c-breathe {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .4; transform: scale(.72); }
+}
+
+/* -- menus ----------------------------------------------------------------- */
+
+.c-menu {
+  min-width: 172px;
+  padding: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-float);
+  color: var(--tx);
+  box-shadow: var(--sh-pop);
+  font-size: var(--fs-sm);
+  user-select: none;
+}
+
+.c-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 9px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.c-menu-item > .c-icon,
+.c-menu-item > .icon { opacity: .75; }
+
+/* A menu row is one line of text, so the selection here *is* solid -- the
+ * argument against a fill on the server rows does not apply. */
+.c-menu-item:hover:not(.c-disabled) {
+  background: var(--ac);
+  color: var(--ac-tx);
+}
+
+.c-menu-item:hover:not(.c-disabled) > .c-icon,
+.c-menu-item:hover:not(.c-disabled) > .icon { opacity: 1; }
+
+.c-menu-item.c-danger { color: var(--err); }
+.c-menu-item.c-danger:hover { background: var(--err); color: var(--err-tx); }
+
+.c-menu-item.c-disabled { opacity: .38; cursor: default; }
+
+.c-menu-sep {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--line);
+}
+
+/* -- dialogs --------------------------------------------------------------- */
+
+.c-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(6, 8, 14, 0.55);
+}
+
+:root[data-theme="light"] .c-backdrop { background: rgba(24, 28, 48, 0.28); }
+
+.c-dialog {
+  width: min(420px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 20px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg-float);
+  color: var(--tx);
+  box-shadow: var(--sh-dlg);
+}
+
+.c-dialog-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 7px;
+}
+
+.c-dialog-message {
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  color: var(--tx-dim);
+  /* A group name is the user's, so it can be long and it can lack spaces. */
+  overflow-wrap: anywhere;
+}
+
+/* Primary action furthest right. One convention across all three platforms:
+ * mixing them would mean the same dialog reorders itself depending on where it
+ * was opened, which is worse than picking the wrong one consistently. */
+.c-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+/* -- notices --------------------------------------------------------------- */
+
+.c-notice {
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  background: var(--warn-soft);
+  color: var(--tx);
+  border-left: 2px solid var(--warn);
+}
+
+.c-notice.c-notice-error {
+  background: var(--err-soft);
+  border-left-color: var(--err);
+}
+
+/* -- misc ------------------------------------------------------------------ */
+
+/* A count beside a name. Reads as a property of the thing, not a warning about
+ * it, which is why it is a tinted accent pill and not a red badge. */
+.c-badge {
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  background: var(--ac-soft);
+  color: var(--ac);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.c-eyebrow {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--tx-dim);
+}
+
+/*
+ * Everything above animates for 120-160ms and nothing animates position. Users
+ * who have asked their system for less motion get none of it -- including the
+ * breathing dot, which then simply sits in the warning colour and still says
+ * the same thing.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+}

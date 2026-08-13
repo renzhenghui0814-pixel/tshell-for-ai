@@ -1,0 +1,19 @@
+{
+  "name": "tshell",
+  "version": "3.0.0",
+  "private": true,
+  "description": "AI assistant working in your own SSH terminal, with SSH/SFTP sessions and dual-pane file transfer. No server-side setup.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/renzhenghui0814-pixel/tshell.git"
+  },
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  }
+}
