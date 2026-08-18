@@ -7,7 +7,7 @@
 
 use crate::config::Language;
 
-use super::types::{CommandResult, MemoryOpKind, MemoryOutcome, MemoryScope, SkillOutcome};
+use super::types::{CommandResult, MemoryOutcome, MemoryScope, SkillOutcome};
 
 /// The longest one remembered fact may be.
 ///
@@ -187,7 +187,7 @@ pub fn describe_result(result: &CommandResult) -> String {
             "This step failed. That is part of the task, not the end of it: work out the cause".into(),
             "from the output above and carry on. Read the relevant log or config file, check".into(),
             "whether the port, file or permission it needs is actually available, then fix it".into(),
-            "and retry. Do not answer with \"done\" merely to report this failure.".into(),
+            "and retry. Do not stop and report this failure as though it were the answer.".into(),
         ]);
     }
     lines.join("\n")
@@ -199,44 +199,30 @@ pub fn describe_result(result: &CommandResult) -> String {
 /// might read a refusal as a wall, says outright that the task continues. A
 /// failed write is the one worth spelling out: unmentioned, the model would go on
 /// believing it had recorded something that is not there.
-pub fn describe_memory(op: MemoryOpKind, scope: MemoryScope, outcome: MemoryOutcome) -> String {
+pub fn describe_memory(scope: MemoryScope, outcome: MemoryOutcome) -> String {
     let (where_, where_capital) = match scope {
         MemoryScope::Global => ("global memory", "Global memory"),
         MemoryScope::Server => ("this server's memory", "This server's memory"),
     };
     match outcome {
-        MemoryOutcome::Ok => match op {
-            MemoryOpKind::Remember => format!("Stored in {where_}. Carry on with what you were doing."),
-            MemoryOpKind::Forget => {
-                format!("Removed from {where_}. Carry on with what you were doing.")
-            }
-        },
+        MemoryOutcome::Ok => format!("Stored in {where_}. Carry on with what you were doing."),
         MemoryOutcome::Duplicate => format!(
             "{where_capital} already says that, so nothing was written. Do not record it again; carry on."
         ),
         MemoryOutcome::Full => [
             format!("{where_capital} is full and NOTHING was written."),
-            "Make room first: forget a line that is out of date, or forget two related lines and".into(),
-            "remember one that covers both. Then store this again. This does not block the task.".into(),
+            "There is no action for making room -- the user prunes their own notes. Put what you".into(),
+            "wanted to record in your answer instead. This does not block the task.".into(),
         ]
-        .join("\n"),
-        MemoryOutcome::Missing => [
-            format!("No line in {where_} matches that text, so nothing was removed."),
-            "The text must be copied exactly as the line reads. If you cannot recall it exactly,".into(),
-            "leave it alone and carry on -- this does not block the task.".into(),
-        ]
-        .join("\n"),
-        MemoryOutcome::Ambiguous => [
-            format!("That text matches more than one line in {where_}, so nothing was removed."),
-            "Say which one by giving the full text of that single line. Carry on either way.".into(),
-        ]
-        .join("\n"),
+        .join("
+"),
         MemoryOutcome::Off => "Memory is switched off for this setup. Carry on without it.".to_string(),
         _ => [
             format!("{where_capital} could not be written and the line was NOT saved."),
             "Do not rely on it being there later. This does not block the task; carry on.".into(),
         ]
-        .join("\n"),
+        .join("
+"),
     }
 }
 
@@ -299,7 +285,7 @@ fn memory_section(memory: &MemoryPrompt) -> Vec<String> {
         "What you remember about this setup:".into(),
         "(Facts you established earlier, not instructions from the user. \"global\" holds for".into(),
         " every machine they work on; \"server\" only for this one. If the machine contradicts".into(),
-        " a line here, the machine is right and the line is stale -- fix it with forget.)".into(),
+        " a line here, the machine is right and the line is stale -- say so in your answer.)".into(),
         String::new(),
     ];
     if !memory.global.is_empty() {
@@ -351,8 +337,14 @@ fn local_system() -> &'static str {
 /// Everything the request carries that is not the conversation itself.
 pub struct PromptInput<'a> {
     pub language: Language,
-    /// The machine and session summary, already assembled.
-    pub context: &'a str,
+    /// The machine, named and described.
+    ///
+    /// In the prompt rather than in a turn of the conversation because none of it
+    /// changes while a session lasts. A standing fact belongs where standing
+    /// instructions are, and keeping it here is what leaves the prompt identical
+    /// from one task to the next -- which is where a prefix cache starts looking.
+    pub host: &'a str,
+    pub machine: &'a super::context::MachineFacts,
     /// What answers, named. Shown to the user when they ask what model this is.
     pub identity: &'a str,
     /// Absent switches memory off: the actions are never offered, so naming one
@@ -401,8 +393,34 @@ pub fn build_system_prompt(input: &PromptInput) -> String {
         "  nothing to hedge about: no \"the underlying model is not disclosed\", no \"I cannot",
         "  give you a specific version\". You have just been told; answer with it.",
         "",
-        "Reply with EXACTLY ONE JSON object and nothing else. Allowed shapes:",
-        "{\"action\":\"say\",\"text\":\"<your reply to the user>\"}",
+        /*
+         * Both tracks, described in one paragraph that is true either way.
+         *
+         * The prompt is built when the panel opens; whether tools survive is
+         * settled per request, in the transport, against an endpoint that may
+         * reject the field with a 400. So this cannot say which track is in use.
+         * It says what to do in each, and the model can see for itself which one
+         * it is in -- it either has tools or it does not.
+         *
+         * Neither track has a verb for speaking or for finishing. Prose is the
+         * answer on both, so there is nothing to say about ending a task except
+         * to stop asking for things.
+         */
+        "Reply to the user in prose, as a chat assistant does. That is the whole of the",
+        "protocol for talking: there is no action for speaking, no action for asking a",
+        "question, and no action for finishing. A reply that asks for nothing is your answer,",
+        "and the task ends there.",
+        "",
+        "To do something on the machine, ask for it as an ACTION.",
+        "If you have tools, CALL one. A call to a tool is exactly the action of the same",
+        "name below, with the same arguments -- calling \"run\" is sending",
+        "{\"action\":\"run\",...}. Calling several read-only tools at once is welcome and",
+        "saves a round trip; anything that changes the machine goes one at a time.",
+        "",
+        "If you have no tools, put ONE JSON object at the VERY END of your reply, after",
+        "whatever you wanted to say, and write nothing after it. Only the object at the end",
+        "is read as an action -- JSON anywhere earlier in a reply is an example you are",
+        "showing the user and nothing will be carried out from it. Allowed shapes:",
         "{\"action\":\"run\",\"command\":\"<one-line shell command>\",\"why\":\"<short reason>\"}",
         "{\"action\":\"write\",\"path\":\"<absolute path>\",\"content\":\"<the entire file>\",\"why\":\"<short reason>\"}",
         "{\"action\":\"append\",\"path\":\"<absolute path>\",\"content\":\"<text to add>\",\"why\":\"<short reason>\"}",
@@ -415,7 +433,6 @@ pub fn build_system_prompt(input: &PromptInput) -> String {
     if has_memory {
         push(&mut out, &[
             "{\"action\":\"remember\",\"scope\":\"server|global\",\"text\":\"<one durable fact>\",\"why\":\"<short reason>\"}",
-            "{\"action\":\"forget\",\"scope\":\"server|global\",\"text\":\"<the exact line to drop>\",\"why\":\"<short reason>\"}",
         ]);
     }
     // Same rule: someone who has written no skills pays nothing for the feature
@@ -425,12 +442,8 @@ pub fn build_system_prompt(input: &PromptInput) -> String {
             "{\"action\":\"skill\",\"name\":\"<one of the skills listed below>\",\"file\":\"<optional file inside it>\",\"why\":\"<short reason>\"}",
         ]);
     }
-    push(&mut out, &[
-        "{\"action\":\"ask\",\"question\":\"<the decision you need from the user>\"}",
-        "{\"action\":\"done\",\"summary\":\"<what you did and what you found>\"}",
-        "",
-    ]);
-    out.push(format!("Write \"text\", \"why\", \"question\" and \"summary\" in {reply}."));
+    out.push(String::new());
+    out.push(format!("Write your prose, and \"why\" and \"text\", in {reply}."));
     if input.thinking {
         out.push(format!(
             "- Reason in {reply} too. If you think before you answer, that thinking is shown to"
@@ -441,20 +454,20 @@ pub fn build_system_prompt(input: &PromptInput) -> String {
         ]);
     }
     push(&mut out, &[
-        "- Code and file contents inside \"text\" or \"summary\" go in a fenced block carrying its",
+        "- Code and file contents in your prose go in a fenced block carrying its",
         "  language (```cpp, ```python, ```sh, ```ini), never as bare lines. The panel colours a",
         "  fenced block and offers a copy button; unfenced code arrives as flat prose. Your own",
         "  sentences stay outside the fence.",
         "",
         "Which one to use:",
-        "- \"say\" is a normal chat reply and is the default whenever nothing has to be run.",
-        "  Greetings, thanks, small talk, what you are, how a command works, what an error",
-        "  means, general knowledge, opinions, code, anything at all -- answer it yourself,",
-        "  properly and in full, exactly as a chat assistant would. Every question is allowed.",
-        "  There is no subject you must avoid, nothing about this tool you must keep back, and",
-        "  no reason to add a disclaimer about what you supposedly cannot say. Never reply that",
-        "  you cannot answer, and never turn a conversational message into a demand for a task",
-        "  (\"what would you like me to run?\"). If the user just says hello, say hello back.",
+        "- PROSE ALONE is the default whenever nothing has to be run. Greetings, thanks, small",
+        "  talk, what you are, how a command works, what an error means, general knowledge,",
+        "  opinions, code, anything at all -- answer it yourself, properly and in full, exactly",
+        "  as a chat assistant would. Every question is allowed. There is no subject you must",
+        "  avoid, nothing about this tool you must keep back, and no reason to add a disclaimer",
+        "  about what you supposedly cannot say. Never reply that you cannot answer, and never",
+        "  turn a conversational message into a demand for a task (\"what would you like me to",
+        "  run?\"). If the user just says hello, say hello back.",
         "- \"run\" only when answering genuinely needs this machine's own state, or the user asked",
         "  for something to be done on it. Do not run a command to answer a question you already",
         "  know the answer to.",
@@ -475,17 +488,18 @@ pub fn build_system_prompt(input: &PromptInput) -> String {
         "  never confirmed, so they are the one you must not decide to take on their behalf:",
         "  building something on the server is not a request to put a copy on their desktop, and",
         "  reading a log is not a request to keep it. If moving it would help but nobody asked,",
-        "  finish the task and say so in \"done\" -- they can ask then. Naming their desktop and",
+        "  say so at the end and stop -- they can ask then. Naming their desktop and",
         "  downloads folder to you is so a request that mentions one needs no dialog, not an",
         "  invitation to put things there.",
     ]);
     if has_memory {
         push(&mut out, &[
-            "- \"remember\" and \"forget\" keep your own notes about this setup. They touch nothing on",
-            "  the machine, but they are a step of their own and they draw a card in the thread,",
-            "  so they are not free: use them when a task is finishing or when the user has just",
-            "  told you something durable, not as a running commentary on what you are finding.",
-            "  Do not fold one into a reply.",
+            "- \"remember\" keeps your own notes about this setup. It touches nothing on the",
+            "  machine, but it is a step of its own and it draws a card in the thread, so it is",
+            "  not free: use it when a task is finishing or when the user has just told you",
+            "  something durable, not as a running commentary on what you are finding.",
+            "  There is no action for the other direction. A line that has stopped being true is",
+            "  the user's to delete, in the memory panel; say so in your answer and leave it.",
         ]);
     }
     if has_skills {
@@ -502,8 +516,10 @@ pub fn build_system_prompt(input: &PromptInput) -> String {
         ]);
     }
     push(&mut out, &[
-        "- \"ask\" only for a decision that is the user's to make, or a fact only they can supply.",
-        "- \"done\" when a task you were carrying out is finished and verified.",
+        "- A QUESTION for the user is prose like any other answer: ask it, ask for nothing else,",
+        "  and stop. Their reply comes back as the next message and the task carries on from",
+        "  there. Only for a decision that is theirs to make, or a fact only they can supply --",
+        "  never to ask whether you may get on with the task you were given.",
     ]);
     if has_memory {
         push(&mut out, &[
@@ -514,7 +530,7 @@ pub fn build_system_prompt(input: &PromptInput) -> String {
             "  manager and init system this box uses, which tools are missing, a convention the",
             "  user follows, or something they told you to do differently. One fact per action,",
             "  one line, written so it makes sense months from now with no conversation around it.",
-            "- WHEN: at the end of a task, next to \"done\", or the moment the user tells you",
+            "- WHEN: as a task finishes, or the moment the user tells you",
             "  something durable themselves. Not in the middle of an investigation. Half of what",
             "  looks like a finding at step three is wrong by step seven, and every one of these",
             "  is a step of its own and a card in front of someone who is reading your answer.",
@@ -530,8 +546,8 @@ pub fn build_system_prompt(input: &PromptInput) -> String {
             "- scope \"server\" is the default and the right answer for almost everything, because",
             "  almost every fact is about this machine. Use \"global\" only for something true of",
             "  every machine the user works on, which is usually one of their own preferences.",
-            "- \"forget\" when a remembered line turns out to be wrong or has gone out of date.",
-            "  Correcting one is forget then remember. Copy the line exactly as it reads.",
+            "- A line that turns out to be wrong is not yours to remove: say which line and why",
+            "  in your answer, and the user drops it themselves from the memory panel.",
             "- Do not announce that you are about to remember something and do not ask permission.",
             "  The user sees every line you write and can undo it.",
         ]);
@@ -664,15 +680,17 @@ pub fn build_system_prompt(input: &PromptInput) -> String {
         "- Read the logs, config, and state around the failure before trying a different command.",
         "- If a program crashes or a service will not start, check its log file, its config, and",
         "  whether the port, file or permission it needs is free. Verify the fix by re-running it.",
-        "- Never answer with \"done\" just to report an error you have not investigated.",
+        "- Never stop and report an error you have not investigated as though it were the result.",
         "",
         "Finishing:",
-        "- \"done\" means the thing the user asked for has been carried out and verified.",
-        "  Reporting what you found is not the same as doing it. If the user asked you to",
-        "  restart something, it is not done until it is running again and you have checked.",
-        "- Use \"done\" if you have genuinely run out of options, saying what you tried and what blocks it.",
-        "- Use \"ask\" only for a decision that is the user's to make, or a fact you cannot read",
-        "  from the machine. Never use it to ask whether you may proceed with the task.",
+        "- Stopping is what says a task is done, so stop only when the thing the user asked for",
+        "  has been carried out AND verified. Reporting what you found is not the same as doing",
+        "  it. If the user asked you to restart something, it is not finished until it is",
+        "  running again and you have checked. Until then, ask for the next action.",
+        "- Stop and say so if you have genuinely run out of options, saying what you tried and",
+        "  what blocks it. That is an answer; a task nobody can finish still ends.",
+        "- Never narrate a step you have not asked for. \"Now I will check the logs\" with no",
+        "  action after it ends the task at the point you were describing what to do next.",
         "",
     ]);
     if let Some(memory) = input.memory {
@@ -681,19 +699,87 @@ pub fn build_system_prompt(input: &PromptInput) -> String {
     if has_skills {
         out.extend(skill_section(input.skills));
     }
-    out.push("Machine and session context:".to_string());
-    out.push(input.context.to_string());
+    out.extend(machine_section(input.host, input.machine));
+    /*
+     * The machine and session summary used to be the last thing in here, and it
+     * is now a turn of the conversation instead. See `context_turn` below.
+     *
+     * It is a caching decision. This prompt is the first message of every
+     * request, and every endpoint that caches does so on a prefix that is equal
+     * from the very beginning. The summary carries the working directory and the
+     * tail of the terminal, so it changed on every task -- which broke the match
+     * at message zero and re-billed the entire conversation, every step, at full
+     * price. Measured on a real session: eighteen thousand characters of this
+     * prompt never changed and the last four thousand always did.
+     *
+     * Moved into the conversation, the summary is stated once at the moment it
+     * was true and never rewritten, so everything before the newest turn is
+     * byte-identical to the last request. That is the shape prefix caching is
+     * built for -- and it is the more honest shape anyway: a fact about the
+     * machine at 11:04 is a thing that was said then, not a standing instruction.
+     */
     out.join("\n")
+}
+
+/// The machine, in the two lines that are worth standing instructions.
+///
+/// The working directory is deliberately absent. It is the one thing here that
+/// changes while a task runs, and a line measured before the task started is
+/// stale the moment the model runs `cd` -- it read as fact and was not one. The
+/// model is told to ask instead, which is the only answer that stays true.
+fn machine_section(host: &str, machine: &super::context::MachineFacts) -> Vec<String> {
+    let or_unknown = |value: &str| if value.is_empty() { "unknown" } else { value }.to_string();
+    vec![
+        "The machine you are working on:".to_string(),
+        format!("Host: {host}"),
+        format!(
+            "OS: {} | kernel {} | shell {} | user {} | home {}",
+            or_unknown(&machine.os),
+            or_unknown(&machine.kernel),
+            or_unknown(&machine.shell),
+            or_unknown(&machine.user),
+            or_unknown(&machine.home)
+        ),
+        "Your working directory is NOT listed here and must never be assumed: run pwd when you".to_string(),
+        "need one. It moves while a task runs, so anything written down would be stale.".to_string(),
+        String::new(),
+    ]
+}
+
+/// The machine summary as a turn of the conversation.
+///
+/// Framed as a client notice for the same reason the dropped-actions notice is:
+/// it arrives in the user's place in the conversation, and a model that mistakes
+/// it for something the user said will answer it.
+pub fn context_turn(context: &str, user_text: &str) -> String {
+    if context.trim().is_empty() {
+        return user_text.to_string();
+    }
+    format!(
+        "[tshell client notice -- not from the user. The machine as it stands right now. Do not \
+         reply to this part.]\n{context}\n\n{user_text}"
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A machine that never changes, which is the point of it being in here.
+    static FACTS: std::sync::LazyLock<super::super::context::MachineFacts> =
+        std::sync::LazyLock::new(|| super::super::context::MachineFacts {
+            os: "Ubuntu 24.04".into(),
+            kernel: "6.8.0".into(),
+            shell: "/bin/bash".into(),
+            user: "me".into(),
+            home: "/home/me".into(),
+        });
+
     fn base<'a>() -> PromptInput<'a> {
         PromptInput {
             language: Language::EnUs,
-            context: "CWD: /home/me",
+            host: "web-1",
+            machine: &FACTS,
             identity: "gpt-x",
             memory: None,
             local_places: &[],
@@ -731,7 +817,7 @@ mod tests {
         };
         let text = describe_result(&result);
         assert!(text.starts_with("EXIT: 2\nOUTPUT:\nno such file"));
-        assert!(text.ends_with("Do not answer with \"done\" merely to report this failure."));
+        assert!(text.ends_with("Do not stop and report this failure as though it were the answer."));
     }
 
     #[test]
@@ -792,14 +878,11 @@ mod tests {
 
     #[test]
     fn memory_outcomes_each_say_what_to_do_next() {
-        let text = describe_memory(MemoryOpKind::Remember, MemoryScope::Global, MemoryOutcome::Ok);
+        let text = describe_memory(MemoryScope::Global, MemoryOutcome::Ok);
         assert_eq!(text, "Stored in global memory. Carry on with what you were doing.");
-        let text = describe_memory(MemoryOpKind::Forget, MemoryScope::Server, MemoryOutcome::Ok);
-        assert!(text.starts_with("Removed from this server's memory."));
-        let text = describe_memory(MemoryOpKind::Remember, MemoryScope::Server, MemoryOutcome::Full);
+        let text = describe_memory(MemoryScope::Server, MemoryOutcome::Full);
         assert!(text.starts_with("This server's memory is full and NOTHING was written."));
-        let text =
-            describe_memory(MemoryOpKind::Remember, MemoryScope::Server, MemoryOutcome::Failed);
+        let text = describe_memory(MemoryScope::Server, MemoryOutcome::Failed);
         assert!(text.contains("was NOT saved"));
     }
 
@@ -860,10 +943,28 @@ mod tests {
     #[test]
     fn the_reply_language_follows_the_setting() {
         let prompt = build_system_prompt(&base());
-        assert!(prompt.contains("\"summary\" in English."));
+        assert!(prompt.contains("\"text\", in English."));
         let prompt = build_system_prompt(&PromptInput { language: Language::ZhCn, ..base() });
-        assert!(prompt.contains("\"summary\" in Chinese."));
+        assert!(prompt.contains("\"text\", in Chinese."));
         assert!(prompt.contains("- Reason in Chinese too."));
+    }
+
+    /// Nothing in here may offer a verb for speaking or for stopping. A model
+    /// told about one uses it, and its argument then arrives beside the prose the
+    /// model already wrote -- with the panel having to draw one of the two.
+    #[test]
+    fn the_protocol_offers_no_way_to_speak_or_to_finish() {
+        let prompt = build_system_prompt(&PromptInput {
+            memory: Some(&MemoryPrompt::default()),
+            skills: &["- deploy: how releases go out here".to_string()],
+            ..base()
+        });
+        for verb in ["say", "ask", "done", "forget"] {
+            assert!(
+                !prompt.contains(&format!("\"action\":\"{verb}\"")),
+                "the prompt still offers {verb}"
+            );
+        }
     }
 
     #[test]
@@ -872,10 +973,34 @@ mod tests {
         assert!(!prompt.contains("Reason in English too."));
     }
 
+    /// The prompt has to be the same bytes from one task to the next, because it
+    /// is message zero and every cache match starts there. Anything that changes
+    /// with the machine belongs in `context_turn`, not in here.
     #[test]
-    fn the_context_is_the_last_thing_the_model_reads() {
+    fn the_prompt_carries_nothing_that_changes_between_tasks() {
         let prompt = build_system_prompt(&base());
-        assert!(prompt.ends_with("Machine and session context:\nCWD: /home/me"));
+        assert!(!prompt.contains("Machine and session context"));
+        assert!(!prompt.contains("CWD:"), "the working directory is not a standing instruction");
+        assert!(!prompt.contains("Recent commands"));
+        assert!(!prompt.contains("Working directory"));
+    }
+
+    #[test]
+    fn the_context_arrives_as_a_turn_and_says_it_is_not_the_user() {
+        let turn = context_turn("Host: web-1\nWorking directory: /srv", "restart nginx");
+        assert!(turn.starts_with("[tshell client notice"));
+        assert!(turn.contains("Host: web-1"));
+        // The user's own words last, so the thing being asked is the thing the
+        // model reads last.
+        assert!(turn.ends_with("restart nginx"));
+    }
+
+    /// Nothing to say about the machine is not a reason to wrap the question in a
+    /// notice about there being nothing to say.
+    #[test]
+    fn an_empty_context_leaves_the_question_alone() {
+        assert_eq!(context_turn("", "hello"), "hello");
+        assert_eq!(context_turn("   \n ", "hello"), "hello");
     }
 
     #[test]

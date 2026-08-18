@@ -19,10 +19,10 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 use serde_json::{json, Map, Value};
 
-use super::say::SayStreamer;
+use super::prose::ProseStreamer;
 use super::{
-    ChatRole, Completion, CompletionRequest, ExtraField, LlmError, LlmFailure, LlmProvider,
-    TokenUsage, TransportInfo, Watcher,
+    ChatRole, Completion, CompletionRequest, ExtraField, LlmError, LlmFailure, LlmProvider, Reply,
+    TokenUsage, ToolCall, ToolSpec, TransportInfo, Watcher,
 };
 use crate::ai::settings::{ThinkingEffort, ThinkingSettings};
 
@@ -58,6 +58,65 @@ struct Answer {
     frames: u32,
     /// Milliseconds to the first content, when there was a first to time.
     first_ms: Option<u64>,
+    /// Assembled by index, because a stream sends one call in pieces across
+    /// frames. See [`collect_calls`].
+    calls: Vec<PartialCall>,
+}
+
+/// One tool call while it is still arriving.
+///
+/// `id` and `name` come in the first fragment for a given index and are absent
+/// from every fragment after it; `arguments` arrives a few characters at a time
+/// and is only valid JSON once the stream ends. So all three are accumulated
+/// rather than read, and nothing is decided until the body is done.
+#[derive(Debug, Default, Clone)]
+struct PartialCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+impl PartialCall {
+    fn finish(self) -> Option<ToolCall> {
+        if self.name.trim().is_empty() {
+            // A fragment stream that never named its function is not a call this
+            // client can carry out, and inventing a name for it would run the
+            // wrong one. Dropped here; the loop sees a reply with no calls and
+            // nudges, which is the same path a mangled JSON object takes.
+            return None;
+        }
+        Some(ToolCall { id: self.id, name: self.name, arguments: self.arguments })
+    }
+}
+
+/// Reads whatever tool calls a frame or a whole message carried into `into`.
+///
+/// One function for both shapes because they differ only in how complete each
+/// entry is: a body carries `index` implicitly by position and every field at
+/// once, a stream carries `index` explicitly and any subset of the fields. Both
+/// are additive, so both are applied the same way.
+fn collect_calls(value: &Value, into: &mut Vec<PartialCall>) {
+    let Some(items) = value.as_array() else { return };
+    for (position, item) in items.iter().enumerate() {
+        let index = item["index"].as_u64().map(|index| index as usize).unwrap_or(position);
+        if into.len() <= index {
+            into.resize(index + 1, PartialCall::default());
+        }
+        let slot = &mut into[index];
+        if let Some(id) = item["id"].as_str() {
+            if !id.is_empty() {
+                slot.id.push_str(id);
+            }
+        }
+        if let Some(name) = item["function"]["name"].as_str() {
+            if !name.is_empty() {
+                slot.name.push_str(name);
+            }
+        }
+        if let Some(arguments) = item["function"]["arguments"].as_str() {
+            slot.arguments.push_str(arguments);
+        }
+    }
 }
 
 pub struct HttpProvider {
@@ -104,6 +163,10 @@ impl HttpProvider {
         } else if self.thinking.effort != ThinkingEffort::High {
             extras.insert("reasoning_effort".into(), json!(self.thinking.effort.tag()));
         }
+        // Tools are deliberately not here. `extras` is the settings the user
+        // chose, and tools are neither a setting nor optional in the same sense:
+        // they hang off the request and are governed by `with_tools`, which the
+        // caller works out once and passes down.
         if let Some(known) = REFUSED.lock().unwrap().get(&self.id) {
             for field in known {
                 extras.remove(field.key());
@@ -112,7 +175,40 @@ impl HttpProvider {
         extras
     }
 
-    fn body(&self, request: &CompletionRequest, extras: &Map<String, Value>) -> (Value, Value) {
+    /// Whether this endpoint has already refused tools, for this window.
+    fn tools_refused(&self) -> bool {
+        REFUSED
+            .lock()
+            .unwrap()
+            .get(&self.id)
+            .is_some_and(|known| known.contains(&ExtraField::Tools))
+    }
+
+    /// The tools as the request wants them: OpenAI-shaped, one entry per spec.
+    fn tool_field(tools: &[ToolSpec]) -> Value {
+        Value::Array(
+            tools
+                .iter()
+                .map(|tool| {
+                    json!({
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": tool.parameters,
+                        },
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    fn body(
+        &self,
+        request: &CompletionRequest,
+        extras: &Map<String, Value>,
+        with_tools: bool,
+    ) -> (Value, Value) {
         let mut params = Map::new();
         params.insert("model".into(), json!(self.model));
         // Ignored by a model that is thinking -- the reasoning endpoints say so
@@ -125,6 +221,17 @@ impl HttpProvider {
         // Without this an OpenAI-compatible stream carries no token counts at
         // all. Endpoints that do not know the option ignore it.
         params.insert("stream_options".into(), json!({ "include_usage": true }));
+
+        /*
+         * `auto` rather than `required`. Answering without calling anything is
+         * how a task ends here, so the model has to be free to do it -- and a
+         * question that wanted a sentence deserves a sentence. Requiring a call
+         * would leave no way to finish but to invent a step.
+         */
+        if with_tools && !request.tools.is_empty() {
+            params.insert("tools".into(), Self::tool_field(&request.tools));
+            params.insert("tool_choice".into(), json!("auto"));
+        }
 
         let mut messages = vec![json!({ "role": "system", "content": request.system })];
         messages.extend(request.messages.iter().map(|message| {
@@ -143,8 +250,9 @@ impl HttpProvider {
         &self,
         request: &CompletionRequest,
         extras: &Map<String, Value>,
+        with_tools: bool,
     ) -> Result<reqwest::Response, LlmError> {
-        let (params, full) = self.body(request, extras);
+        let (params, full) = self.body(request, extras, with_tools);
         /*
          * The body as it goes out, and what this request adds to the
          * conversation. Together they answer "what did the model actually see",
@@ -154,6 +262,25 @@ impl HttpProvider {
          * The key is not part of it. It is a header, it never reaches the log,
          * and the one field here that could carry it does not exist.
          */
+        /*
+         * The tools by name, not by schema.
+         *
+         * The full array is a page of JSON Schema, identical on every request of
+         * every task, and a log of a twenty-step task would be twenty copies of
+         * it with the answers buried between them. What the reader of that log
+         * needs to know is which tools were on the table -- and, more to the
+         * point, whether any were, since an endpoint that refused them is the
+         * first thing to check when a model starts writing JSON by hand.
+         */
+        let mut params = params;
+        if let Some(tools) = params.get("tools").and_then(|tools| tools.as_array()) {
+            let names: Vec<&str> = tools
+                .iter()
+                .filter_map(|tool| tool["function"]["name"].as_str())
+                .collect();
+            params["tools"] = json!(names);
+        }
+
         request.watcher.logged_request(&json!({
             "endpoint": self.endpoint(),
             "params": params,
@@ -195,11 +322,13 @@ impl HttpProvider {
         report_usage(&payload["usage"], watcher);
         let choice = &payload["choices"][0];
         let content = choice["message"]["content"].as_str().unwrap_or_default().to_string();
+        let mut calls = Vec::new();
+        collect_calls(&choice["message"]["tool_calls"], &mut calls);
 
         // Nothing was painted as it arrived, so the answer is handed over in one
         // piece. The panel cannot tell the difference and neither can the reader.
         if !content.is_empty() {
-            let shown = SayStreamer::new().push(&content);
+            let shown = ProseStreamer::new().push(&content);
             if !shown.is_empty() {
                 watcher.delta(&shown);
             }
@@ -216,6 +345,7 @@ impl HttpProvider {
             // to wonder.
             frames: 1,
             first_ms: None,
+            calls,
         })
     }
 
@@ -231,7 +361,7 @@ impl HttpProvider {
     ) -> Result<Answer, LlmError> {
         let watcher = &request.watcher;
         let mut stream = response.bytes_stream();
-        let mut streamer = SayStreamer::new();
+        let mut streamer = ProseStreamer::new();
         let started = Instant::now();
         // Bytes rather than a String, because a chunk boundary can land inside a
         // multi-byte character and half of one is not text yet.
@@ -313,6 +443,15 @@ impl HttpProvider {
 
                 let delta =
                     if choice["delta"].is_null() { &choice["message"] } else { &choice["delta"] };
+                /*
+                 * Before the `content` test below, and not subject to it: a frame
+                 * carrying a fragment of a tool call has no content at all, and
+                 * the `continue` further down would throw the fragment away.
+                 * Nothing is painted for these -- a half-written argument list is
+                 * not something to show anyone -- so they do not count as frames
+                 * either.
+                 */
+                collect_calls(&delta["tool_calls"], &mut answer.calls);
                 if let Some(thought) = delta["reasoning_content"].as_str() {
                     if !thought.is_empty() {
                         answer.reasoning.push_str(thought);
@@ -352,7 +491,8 @@ impl LlmProvider for HttpProvider {
         Box::pin(async move {
             let started = Instant::now();
             let extras = self.extras();
-            let mut response = self.post(&request, &extras).await?;
+            let mut sent_tools = !request.tools.is_empty() && !self.tools_refused();
+            let mut response = self.post(&request, &extras, sent_tools).await?;
 
             /*
              * A 400 with an optional field on board is the one failure worth
@@ -374,12 +514,23 @@ impl LlmProvider for HttpProvider {
                     _ => None,
                 })
                 .collect();
+            /*
+             * Tools come off with them, and are by far the likeliest reason for a
+             * 400 here: "OpenAI-compatible" is a claim about the route, and a
+             * gateway fronting a model with no tool support rejects the field
+             * outright. Losing them costs nothing but a longer road -- the system
+             * prompt still describes the JSON protocol, and `parse.rs` still reads
+             * it -- which is the whole reason both tracks are kept.
+             */
+            if sent_tools {
+                dropped.push(ExtraField::Tools);
+            }
             dropped.sort();
             if response.status() == 400 && !dropped.is_empty() {
                 // Read and discarded rather than ignored: a body nobody consumes
                 // holds its socket until the process happens to notice.
                 let _ = read_error(response).await;
-                let second = self.post(&request, &Map::new()).await?;
+                let second = self.post(&request, &Map::new(), false).await?;
                 /*
                  * Only a second attempt that worked proves these fields were the
                  * problem. A 400 about the model name or the messages rejects
@@ -395,6 +546,9 @@ impl LlmProvider for HttpProvider {
                     request.watcher.degraded(&dropped);
                 }
                 response = second;
+                // The second attempt carried no tools, so nothing it sent back can
+                // be a call. Said here rather than assumed further down.
+                sent_tools = false;
             }
 
             let content_type = response
@@ -449,7 +603,6 @@ impl LlmProvider for HttpProvider {
             if !answer.reasoning.is_empty() {
                 request.watcher.logged_reasoning(&answer.reasoning);
             }
-            request.watcher.logged_response(&answer.content);
 
             /*
              * `length` means the ceiling was hit mid-sentence, not that the model
@@ -462,8 +615,30 @@ impl LlmProvider for HttpProvider {
                 request.watcher.truncated();
             }
 
-            if !answer.content.trim().is_empty() {
-                return Ok(answer.content);
+            let calls: Vec<ToolCall> =
+                answer.calls.into_iter().filter_map(PartialCall::finish).collect();
+            /*
+             * Calls nobody offered are dropped rather than acted on: whatever the
+             * endpoint is echoing, it is not this request. Dropped rather than
+             * returned early, so that a reply which was ONLY those calls falls
+             * through to the empty-reply path below and is retried -- returning
+             * here would hand the loop a blank answer and end the task in silence.
+             */
+            let calls = if sent_tools { calls } else { Vec::new() };
+
+            /*
+             * Logged here rather than above, because the calls have to be settled
+             * first and they are half of what was said. Written whether or not
+             * the loop can use it: a step that returned nothing usable is the one
+             * most worth reading afterwards.
+             */
+            request.watcher
+                .logged_response(&Reply { text: answer.content.clone(), calls: calls.clone() });
+
+            // Calls with no prose is the ordinary shape of a working step, so the
+            // emptiness test below has to count them.
+            if !answer.content.trim().is_empty() || !calls.is_empty() {
+                return Ok(Reply { text: answer.content, calls });
             }
 
             /*
@@ -476,7 +651,7 @@ impl LlmProvider for HttpProvider {
             if !answer.reasoning.trim().is_empty()
                 && request.watcher.salvage_reasoning(&answer.reasoning)
             {
-                return Ok(answer.reasoning);
+                return Ok(Reply::text(answer.reasoning));
             }
 
             // `finish_reason` is the difference between "ran out of room", "the
@@ -626,8 +801,9 @@ mod tests {
             timeout_ms: 0,
             cancel: Default::default(),
             watcher: Arc::new(super::super::Silent),
+            tools: Vec::new(),
         };
-        let (params, full) = provider.body(&request, &Map::new());
+        let (params, full) = provider.body(&request, &Map::new(), false);
         assert_eq!(params["model"], "gpt-x");
         assert_eq!(params["stream"], true);
         assert_eq!(params["stream_options"]["include_usage"], true);
@@ -638,6 +814,125 @@ mod tests {
         assert_eq!(messages[0]["content"], "be helpful");
         assert_eq!(messages[1]["role"], "user");
         assert_eq!(messages[2]["role"], "assistant");
+    }
+
+    fn spec(name: &str) -> ToolSpec {
+        ToolSpec {
+            name: name.into(),
+            description: "d".into(),
+            parameters: json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    #[test]
+    fn tools_go_out_in_the_shape_the_endpoint_expects() {
+        let provider = provider(Default::default());
+        let request = CompletionRequest {
+            system: String::new(),
+            messages: Vec::new(),
+            timeout_ms: 0,
+            cancel: Default::default(),
+            watcher: Arc::new(super::super::Silent),
+            tools: vec![spec("run"), spec("say")],
+        };
+        let (params, _) = provider.body(&request, &Map::new(), true);
+        let tools = params["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0]["type"], "function");
+        assert_eq!(tools[0]["function"]["name"], "run");
+        // `auto`, never `required`: a reply that calls nothing is how a task ends,
+        // and a question that wanted a sentence deserves a sentence.
+        assert_eq!(params["tool_choice"], "auto");
+    }
+
+    /// An endpoint that has refused tools once is not asked again this window --
+    /// and the refusal is recorded by leaving the key in, not by removing it,
+    /// which is backwards from the other two fields and worth pinning down.
+    #[test]
+    fn an_endpoint_that_refused_tools_is_not_offered_them_again() {
+        // Its own endpoint name: `REFUSED` is process-wide and the tests run
+        // together, so a refusal recorded against the shared one would leak into
+        // whichever other test read it next.
+        let provider = HttpProvider::new(
+            "https://refused-tools.example/v1",
+            "m",
+            "",
+            Default::default(),
+        );
+        assert!(!provider.tools_refused());
+        REFUSED
+            .lock()
+            .unwrap()
+            .entry(provider.id.clone())
+            .or_default()
+            .insert(ExtraField::Tools);
+        assert!(provider.tools_refused());
+
+        let request = CompletionRequest {
+            system: String::new(),
+            messages: Vec::new(),
+            timeout_ms: 0,
+            cancel: Default::default(),
+            watcher: Arc::new(super::super::Silent),
+            tools: vec![spec("run")],
+        };
+        // What `complete` works out and passes down.
+        let with_tools = !request.tools.is_empty() && !provider.tools_refused();
+        let (params, _) = provider.body(&request, &provider.extras(), with_tools);
+        assert!(params.get("tools").is_none());
+        assert!(params.get("tool_choice").is_none());
+        // The user's own settings are untouched by any of this.
+        assert!(provider.extras().is_empty());
+        REFUSED.lock().unwrap().remove(&provider.id);
+    }
+
+    /// The shape a stream actually sends: the id and the name once, then the
+    /// arguments a few characters at a time, all keyed by index.
+    #[test]
+    fn a_tool_call_is_assembled_from_its_fragments() {
+        let mut calls = Vec::new();
+        collect_calls(
+            &json!([{ "index": 0, "id": "call_a", "function": { "name": "run", "arguments": "{\"comm" } }]),
+            &mut calls,
+        );
+        collect_calls(&json!([{ "index": 0, "function": { "arguments": "and\":\"df -h\"}" } }]), &mut calls);
+
+        let finished: Vec<_> = calls.into_iter().filter_map(PartialCall::finish).collect();
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].id, "call_a");
+        assert_eq!(finished[0].name, "run");
+        assert_eq!(finished[0].arguments, r#"{"command":"df -h"}"#);
+    }
+
+    /// Two calls in one reply arrive interleaved by index, not in order.
+    #[test]
+    fn parallel_calls_are_kept_apart_by_index() {
+        let mut calls = Vec::new();
+        collect_calls(
+            &json!([
+                { "index": 0, "id": "a", "function": { "name": "run", "arguments": "{\"x\"" } },
+                { "index": 1, "id": "b", "function": { "name": "say", "arguments": "{\"y\"" } }
+            ]),
+            &mut calls,
+        );
+        collect_calls(&json!([{ "index": 1, "function": { "arguments": ":2}" } }]), &mut calls);
+        collect_calls(&json!([{ "index": 0, "function": { "arguments": ":1}" } }]), &mut calls);
+
+        let finished: Vec<_> = calls.into_iter().filter_map(PartialCall::finish).collect();
+        assert_eq!(finished.len(), 2);
+        assert_eq!(finished[0].name, "run");
+        assert_eq!(finished[0].arguments, r#"{"x":1}"#);
+        assert_eq!(finished[1].name, "say");
+        assert_eq!(finished[1].arguments, r#"{"y":2}"#);
+    }
+
+    /// A fragment stream that never named its function cannot be carried out, and
+    /// inventing a name for it would run the wrong thing.
+    #[test]
+    fn a_call_with_no_name_is_dropped_rather_than_guessed_at() {
+        let mut calls = Vec::new();
+        collect_calls(&json!([{ "index": 0, "function": { "arguments": "{}" } }]), &mut calls);
+        assert!(calls.into_iter().filter_map(PartialCall::finish).next().is_none());
     }
 
     #[test]
@@ -657,6 +952,7 @@ mod tests {
             timeout_ms: 0,
             cancel: Default::default(),
             watcher: Arc::new(super::super::Silent),
+            tools: Vec::new(),
         };
         let error = Unconfigured.complete(request).await.unwrap_err();
         assert_eq!(error.kind, LlmFailure::NotConfigured);

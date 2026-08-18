@@ -11,33 +11,70 @@ use std::sync::{Arc, Mutex};
 use super::cancel::Cancel;
 use super::files::{FileOpError, FilePlan, FileRequest, FileRunner};
 use super::host::{AgentConfig, Asker, Bytes, Emitter, Executor, Judge, Stores};
-use super::llm::{Completion, CompletionRequest, LlmError, LlmFailure, LlmProvider};
+use super::llm::{Completion, CompletionRequest, LlmError, LlmFailure, LlmProvider, Reply, ToolCall};
 use super::moves::{TransferOpError, TransferPlan, TransferRequest};
 use super::policy::command::{classify_command, PolicyResult};
 use super::policy::path::{classify_path, PathPolicyResult};
 use super::policy::risk::RiskReason;
 use super::session::AgentSession;
-use super::store::memory::{AppendOutcome, AppendResult, RemoveOutcome};
+use super::store::memory::{AppendOutcome, AppendResult};
 use super::store::skill::SkillRead;
 use super::types::{
-    AgentEvent, AgentMode, CommandResult, FileEncoding, FileOpKind, MemoryScope, SkillOutcome,
+    AgentEvent, AgentMode, CommandResult, FileEncoding, MemoryScope, SkillOutcome,
 };
 
 /// A model that hands back a scripted reply per step.
 struct Script {
-    replies: Mutex<Vec<Result<String, LlmError>>>,
+    replies: Mutex<Vec<Result<Reply, LlmError>>>,
     asked: AtomicUsize,
 }
 
 impl Script {
     fn new(replies: Vec<&str>) -> Arc<Self> {
         Arc::new(Self {
-            replies: Mutex::new(replies.into_iter().map(|text| Ok(text.to_string())).collect()),
+            replies: Mutex::new(
+                replies.into_iter().map(|text| Ok(Reply::text(text))).collect(),
+            ),
             asked: AtomicUsize::new(0),
         })
     }
     fn failing(error: LlmError) -> Arc<Self> {
         Arc::new(Self { replies: Mutex::new(vec![Err(error)]), asked: AtomicUsize::new(0) })
+    }
+    /// Replies built exactly as the test wants them, for the cases where the
+    /// difference between the two tracks is the thing under test.
+    fn scripted(replies: Vec<Reply>) -> Arc<Self> {
+        Arc::new(Self {
+            replies: Mutex::new(replies.into_iter().map(Ok).collect()),
+            asked: AtomicUsize::new(0),
+        })
+    }
+    /// Replies made of native tool calls: the other track, step for step.
+    ///
+    /// Each inner list is one reply, so `vec![vec![a, b], vec![c]]` is a step
+    /// that called two tools at once followed by a step that called one. An empty
+    /// list is a reply that called nothing, which is how a task ends here.
+    fn calling(replies: Vec<Vec<(&str, &str)>>) -> Arc<Self> {
+        Arc::new(Self {
+            replies: Mutex::new(
+                replies
+                    .into_iter()
+                    .map(|step| {
+                        Ok(Reply::calls(
+                            step.into_iter()
+                                .enumerate()
+                                .map(|(index, (name, arguments))| ToolCall {
+                                    id: format!("call_{index}"),
+                                    name: name.to_string(),
+                                    arguments: arguments.to_string(),
+                                })
+                                .collect(),
+                        ))
+                    })
+                    .collect(),
+            ),
+            asked: AtomicUsize::new(0),
+        })
     }
 }
 
@@ -73,7 +110,6 @@ struct Answers {
     skills_enabled: bool,
     trusted: bool,
     remember: Option<AppendOutcome>,
-    forget: Option<RemoveOutcome>,
     skill: Option<SkillRead>,
     plan_file_error: Option<String>,
     plan_transfer_error: Option<String>,
@@ -218,9 +254,6 @@ impl Stores for Fake {
             token: Some("t1".into()),
         }
     }
-    async fn forget(&self, _scope: MemoryScope, _text: &str) -> RemoveOutcome {
-        self.answers.forget.unwrap_or(RemoveOutcome::Ok)
-    }
     fn skills_enabled(&self) -> bool {
         self.answers.skills_enabled
     }
@@ -264,23 +297,31 @@ fn reply(text: &str) -> String {
 }
 
 #[tokio::test]
-async fn a_say_ends_the_task_with_the_answer() {
+async fn prose_alone_is_the_answer_and_ends_the_task() {
     let host = Fake::new(permissive());
-    let script = Script::new(vec![r#"{"action":"say","text":"hello there"}"#]);
+    let script = Script::new(vec!["hello there"]);
     session(host.clone(), script).send("hi").await;
 
     assert_eq!(host.tags(), ["thinking", "context", "usage", "reply", "idle"]);
     assert!(matches!(&host.events()[3], AgentEvent::Reply { text } if text == "hello there"));
 }
 
+/// The commonest false alarm the old scan had: an answer that shows the user
+/// somebody else's JSON. Every one of those cost the user their answer.
 #[tokio::test]
-async fn plain_prose_before_anything_has_run_is_the_answer() {
+async fn an_answer_quoting_json_is_still_an_answer() {
     let host = Fake::new(permissive());
-    let script = Script::new(vec!["The disk is nearly full."]);
-    session(host.clone(), script).send("how is the disk?").await;
+    let script = Script::new(vec![
+        "Post this:
+```json
+{\"action\":\"run\",\"command\":\"rm -rf /\"}
+```
+and it returns 202.",
+    ]);
+    session(host.clone(), script).send("what does the body look like?").await;
 
-    assert!(host.tags().contains(&"reply".to_string()));
-    assert!(!host.tags().contains(&"error".to_string()));
+    assert!(host.commands().is_empty(), "an example must not be carried out");
+    assert_eq!(host.tags(), ["thinking", "context", "usage", "reply", "idle"]);
 }
 
 #[tokio::test]
@@ -288,7 +329,7 @@ async fn a_command_runs_and_its_result_comes_back() {
     let host = Fake::new(permissive());
     let script = Script::new(vec![
         r#"{"action":"run","command":"ls -la","why":"look"}"#,
-        r#"{"action":"done","summary":"had a look"}"#,
+        "had a look",
     ]);
     session(host.clone(), script).send("look around").await;
 
@@ -296,7 +337,7 @@ async fn a_command_runs_and_its_result_comes_back() {
     let tags = host.tags();
     assert!(tags.contains(&"command".to_string()));
     assert!(tags.contains(&"result".to_string()));
-    assert!(tags.contains(&"summary".to_string()));
+    assert!(tags.contains(&"reply".to_string()));
 }
 
 #[tokio::test]
@@ -304,7 +345,7 @@ async fn a_destructive_command_is_refused_and_the_task_carries_on() {
     let host = Fake::new(permissive());
     let script = Script::new(vec![
         r#"{"action":"run","command":"rm -rf /","why":"clean up"}"#,
-        r#"{"action":"done","summary":"stopped"}"#,
+        "stopped",
     ]);
     session(host.clone(), script).send("clean up").await;
 
@@ -317,7 +358,7 @@ async fn a_destructive_command_is_refused_and_the_task_carries_on() {
     assert!(matches!(refused, AgentEvent::Refused { ref reasons, .. }
         if reasons == &vec!["<removesRoot>".to_string()]));
     // The task did not end on the refusal: the next step still ran.
-    assert!(host.tags().contains(&"summary".to_string()));
+    assert!(host.tags().contains(&"reply".to_string()));
 }
 
 #[tokio::test]
@@ -325,7 +366,7 @@ async fn a_declined_confirmation_runs_nothing_and_says_so() {
     let host = Fake::new(Answers { confirm_command: false, ..permissive() });
     let script = Script::new(vec![
         r#"{"action":"run","command":"systemctl restart nginx","why":"restart"}"#,
-        r#"{"action":"done","summary":"left alone"}"#,
+        "left alone",
     ]);
     session(host.clone(), script).send("restart nginx").await;
 
@@ -339,7 +380,7 @@ async fn auto_mode_answers_the_confirmation_but_not_the_refusal() {
     let script = Script::new(vec![
         r#"{"action":"run","command":"systemctl restart nginx","why":"restart"}"#,
         r#"{"action":"run","command":"rm -rf /","why":"clean"}"#,
-        r#"{"action":"done","summary":"done"}"#,
+        "one ran, one did not",
     ]);
     session(host.clone(), script).send("go").await;
 
@@ -354,8 +395,9 @@ async fn auto_mode_answers_the_confirmation_but_not_the_refusal() {
 #[tokio::test]
 async fn a_reply_that_will_not_parse_is_nudged_once_and_then_given_up_on() {
     let host = Fake::new(permissive());
-    // An `"action"` key inside something that does not parse: not prose, not an action.
-    let broken = r#"{"action":"say","text":"he said "hi" loudly"}"#;
+    // A verb this build has, inside something that will not parse: an action the
+    // model believes it sent, not prose and not an example.
+    let broken = r#"{"action":"run","command":"echo "hi" loudly"}"#;
     let script = Script::new(vec![reply(broken).as_str(), broken]);
     session(host.clone(), script).send("hi").await;
 
@@ -370,56 +412,47 @@ async fn a_reply_that_will_not_parse_is_nudged_once_and_then_given_up_on() {
     assert_eq!(error, "protocol");
 }
 
+/// Only the object at the END is the instruction. One earlier in the reply is
+/// the model showing its work, and running it would carry out an example.
 #[tokio::test]
-async fn a_reply_whose_first_action_is_broken_runs_nothing_at_all() {
+async fn only_the_object_at_the_end_of_a_reply_is_carried_out() {
     let host = Fake::new(permissive());
-    let broken_then_good = concat!(
-        r#"{"action":"say","text":"he said "hi""} "#,
-        r#"{"action":"run","command":"rm -rf /tmp/everything"}"#
-    );
-    let script = Script::new(vec![broken_then_good, r#"{"action":"done","summary":"ok"}"#]);
+    let script = Script::new(vec![
+        concat!(
+            r#"You could write {"action":"run","command":"rm -rf /tmp/everything"} "#,
+            r#"but I will look first. {"action":"run","command":"ls /tmp"}"#
+        ),
+        "had a look",
+    ]);
     session(host.clone(), script).send("go").await;
 
-    assert!(host.commands().is_empty(), "the second action must not run in the first's place");
+    assert_eq!(host.commands(), vec!["ls /tmp"]);
 }
 
+/// Narration with nothing after it is the answer, on both tracks. It used to be
+/// nudged on this one, which cost a request and drew a second card under an
+/// answer the user had already read.
 #[tokio::test]
-async fn narration_after_work_has_started_asks_for_the_action_once() {
+async fn narration_after_work_has_started_ends_the_task() {
     let host = Fake::new(permissive());
     let script = Script::new(vec![
         r#"{"action":"run","command":"ls","why":"look"}"#,
         "Now I will read the config file.",
-        "Now I will read the config file.",
     ]);
-    session(host.clone(), script).send("go").await;
+    let session = session(host.clone(), script);
+    session.send("go").await;
 
     let replies = host
         .events()
         .into_iter()
         .filter(|event| matches!(event, AgentEvent::Reply { .. }))
         .count();
-    assert_eq!(replies, 2, "both narrations are shown");
-    // The second one ends the task rather than nudging again.
+    assert_eq!(replies, 1);
     assert_eq!(host.tags().last().unwrap(), "idle");
-}
-
-#[tokio::test]
-async fn a_reply_carrying_several_actions_runs_the_first_and_says_so() {
-    let host = Fake::new(permissive());
-    let script = Script::new(vec![
-        concat!(r#"{"action":"run","command":"ls"} "#, r#"{"action":"run","command":"df"}"#),
-        r#"{"action":"done","summary":"ok"}"#,
-    ]);
-    let session = session(host.clone(), script);
-    session.send("go").await;
-
-    assert_eq!(host.commands(), vec!["ls"]);
-    let notice = session
-        .history()
-        .into_iter()
-        .find(|message| message.content.contains("carried 2 actions"))
-        .expect("the dropped-actions notice");
-    assert!(notice.content.contains("only the first was carried out"));
+    assert!(
+        !session.history().into_iter().any(|message| message.content.contains("NOTHING")),
+        "the model was not told its answer had gone missing",
+    );
 }
 
 #[tokio::test]
@@ -427,7 +460,7 @@ async fn a_file_action_is_planned_shown_confirmed_and_applied() {
     let host = Fake::new(permissive());
     let script = Script::new(vec![
         r#"{"action":"write","path":"/tmp/x","content":"hello","why":"because"}"#,
-        r#"{"action":"done","summary":"written"}"#,
+        "written",
     ]);
     session(host.clone(), script).send("write it").await;
 
@@ -442,7 +475,7 @@ async fn a_write_to_a_device_is_refused_before_the_machine_is_touched() {
     let host = Fake::new(permissive());
     let script = Script::new(vec![
         r#"{"action":"write","path":"/dev/sda","content":"x"}"#,
-        r#"{"action":"done","summary":"stopped"}"#,
+        "stopped",
     ]);
     session(host.clone(), script).send("go").await;
 
@@ -460,7 +493,7 @@ async fn trust_mode_skips_the_dialog_only_for_a_trusted_directory() {
     });
     let script = Script::new(vec![
         r#"{"action":"write","path":"/srv/app/x","content":"hello"}"#,
-        r#"{"action":"done","summary":"ok"}"#,
+        "ok",
     ]);
     session(host.clone(), script).send("go").await;
 
@@ -482,7 +515,7 @@ async fn a_plan_that_fails_reports_itself_in_the_card_it_opened() {
     });
     let script = Script::new(vec![
         r#"{"action":"edit","path":"/tmp/x","old":"a","new":"b"}"#,
-        r#"{"action":"done","summary":"gave up"}"#,
+        "gave up",
     ]);
     session(host.clone(), script).send("go").await;
 
@@ -498,7 +531,7 @@ async fn a_remembered_line_is_reported_with_an_undo_token() {
     let host = Fake::new(permissive());
     let script = Script::new(vec![
         r#"{"action":"remember","scope":"global","text":"nginx is at /opt"}"#,
-        r#"{"action":"done","summary":"noted"}"#,
+        "noted",
     ]);
     session(host.clone(), script).send("go").await;
 
@@ -515,7 +548,7 @@ async fn a_transcribed_paragraph_is_refused_as_a_fact() {
     let host = Fake::new(permissive());
     let long = "x".repeat(super::prompt::MAX_FACT_CHARS + 1);
     let action = format!(r#"{{"action":"remember","text":"{long}"}}"#);
-    let script = Script::new(vec![&action, r#"{"action":"done","summary":"ok"}"#]);
+    let script = Script::new(vec![&action, "ok"]);
     session(host.clone(), script).send("go").await;
 
     let oversize = host.events().into_iter().any(|event| {
@@ -529,7 +562,7 @@ async fn memory_switched_off_answers_the_action_rather_than_writing() {
     let host = Fake::new(Answers { memory_enabled: false, ..permissive() });
     let script = Script::new(vec![
         r#"{"action":"remember","text":"a fact"}"#,
-        r#"{"action":"done","summary":"ok"}"#,
+        "ok",
     ]);
     let session = session(host.clone(), script);
     session.send("go").await;
@@ -547,7 +580,7 @@ async fn a_skill_is_read_once_and_the_second_load_is_told_to_scroll_up() {
     let script = Script::new(vec![
         r#"{"action":"skill","name":"deploy"}"#,
         r#"{"action":"skill","name":"deploy"}"#,
-        r#"{"action":"done","summary":"ok"}"#,
+        "ok",
     ]);
     let session = session(host.clone(), script);
     session.send("go").await;
@@ -572,7 +605,7 @@ async fn a_transfer_runs_without_a_confirmation() {
     let host = Fake::new(Answers { confirm_command: false, ..permissive() });
     let script = Script::new(vec![
         r#"{"action":"download","path":"/var/log/a","to":"/tmp"}"#,
-        r#"{"action":"done","summary":"moved"}"#,
+        "moved",
     ]);
     session(host.clone(), script).send("go").await;
 
@@ -585,7 +618,7 @@ async fn a_transfer_into_a_device_is_refused() {
     let host = Fake::new(permissive());
     let script = Script::new(vec![
         r#"{"action":"download","path":"/var/log/a","to":"/dev"}"#,
-        r#"{"action":"done","summary":"stopped"}"#,
+        "stopped",
     ]);
     session(host.clone(), script).send("go").await;
 
@@ -669,7 +702,7 @@ async fn narration_ahead_of_an_action_is_shown_before_the_card() {
     let host = Fake::new(permissive());
     let script = Script::new(vec![
         "I'll check the disk first.\n{\"action\":\"run\",\"command\":\"df -h\"}",
-        r#"{"action":"done","summary":"ok"}"#,
+        "ok",
     ]);
     session(host.clone(), script).send("go").await;
 
@@ -685,7 +718,7 @@ async fn the_oldest_command_output_is_folded_away_once_the_budget_is_passed() {
     // Long enough that there is something outside the last six turns to fold:
     // `trim` never touches those, nor the opening turn.
     let mut replies = vec![r#"{"action":"run","command":"cat big"}"#; 8];
-    replies.push(r#"{"action":"done","summary":"ok"}"#);
+    replies.push("ok");
     let script = Script::new(replies);
     for _ in 0..8 {
         host.answers
@@ -718,7 +751,7 @@ async fn a_restored_conversation_knows_which_skills_are_already_in_it() {
     let host = Fake::new(permissive());
     let script = Script::new(vec![
         r#"{"action":"skill","name":"deploy"}"#,
-        r#"{"action":"done","summary":"ok"}"#,
+        "ok",
     ]);
     let session = session(host.clone(), script);
     session.restore(vec![
@@ -741,4 +774,226 @@ fn the_file_runner_shim_is_only_here_to_keep_the_import_honest() {
     // `NoRunner` exists so `files::FileRunner` is exercised from this file's
     // imports; nothing in the loop takes one directly.
     let _ = NoRunner;
+}
+
+// ------------------------------------------------------ the tool-call track ---
+
+#[tokio::test]
+async fn a_tool_call_runs_the_same_action_the_json_object_would_have() {
+    let host = Fake::new(permissive());
+    let script = Script::calling(vec![
+        vec![("run", r#"{"command":"df -h","why":"disk"}"#)],
+        vec![],
+    ]);
+    session(host.clone(), script).send("check the disk").await;
+
+    assert_eq!(host.commands(), ["df -h"]);
+    assert!(host.tags().contains(&"reply".to_string()));
+}
+
+/// The payoff. Three read-only probes are one model mistake on the JSON track and
+/// the endpoint's own parallel-call feature on this one, so all three run in the
+/// step that asked for them rather than costing three round trips.
+#[tokio::test]
+async fn parallel_calls_all_run_in_one_step() {
+    let host = Fake::new(permissive());
+    let script = Script::calling(vec![
+        vec![
+            ("run", r#"{"command":"df -h","why":"disk"}"#),
+            ("run", r#"{"command":"free -m","why":"memory"}"#),
+            ("run", r#"{"command":"uptime","why":"load"}"#),
+        ],
+        vec![],
+    ]);
+    let script_asked = script.clone();
+    session(host.clone(), script).send("look around").await;
+
+    assert_eq!(host.commands(), ["df -h", "free -m", "uptime"]);
+    // Two requests, not four: the batch, and the step that ended it.
+    assert_eq!(script_asked.asked.load(Ordering::SeqCst), 2);
+}
+
+/// Every action still goes through the same gate. A batch is a batch of
+/// confirmations too, and a refused command in one does not carry the rest with
+/// it -- but it does not run either.
+#[tokio::test]
+async fn a_batch_does_not_smuggle_a_command_past_the_confirmation() {
+    let host = Fake::new(Answers { confirm_command: false, ..permissive() });
+    let script = Script::calling(vec![
+        vec![
+            ("run", r#"{"command":"rm -rf /var/data","why":"cleanup"}"#),
+            ("run", r#"{"command":"rm -rf /var/other","why":"cleanup"}"#),
+        ],
+        vec![],
+    ]);
+    session(host.clone(), script).send("clean up").await;
+
+    assert!(host.commands().is_empty(), "neither may run: {:?}", host.commands());
+}
+
+/// A batch reports as one turn, labelled by call. Three results in a row with
+/// nothing saying which is which is worse than not having asked in parallel.
+#[tokio::test]
+async fn a_batch_reports_its_results_as_one_labelled_turn() {
+    let host = Fake::new(permissive());
+    let script = Script::calling(vec![
+        vec![
+            ("run", r#"{"command":"df -h","why":"disk"}"#),
+            ("run", r#"{"command":"free -m","why":"memory"}"#),
+        ],
+        vec![],
+    ]);
+    let session = session(host.clone(), script);
+    session.send("look").await;
+
+    let messages = session.messages_for_test();
+    let observations: Vec<&str> = messages
+        .iter()
+        .filter(|message| message.role == crate::ai::llm::ChatRole::User)
+        .map(|message| message.content.as_str())
+        .collect();
+    // The task itself, then exactly one turn carrying both results.
+    assert_eq!(observations.len(), 2, "observations were: {observations:#?}");
+    let combined = observations[1];
+    assert!(combined.contains("[1 of 2 -- run df -h]"), "was: {combined}");
+    assert!(combined.contains("[2 of 2 -- run free -m]"), "was: {combined}");
+}
+
+/// The history has to read the same whichever track produced it, so that a task
+/// which started on one endpoint and continued on another does not look like it
+/// changed language halfway.
+#[tokio::test]
+async fn a_call_is_written_into_the_history_as_the_object_it_stands_for() {
+    let host = Fake::new(permissive());
+    let script = Script::calling(vec![
+        vec![("run", r#"{"command":"uptime","why":"load"}"#)],
+        vec![],
+    ]);
+    let session = session(host.clone(), script);
+    session.send("go").await;
+
+    let messages = session.messages_for_test();
+    let spoken = messages
+        .iter()
+        .find(|message| message.role == crate::ai::llm::ChatRole::Assistant)
+        .expect("the model spoke");
+    let record: serde_json::Value = serde_json::from_str(&spoken.content).unwrap();
+    assert_eq!(record["action"], "run");
+    assert_eq!(record["command"], "uptime");
+}
+
+/// The JSON track carries one action per step, and it is the last object in the
+/// reply. Parallel calls are a feature of the other track, where the endpoint
+/// constrains each one; three objects run into each other in a stream of text.
+#[tokio::test]
+async fn a_json_reply_with_three_objects_runs_only_the_last() {
+    let host = Fake::new(permissive());
+    let script = Script::new(vec![
+        concat!(
+            r#"{"action":"run","command":"first","why":"a"}"#,
+            r#"{"action":"run","command":"second","why":"b"}"#,
+            r#"{"action":"run","command":"third","why":"c"}"#
+        ),
+        "ok",
+    ]);
+    session(host.clone(), script).send("go").await;
+
+    assert_eq!(host.commands(), ["third"]);
+}
+
+/// The rule the JSON track has, kept here for the same reason: if the FIRST thing
+/// the model asked for could not be read, nothing runs. A model that said "tell
+/// them this, then check that" and lost the telling must not have the checking
+/// run in silence.
+#[tokio::test]
+async fn a_batch_whose_first_call_is_unreadable_runs_nothing() {
+    let host = Fake::new(permissive());
+    let script = Script::calling(vec![
+        vec![
+            ("nonsense", r#"{"command":"x"}"#),
+            ("run", r#"{"command":"uptime","why":"load"}"#),
+        ],
+        vec![],
+    ]);
+    session(host.clone(), script).send("go").await;
+
+    assert!(host.commands().is_empty(), "ran: {:?}", host.commands());
+}
+
+/// The bug from the 2026-08-17 log, in one test.
+///
+/// A model with tools ran five probes and then wrote its report as ordinary
+/// prose -- which is how a model says it has finished. The loop read that as a
+/// step that had lost its action, drew the report AND told the model nothing had
+/// happened, and the model dutifully sent `done`: a whole extra request, and a
+/// second card under an answer the user had already read.
+#[tokio::test]
+async fn prose_after_acting_ends_the_task() {
+    for finish in [Reply::text("Rocky Linux 9.6, 16 cores."), Reply::calls(Vec::new())] {
+        let host = Fake::new(permissive());
+        let script = Script::scripted(vec![
+            Reply::calls(vec![ToolCall {
+                id: "c1".into(),
+                name: "run".into(),
+                arguments: r#"{"command":"uname -a","why":"identify"}"#.into(),
+            }]),
+            finish,
+        ]);
+        let asked = script.clone();
+        let session = session(host.clone(), script);
+        session.send("report the config").await;
+
+        // Two requests: the probe, and the answer. Not a third.
+        assert_eq!(asked.asked.load(Ordering::SeqCst), 2);
+        assert!(host.tags().contains(&"reply".to_string()), "tags: {:?}", host.tags());
+        assert!(
+            !session.history().into_iter().any(|message| message.content.contains("NOTHING")),
+            "the model was told its finished task was still waiting",
+        );
+    }
+}
+
+/// Before anything has run, prose is an answer -- a question that wanted a
+/// sentence gets one, and nothing is waiting on an action.
+#[tokio::test]
+async fn prose_before_anything_runs_is_never_nudged() {
+    let host = Fake::new(permissive());
+    let script = Script::scripted(vec![Reply::text("hello there")]);
+    let asked = script.clone();
+    session(host.clone(), script).send("hi").await;
+
+    assert_eq!(asked.asked.load(Ordering::SeqCst), 1);
+    assert!(host.commands().is_empty());
+}
+
+/// The commands a step actually asked for have to reach the log.
+///
+/// On the tool track the model's prose is routinely empty -- the commands are in
+/// `tool_calls` -- so a log that recorded only the prose recorded a model that
+/// said nothing and then, somehow, ran five things. The transcript is rendered
+/// the same way the conversation itself is, so the log and the next request
+/// cannot disagree about what was asked for.
+#[test]
+fn the_response_log_carries_the_calls_and_not_only_the_prose() {
+    let reply = Reply {
+        text: "Checking the disks.".into(),
+        calls: vec![
+            ToolCall {
+                id: "c1".into(),
+                name: "run".into(),
+                arguments: r#"{"command":"df -h","why":"disk"}"#.into(),
+            },
+            ToolCall {
+                id: "c2".into(),
+                name: "run".into(),
+                arguments: r#"{"command":"free -m","why":"memory"}"#.into(),
+            },
+        ],
+    };
+
+    let written = crate::ai::session::transcribe_for_test(&reply);
+    assert!(written.contains("Checking the disks."), "the prose is kept: {written}");
+    assert!(written.contains("\"command\":\"df -h\""), "the first call is there: {written}");
+    assert!(written.contains("\"command\":\"free -m\""), "the second call is there: {written}");
+    assert!(written.contains("\"action\":\"run\""), "the verb comes back as the action");
 }

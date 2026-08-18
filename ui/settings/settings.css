@@ -26,8 +26,19 @@ body {
  * other; left-aligned, the page starts where every other page in the window
  * starts.
  */
+/*
+ * Wide enough for the widest thing on it, which is no longer a sentence.
+ *
+ * 660px was the measure of a column of prose with a control opposite it, and
+ * that is still what most of this page is. Then the palette arrived: fifteen
+ * named colours per half, each of them a chip, a name and a hex field, and at
+ * 660 the names were being cut to two characters -- "凹…", "侧…" -- which is
+ * exactly as useful as no name. The grids below fit as many columns as the
+ * width allows and no more, so the extra width is spent on the names rather
+ * than on stretching the rows above them.
+ */
 .page {
-  max-width: 660px;
+  max-width: 880px;
   padding: 28px 32px 56px;
 }
 
@@ -72,6 +83,8 @@ h1 {
 .off .subgroup-title,
 .off .label { opacity: .45; }
 
+.off .fold-value { opacity: .45; }
+
 .off .c-seg { border-color: transparent; }
 
 /*
@@ -91,22 +104,101 @@ h2 {
   color: var(--tx-dim);
 }
 
+/*
+ * Two columns, and the second one starts in the same place on every row.
+ *
+ * It was a flex row with `space-between`, which lines the controls up by their
+ * *right* edges -- and the things in that column are a two-word switch, a
+ * three-word switch, a 7.5rem number and an 18rem text field, so their left
+ * edges landed in four different places down the page. The eye reading a
+ * settings page tracks the seam between the names and the controls; with
+ * nothing holding that seam there is no column, only a stack of rows that each
+ * happen to end at the margin.
+ *
+ * The seam is the page's own right margin, which is the one edge already drawn
+ * on every row above and below it. The names start at the left margin, the
+ * controls end at the right one, and the space between them is whatever the row
+ * has spare.
+ *
+ * Every control in that column is the same width, so the column has two edges
+ * and not just one. Sized to the widest thing that goes in it -- the language
+ * switch, which carries a word in each of two languages -- and everything
+ * narrower is padded out to meet it rather than left to end wherever its own
+ * words do. A switch is not a number and a number is not a switch, but a column
+ * whose left edge moves by forty pixels a row is not a column.
+ *
+ * The read-only list is the one exception, and it is a row-level override
+ * rather than a rule about that field: what is wide is the setting, not the
+ * input. It holds a space-separated list of command names, and at the width of
+ * a number it is a box you have to scroll to read.
+ */
 .row {
-  display: flex;
+  --ctrl: 10rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 28px;
-  padding: 13px 0;
+  gap: 4px 28px;
+  padding: 11px 0;
   border-bottom: 1px solid var(--line);
 }
 
-.row:last-child { border-bottom: 0; }
+.row:has(> .field-text) { --ctrl: 20rem; }
 
+/*
+ * `.value` is excluded: it is a sentence stating where the secrets are kept,
+ * not a control, and a run of text padded out to a control's width is a control
+ * that does not do anything when you click it.
+ */
+.row > :not(.label):not(.value) { justify-self: end; width: var(--ctrl); }
+.row > .value { justify-self: end; }
+
+/*
+ * The track has a width of its own now, so the segments have to fill it --
+ * `.c-seg` sizes to its content, and left alone it would sit in a 10rem box
+ * with the border drawn round the words and nothing at the end of it.
+ *
+ * `1 1 auto` and not `1 1 0`: the free space is shared out on top of what each
+ * word needs, so "English" stays wider than the two characters beside it. Split
+ * evenly instead, a two-letter segment gets the same room as a seven-letter one
+ * and the control reads as a table.
+ */
+.row > .c-seg { display: flex; }
+.row > .c-seg > .c-seg-item { flex: 1 1 auto; min-width: 0; }
+
+.row:last-child { border-bottom: 0; }
+.fold:last-child > .fold-head { border-bottom: 0; }
+
+/*
+ * Below this the two columns are further apart than the window is wide, and a
+ * name elided to make room for a switch is worse than a switch on its own line.
+ */
+@media (max-width: 640px) {
+  .row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  /* Stacked, the control belongs under the start of the name it answers to,
+     not out at a margin the name no longer reaches. */
+  .row > :not(.label) { justify-self: start; }
+  /* And it takes the row, because there is no second column left to size it
+     against and 10rem of the window's width is an arbitrary amount of it. */
+  .row > :not(.label):not(.value):not(.c-seg) { width: 100%; }
+  .row > .c-seg { width: auto; }
+  .fold-head { gap: 12px; }
+}
+
+/*
+ * The words stay in a column of their own width, whatever the page's is.
+ *
+ * The page got wider for the colour grids, and a hint set across the whole of
+ * it is a hundred characters to a line -- readable in the sense that the
+ * letters are legible, and not in the sense that anyone reaches the end of it.
+ * The controls opposite still take the width they need; this only stops the
+ * prose from following them out.
+ */
 .label {
   display: flex;
   flex-direction: column;
   gap: 3px;
   min-width: 0;
+  max-width: 62ch;
 }
 
 .hint {
@@ -123,8 +215,284 @@ h2 {
  * is a control that goes out of step.
  */
 
-/* A row that states something rather than offering a control. */
-.row.stacked { align-items: flex-start; }
+/* A row that states something rather than offering a control: no second
+   column to hold open. */
+.row.stacked {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: flex-start;
+}
+
+/* -- a row that opens ------------------------------------------------------ */
+
+/*
+ * The two colour editors, behind a row each.
+ *
+ * They are the same kind of thing as the rows above them -- a name, and what it
+ * is set to -- and for as long as they were spelled out in full they were also
+ * four fifths of the page: fifteen swatches for the window, twenty for the
+ * terminal, two previews, a contrast report and five fields, about forty rows
+ * of controls under a section that otherwise has two. Everything else on the
+ * page fell off the bottom of the screen behind them, the whole of the
+ * assistant's settings included.
+ *
+ * Shut, each is one row wearing its own colours, which is the part that makes
+ * this work: a fold you cannot see into gets opened every time, so what is
+ * behind it is drawn along the row rather than described.
+ *
+ * `<details>` and not a class with a click handler -- it is open or it is shut,
+ * the browser already knows which, and Enter and Space already work on a
+ * summary.
+ */
+/*
+ * One element carries the tint, in both states.
+ *
+ * It used to be two: the head lit up on hover, and opening moved the light onto
+ * the fold. Both are `--hover`, so the two states look identical -- and the
+ * changeover flashed anyway, for the 120ms the head's own `transition` took to
+ * fade out. `--hover` is translucent, so during that fade the head was wearing
+ * both of them and came out a shade darker than the controls under it; closing
+ * it did the same thing in reverse, with 120ms of neither. A quarter of a
+ * second of the block being two colours, every time it was clicked.
+ *
+ * Neither a shorter transition nor `transition: none` is the answer to that.
+ * The flash is not a timing problem, it is two elements taking turns holding
+ * one appearance, and the fix is for there to be only one of them: the fold is
+ * lit when the pointer is on it OR when it is open, so opening changes nothing
+ * about the background at all and there is nothing left to animate.
+ *
+ * `.fold:hover` is the head while it is shut -- a closed `<details>` renders
+ * only its summary, so there is nothing else of it to be over. Once open it is
+ * the whole block, which is what the open state wants anyway.
+ */
+.fold {
+  /* Pulled out to the page's own edges so the lit area is a bar across the row
+   * and not a box floating inside it -- the rows here have no horizontal
+   * padding of their own. The head is inset back by the padding, so its content
+   * still lines up with every row above it. */
+  margin: 0 -10px;
+  padding: 0 10px;
+  transition: background-color .12s ease;
+}
+
+.fold:hover,
+.fold[open] { background: var(--hover); }
+
+/*
+ * A flex line and not the two-column grid the rows above use: the two folds do
+ * not carry the same number of things. The terminal's has its scheme's name
+ * beside the chevron and the window's has no name to carry, so a fixed set of
+ * columns leaves the palette fold holding an empty track -- zero wide, but with
+ * the gap either side of it still counted, which puts its chevron 16px further
+ * out than the one on the row below. Packed from the right instead, and both
+ * land together.
+ */
+.fold-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 11px 0;
+  /* The row's own hairline. On the head rather than on the fold, because the
+   * fold is bled out past the page's column and its border would be 20px wider
+   * than the one under every `.row` above it. */
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  list-style: none;
+}
+
+/* Open, the block's own bottom edge is already the line between this setting
+   and the next. Kept as a transparent 1px so nothing moves. */
+.fold[open] > .fold-head { border-bottom-color: transparent; }
+
+.fold-head::-webkit-details-marker { display: none; }
+
+/*
+ * `margin-right: auto`, and not `flex: 1 1 auto`.
+ *
+ * Growing the label does not work: `.label` is capped at 62ch to hold the hint
+ * to a readable measure, so it stopped growing there and everything after it
+ * sat wherever the words happened to end. The two folds have names of different
+ * lengths, so their chevrons landed a hundred-odd pixels apart -- one against
+ * the right margin, one adrift in the middle of the row. An auto margin takes
+ * the slack instead of the label, and both end at the same edge.
+ */
+.fold-head > .label { flex: 0 1 auto; margin-right: auto; }
+
+.fold-head:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ac-ring);
+}
+
+/* Drawn rather than typed: a chevron in the font is a different chevron in
+   every font, and this one has to turn. */
+.fold-head::after {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-right: 4px;
+  border-right: 1.5px solid var(--tx-dim);
+  border-bottom: 1.5px solid var(--tx-dim);
+  transform: rotate(-45deg);
+  transition: transform .15s ease;
+}
+
+.fold[open] > .fold-head::after { transform: rotate(45deg); }
+.fold-head:hover::after { border-color: var(--tx); }
+
+/* What the row is set to, in words, for the half of the question a strip of
+   colours cannot answer. */
+.fold-value {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--tx-dim);
+  font-size: var(--fs-sm);
+}
+
+.fold-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 2px 0 16px;
+}
+
+.fold-body .notice { margin: 0; }
+
+/* -- the window's palette -------------------------------------------------- */
+
+/*
+ * The same column shape as the schemes below, because it is the same kind of
+ * thing: a choice whose whole meaning is what it looks like. What differs is
+ * that this one has two halves and the terminal's has one -- so the first
+ * control is which half, and everything under it belongs to that half.
+ */
+/*
+ * The tab strip, with the reset at the far end of its own rule.
+ *
+ * The rule runs the width of the panel rather than stopping where the two words
+ * do: what it separates is the tabs from the fifteen swatches under them, and a
+ * line two words long separates those two words from something.
+ */
+.palette-bar {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.palette-bar > .c-tabs { border-bottom: 0; }
+
+/* The reset sits away from the half switch: they are a step apart in weight,
+   and a button that discards fifteen colours should not be adjacent to the one
+   that merely changes which fifteen are shown. */
+.palette-bar > .c-btn { margin-left: auto; margin-bottom: 6px; }
+
+/*
+ * Editing the half that is not on screen. Stated rather than prevented -- a
+ * light palette is usually built while working in a dark one, and the honest
+ * thing is to say the preview below is the only place it shows.
+ */
+.palette-note {
+  width: 100%;
+  color: var(--tx-dim);
+  font-size: var(--fs-sm);
+}
+
+/*
+ * What the fifteen add up to.
+ *
+ * Painted from the derived palette rather than inherited from the page, which
+ * is what lets it preview the half the window is not wearing. Every colour in
+ * here is set inline by settings.js; nothing below assumes a light or a dark
+ * ground.
+ */
+.palette-preview {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  font-size: var(--fs-sm);
+}
+
+.palette-preview .pp-stack { display: flex; flex-direction: column; gap: 3px; margin-right: auto; }
+.palette-preview .pp-dim { font-size: var(--fs-xs); }
+
+.palette-preview .pp-fill {
+  padding: 4px 12px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+/*
+ * What the palette measures, when something in it does not.
+ *
+ * Amber and not red: it does not stop the save. The panel exists so people can
+ * have the colours they want, and a warning that blocks is a warning people
+ * learn to route around. What it must not do is stay silent -- an unreadable
+ * window is reached one plausible colour at a time.
+ */
+.palette-contrast {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: var(--r-sm);
+  border-left: 3px solid var(--warn);
+  background: var(--warn-soft);
+  color: var(--tx);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.palette-contrast ul { margin: 5px 0 0; padding-left: 18px; }
+.palette-contrast li { font-variant-numeric: tabular-nums; }
+
+/*
+ * Two columns, like the sixteen ANSI slots below it -- and one when two will
+ * not fit a name.
+ *
+ * It was `auto-fit` with a 272px minimum, which is this rule stated as
+ * arithmetic: at the page's measure it resolves to two and at a narrow window
+ * to one. Written as the answer instead, because the answer is what has to go
+ * on matching the grid underneath it, and a minimum tuned to produce two
+ * columns quietly produces three the day the page gets wider.
+ *
+ * `.swatches.palette-swatches`, and the second class is load-bearing.
+ *
+ * These elements carry both, and `.swatches` is declared two hundred lines
+ * below this in the terminal section -- same specificity, later in the file, so
+ * it won: the palette was being laid out with the ANSI grid's `auto-flow:
+ * column` and its eight fixed rows. Six surface tokens filled the first column
+ * top to bottom and the second column stayed empty, which reads as a page that
+ * has decided on one column and is wasting half its width.
+ *
+ * Ordering the file so that this came last would fix it and would keep fixing
+ * it only until somebody moved a block. The extra class says it outright.
+ */
+.swatches.palette-swatches {
+  grid-auto-flow: row;
+  grid-template-rows: none;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* Two columns of a chip, a phrase and a hex field need about 250px each. */
+@media (max-width: 640px) {
+  .swatches.palette-swatches { grid-template-columns: minmax(0, 1fr); }
+}
+
+.palette-fields {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+}
 
 /* -- terminal appearance --------------------------------------------------- */
 
@@ -133,21 +501,6 @@ h2 {
  * picker stands for -- a preview, a font, and twenty colours. A scheme cannot
  * be chosen from its name alone, and none of the rest fits opposite a label.
  */
-.scheme-row {
-  flex-direction: column;
-  gap: 14px;
-}
-
-.scheme-row .label { width: 100%; }
-.scheme-row .notice { width: 100%; margin: 0; }
-
-/* Red rather than amber: this one is not a downgrade the user can live with,
-   it is a file that will not open and will not be written to until it does. */
-.notice.error {
-  border-left-color: var(--err);
-  background: var(--err-soft);
-}
-
 /*
  * The picker and its four verbs on one line, wrapping rather than scrolling:
  * at this page's width they fit, and if the language makes them longer the
@@ -161,9 +514,11 @@ h2 {
   gap: 8px;
 }
 
-.scheme-pick {
+/* The width goes on the shell, which is what sits in the flex row now; the
+   select inside it is 100% of whatever the shell gets. */
+.c-select.scheme-pick {
   width: auto;
-  min-width: 12rem;
+  min-width: 13rem;
   flex: 0 1 auto;
 }
 
@@ -185,13 +540,14 @@ h2 {
 /* A font size is three characters wide however wide the page is. */
 .field-narrow { flex: 0 0 7rem; }
 
-.field-name {
-  color: var(--tx-dim);
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  letter-spacing: .05em;
-  text-transform: uppercase;
-}
+/* The field's name is `.c-label` from shared/components.css. It was written
+   out again here, to the letter, and two copies of a label is how the two go
+   out of step. The gap belongs to the column, so the label drops its margin. */
+.field > .c-label { margin-bottom: 0; }
+
+/* The shell is `inline-flex`, so it has to be told to take the column it is
+   standing in rather than the width of what is inside it. */
+.field > .c-select { width: 100%; }
 
 .field input[type="number"] {
   text-align: right;
@@ -256,6 +612,8 @@ h2 {
 }
 
 .swatch {
+  /* The origin the picker hangs off. */
+  position: relative;
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr) 6.4rem;
   gap: 9px;
@@ -264,35 +622,164 @@ h2 {
 }
 
 /*
- * The chip is the colour input itself rather than a swatch beside one. Two
- * controls for one value is two things to keep in step and one of them is
- * always a moment behind the other.
+ * A button showing the colour, and a picker of our own behind it.
+ *
+ * It was `<input type="color">`, whose picker WebView2 opens at a stale window
+ * position -- off the screen once the window has been moved, so clicking a
+ * colour did nothing at all. See `openPicker` in settings.js.
  */
 .swatch-chip {
+  position: relative;
   width: 24px;
   height: 24px;
   padding: 0;
   border: 0;
   border-radius: var(--r-sm);
-  background: transparent;
   cursor: pointer;
   appearance: none;
-}
-
-.swatch-chip::-webkit-color-swatch-wrapper { padding: 0; }
-
-.swatch-chip::-webkit-color-swatch {
-  border: 0;
-  border-radius: var(--r-sm);
   /* A hairline, so a swatch that happens to match the page still has an edge --
    * ANSI black on a dark page, brightWhite on a light one. */
   box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 
+/* It is a button, so it answers the pointer. The ring is the same one the
+   focus state draws, at the strength every other hover in the window uses --
+   drawn outside rather than as a background, because the chip's background is
+   the thing it is showing. */
+.swatch-chip:hover { box-shadow: inset 0 0 0 1px var(--line-strong), 0 0 0 2px var(--hover); }
+
 .swatch-chip:focus-visible {
   outline: none;
+  box-shadow: inset 0 0 0 1px var(--line-strong), 0 0 0 2px var(--ac-ring);
+}
+
+.picker {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 232px;
+  padding: 10px;
+  display: grid;
+  gap: 9px;
+  background: var(--bg-float);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-pop);
+}
+
+/*
+ * The field: saturation across, value down, over a flat hue.
+ *
+ * Two gradients and a background colour, which is the whole of it -- changing
+ * the hue changes one property and the browser repaints. A canvas would have to
+ * be redrawn pixel by pixel on every frame of a hue drag to say the same thing.
+ */
+.picker-field {
+  position: relative;
+  height: 132px;
+  border-radius: var(--r-sm);
+  cursor: crosshair;
+  touch-action: none;
+  background-image:
+    linear-gradient(to top, #000, transparent),
+    linear-gradient(to right, #fff, transparent);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+.picker-field:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--line-strong), 0 0 0 2px var(--ac-ring);
+}
+
+/*
+ * The thumb wears the colour it is standing on, inside a white ring with a dark
+ * halo outside it. Both rings, because either one alone disappears: white on
+ * the pale corner, dark on the black one.
+ */
+.picker-thumb {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: var(--r-pill);
+  box-shadow: 0 0 0 2px #fff, 0 0 0 3px rgba(0, 0, 0, .45);
+  pointer-events: none;
+}
+
+.picker-range {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--ac);
+  cursor: pointer;
+}
+
+/*
+ * The hue bar is the one dimension that really is a slider, so it stays one --
+ * a native range, which keeps the arrow keys, Home and End for free. Only its
+ * track is repainted, in the hues it selects between.
+ */
+.picker-hue {
+  appearance: none;
+  height: 14px;
+  border-radius: var(--r-pill);
+  background: linear-gradient(to right,
+    #FF0000 0%, #FFFF00 17%, #00FF00 33%,
+    #00FFFF 50%, #0000FF 67%, #FF00FF 83%, #FF0000 100%);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+.picker-hue::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: var(--r-pill);
+  background: var(--bg-base);
+  box-shadow: 0 0 0 2px #fff, 0 0 0 3px rgba(0, 0, 0, .45);
+  cursor: pointer;
+}
+
+.picker-foot {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+/* What is currently held, as a square, because a hex string is not a colour to
+   anyone reading quickly. */
+.picker-shown {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+.picker-hex {
+  width: 100%;
+  padding: 3px 6px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-inset);
+  color: var(--tx);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  text-transform: uppercase;
+}
+
+.picker-hex:hover { border-color: var(--line-strong); }
+
+/* The ring as well as the border. Every other field in the window draws both,
+   and this one drew neither the same way. */
+.picker-hex:focus {
+  outline: none;
+  border-color: var(--ac);
   box-shadow: 0 0 0 2px var(--ac-ring);
 }
+
+/* Typed, not yet a colour. Red on the border only: the value is still there to
+   be finished, and blanking it out from under the caret is worse than wrong. */
+.picker-hex.bad { border-color: var(--err); }
 
 /* Nothing set here: the chip shows what the terminal will use, faded, because
    the value is the theme's rather than this scheme's. */
@@ -359,7 +846,7 @@ h2 {
   text-transform: uppercase;
 }
 
-.value { flex: none; color: var(--tx); }
+.value { color: var(--tx); }
 .value.degraded { color: var(--warn); }
 
 /* A path is not prose: it should be selectable, and it should not be broken
@@ -381,16 +868,10 @@ h2 {
  * border draws a second frame inside the page and the eye reads the frame
  * before the sentence.
  */
+/* `.c-notice` in shared/components.css draws it. What is this page's is the
+   space it takes in the column it sits in. */
 .notice {
   margin: 4px 0 12px;
-  padding: 11px 14px;
-  border: 0;
-  border-left: 2px solid var(--warn);
-  border-radius: var(--r-sm);
-  background: var(--warn-soft);
-  color: var(--tx);
-  font-size: var(--fs-sm);
-  line-height: 1.6;
   overflow-wrap: anywhere;
 }
 
@@ -407,13 +888,15 @@ h2 {
  * not. Tabular figures for the same reason.
  */
 .field-number {
-  width: 7.5rem;
+  /* The column decides the width; what is left here is how a number is read. */
+  width: 100%;
   flex: none;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
 
-/* A short list of names, edited as one line. Wider than a number, left-read. */
-.field-text { width: 18rem; flex: none; }
+/* A short list of names, edited as one line. How wide it gets is decided by the
+   row it is in -- see `--ctrl` above -- because what is wide is the setting. */
+.field-text { width: 100%; flex: none; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

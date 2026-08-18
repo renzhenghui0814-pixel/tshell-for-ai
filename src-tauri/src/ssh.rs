@@ -17,20 +17,17 @@
 //!
 //! [`Raw`]: InvokeResponseBody::Raw
 //!
-//! # Host keys are not checked
+//! # Host keys are checked
 //!
-//! Deliberately, and it is worth being plain about what that costs. The
-//! connection is encrypted, but nothing here establishes *who* it is encrypted
-//! to: anyone able to answer on the address can present their own key, relay to
-//! the real server, and read the password and every keystroke in between. Both
-//! `known_hosts` files on the machine are left alone -- neither read nor
-//! written -- so nothing tshell does here affects `ssh` on the command line.
+//! [`Client::check_server_key`] used to return `true` to everything, which left
+//! the connection encrypted but not authenticated. It now asks
+//! [`crate::hosts`], which pins the first key a machine offers and puts a dialog
+//! in front of anything that does not match it afterwards. The rules, the file
+//! and the reasoning are all there; what lives here is only the translation from
+//! russh's key type into the three fields that module works in.
 //!
-//! This matches what the extension did (`ssh2` accepts any key unless given a
-//! `hostVerifier`, and it was never given one). If it is ever revisited, the
-//! shape that fits this codebase is a check in [`Client::check_server_key`] plus
-//! a prompt through the shell's existing `confirm()` dialog, so that a changed
-//! key is answerable from inside the window rather than by hand-editing a file.
+//! Both `known_hosts` files on the machine are still left alone -- neither read
+//! nor written -- so nothing tshell does affects `ssh` on the command line.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -74,6 +71,11 @@ pub struct Target {
     pub username: String,
     pub encoding: &'static Encoding,
     pub credential: Credential,
+    /// What to call this machine in a dialog: the name from the server panel,
+    /// falling back to the host. Carried rather than looked up because the host
+    /// key question is asked from inside the connection, where there is no
+    /// config in scope and no id left to look one up with.
+    pub label: String,
 }
 
 /// What the shell is told about a session, beside its bytes.
@@ -127,12 +129,37 @@ impl Sessions {
     /// From here every chunk goes through it on the way to the tab, which is what
     /// lets a command's own output be told from the prompt around it. See
     /// `ai/shell.rs`.
+    ///
+    /// # One at a time, and the front end sees to it
+    ///
+    /// The slot is single by design, not by oversight: two assistants cannot
+    /// share a shell. Every byte goes through whoever is in this slot, and two of
+    /// them acting at once would be two streams of keystrokes interleaved into
+    /// one interactive shell. `openChat` in the shell reuses an existing panel
+    /// rather than opening a second, which is where the rule is actually kept.
+    ///
+    /// This still overwrites rather than refusing. Refusing would mean an open
+    /// racing a close -- two separate commands, one of them async -- and failing
+    /// on a terminal that is about to be free, which is a worse answer than the
+    /// case it guards against.
     pub fn attach(&self, pane: &str, agent: Arc<crate::ai::shell::AgentShell>) {
         self.agents.lock().unwrap().insert(pane.to_string(), agent);
     }
 
-    pub fn detach(&self, pane: &str) {
-        self.agents.lock().unwrap().remove(pane);
+    /// Takes one assistant out of the slot, if it is still the one in it.
+    ///
+    /// By identity rather than by terminal, and that is the whole point. Closing
+    /// a chat panel and opening another on the same terminal is two commands --
+    /// `ai_close` is synchronous, `ai_open` is not -- so the open can finish
+    /// first and the close then arrive to unhook a panel that has only just
+    /// started. What that leaves is a terminal with nobody watching it: the new
+    /// assistant's markers get drawn to the user verbatim, and its first command
+    /// waits for an end marker that can no longer reach it.
+    pub fn detach(&self, pane: &str, agent: &Arc<crate::ai::shell::AgentShell>) {
+        let mut agents = self.agents.lock().unwrap();
+        if agents.get(pane).is_some_and(|held| Arc::ptr_eq(held, agent)) {
+            agents.remove(pane);
+        }
     }
 
     pub fn agent(&self, pane: &str) -> Option<Arc<crate::ai::shell::AgentShell>> {
@@ -175,18 +202,45 @@ impl Sessions {
     }
 }
 
-/// The handler russh requires. It accepts every host key it is shown.
-///
-/// See the note at the top of this file: this is the extension's behaviour kept
-/// as it was, and it is the reason the connection is confidential but not
-/// authenticated.
-pub struct Client;
+/// The handler russh requires, and the one place a host key is seen.
+pub struct Client {
+    /// `host:port`, spelled the way the pinned-keys file spells it.
+    endpoint: String,
+    /// The machine's name, for the dialog.
+    label: String,
+    /// Set when the user refused, read once the connection has failed.
+    ///
+    /// russh does turn a `false` from below into `Error::UnknownKey`, but that
+    /// error is raised inside the session task and reaches `connect` only if the
+    /// join beats the kex signal being dropped; lose that race and the caller
+    /// sees a bare `Disconnect` instead. A flag we set ourselves does not depend
+    /// on which of the two arrives, so the user is never told the network
+    /// dropped when what actually happened is that they pressed Cancel.
+    refused: Arc<std::sync::atomic::AtomicBool>,
+}
 
 impl client::Handler for Client {
     type Error = russh::Error;
 
-    async fn check_server_key(&mut self, _key: &ssh_key::PublicKey) -> Result<bool, Self::Error> {
-        Ok(true)
+    async fn check_server_key(&mut self, key: &ssh_key::PublicKey) -> Result<bool, Self::Error> {
+        let algorithm = key.algorithm();
+        let presented = crate::hosts::PresentedKey {
+            algorithm: algorithm.as_str().to_string(),
+            fingerprint: key.fingerprint(ssh_key::HashAlg::Sha256).to_string(),
+            // Only ever shown to a human, and a key we cannot re-encode is still
+            // a key we can fingerprint -- which is the half the decision is made
+            // on. So this degrades to empty rather than failing the connection.
+            openssh: key.to_openssh().unwrap_or_default(),
+        };
+
+        let ok = crate::hosts::HOST_KEYS
+            .verify(&self.endpoint, &self.label, presented)
+            .await;
+        if !ok {
+            self.refused
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        Ok(ok)
     }
 }
 
@@ -261,9 +315,29 @@ pub async fn connect(target: &Target) -> Result<client::Handle<Client>, String> 
         ..client::Config::default()
     });
 
-    let mut handle = client::connect(config, (target.host.as_str(), target.port), Client)
+    let refused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let client = Client {
+        endpoint: crate::hosts::endpoint(&target.host, target.port),
+        label: if target.label.trim().is_empty() {
+            target.host.clone()
+        } else {
+            target.label.clone()
+        },
+        refused: Arc::clone(&refused),
+    };
+
+    let mut handle = client::connect(config, (target.host.as_str(), target.port), client)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            if refused.load(std::sync::atomic::Ordering::SeqCst) {
+                // A key the user declined, said in words the front end can
+                // localise. Whatever russh called it is the mechanics of a
+                // decision that was already made in the window.
+                "hostKeyRejected".to_string()
+            } else {
+                error.to_string()
+            }
+        })?;
     authenticate(&mut handle, target).await?;
     Ok(handle)
 }
@@ -457,5 +531,57 @@ fn flush(
 fn say(out: &Channel<InvokeResponseBody>, status: Status) {
     if let Ok(json) = serde_json::to_string(&status) {
         let _ = out.send(InvokeResponseBody::Json(json));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::shell::AgentShell;
+
+    fn agent() -> Arc<AgentShell> {
+        Arc::new(AgentShell::fresh(1000))
+    }
+
+    /// The slot is single, and the last one in holds it. The front end is what
+    /// keeps a second assistant from ever being opened on one terminal; this only
+    /// pins down what the slot does if one ever is.
+    #[test]
+    fn one_terminal_holds_one_assistant() {
+        let sessions = Sessions::default();
+        let first = agent();
+        let second = agent();
+
+        sessions.attach("term-1", first.clone());
+        sessions.attach("term-1", second.clone());
+        assert!(Arc::ptr_eq(&sessions.agent("term-1").unwrap(), &second));
+    }
+
+    /// The race this exists for: a chat panel closed and another opened on the
+    /// same terminal is two commands, one of them async, so the open can land
+    /// first. Detaching by terminal would then unhook the panel that had only
+    /// just started, leaving the terminal with nobody watching it.
+    #[test]
+    fn a_late_close_cannot_unhook_the_assistant_that_replaced_it() {
+        let sessions = Sessions::default();
+        let leaving = agent();
+        let arriving = agent();
+
+        sessions.attach("term-1", leaving.clone());
+        sessions.attach("term-1", arriving.clone());
+        // The close for the panel that has already gone, arriving after the open.
+        sessions.detach("term-1", &leaving);
+
+        let held = sessions.agent("term-1").expect("the new assistant is still watching");
+        assert!(Arc::ptr_eq(&held, &arriving));
+    }
+
+    #[test]
+    fn detaching_the_assistant_that_holds_the_slot_empties_it() {
+        let sessions = Sessions::default();
+        let only = agent();
+        sessions.attach("term-1", only.clone());
+        sessions.detach("term-1", &only);
+        assert!(sessions.agent("term-1").is_none());
     }
 }

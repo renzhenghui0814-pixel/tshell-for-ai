@@ -68,7 +68,6 @@ fn removal_tag(outcome: RemoveOutcome) -> String {
     match outcome {
         RemoveOutcome::Ok => "ok",
         RemoveOutcome::Missing => "missing",
-        RemoveOutcome::Ambiguous => "ambiguous",
         RemoveOutcome::Failed => "failed",
     }
     .to_string()
@@ -559,6 +558,5 @@ mod tests {
     #[test]
     fn removal_outcomes_cross_the_boundary_as_keys() {
         assert_eq!(removal_tag(RemoveOutcome::Ok), "ok");
-        assert_eq!(removal_tag(RemoveOutcome::Ambiguous), "ambiguous");
     }
 }

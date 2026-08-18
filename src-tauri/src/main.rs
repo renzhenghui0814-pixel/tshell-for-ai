@@ -13,11 +13,13 @@ mod ai;
 mod atomic;
 mod config;
 mod fonts;
+mod hosts;
 mod i18n;
 mod preview;
 mod schemes;
 mod secrets;
 mod ssh;
+mod theme;
 mod transfer;
 
 use std::collections::HashMap;
@@ -26,6 +28,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
+use tauri::Manager;
 use tauri::State;
 
 use config::{AppConfig, Auth, Encoding, Group, Language, Server};
@@ -520,6 +523,13 @@ pub(crate) fn dial_plan(
             username: server.username.clone(),
             encoding,
             credential,
+            // The name the user gave the machine, because that is what they will
+            // recognise in a host key dialog. An unnamed server is its host.
+            label: if server.name.trim().is_empty() {
+                server.host.clone()
+            } else {
+                server.name.clone()
+            },
         },
         encoding,
     ))
@@ -592,6 +602,43 @@ async fn fonts_monospace() -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(|| fonts::monospace().to_vec())
         .await
         .map_err(|error| error.to_string())
+}
+
+/// The same scan, unfiltered, for the window's own text.
+#[tauri::command]
+async fn fonts_all() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(|| fonts::all().to_vec())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+// ---------------------------------------------------- window appearance ---
+
+/*
+ * The window's palette, as the user's edits to it.
+ *
+ * The same division as the schemes above, and for a sharper reason: the palette
+ * that ships is `ui/shared/theme.css`, a stylesheet, and the derived half of it
+ * -- the hovers, the soft fills, the ink that goes on an accent -- is computed
+ * in `ui/shared/palette.js` while a colour is still being dragged. These two
+ * commands carry the fifteen tokens per half the user actually changed. What
+ * they mean is the front end's.
+ */
+
+/// A file that will not parse is not an empty file. Same rule as the schemes
+/// and the config: the error goes back, the file is left alone, and the window
+/// wears the palette that ships until somebody fixes it.
+#[tauri::command]
+fn theme_load() -> Result<theme::ThemeFile, String> {
+    theme::load().map_err(|error| error.message(&theme::theme_path()))
+}
+
+/// Returns what was written, normalized, which is what the next load will
+/// produce -- so a colour typed as `#abc` comes back as `#AABBCC` and the
+/// settings page never holds a second spelling of it.
+#[tauri::command]
+fn theme_save(file: theme::ThemeFile) -> Result<theme::ThemeFile, String> {
+    theme::save(&file)
 }
 
 #[tauri::command]
@@ -921,6 +968,21 @@ fn open_config() -> Result<(), String> {
     reveal(&path).map_err(|error| error.to_string())
 }
 
+/// What the user pressed on a host key dialog.
+///
+/// Its own command rather than the result of the one that asked, because the
+/// question is raised from inside a connection that a dozen different commands
+/// may have started -- and, in a transfer job, from no command at all. The
+/// question travels out as an event carrying an id; this brings the id back.
+///
+/// Answering an id nobody is waiting for does nothing: a dialog the window drew
+/// twice, or an answer that arrives after the question timed out, is not an
+/// error worth failing a call over.
+#[tauri::command]
+fn host_key_answer(id: u64, choice: String) {
+    hosts::HOST_KEYS.answer(id, &choice);
+}
+
 pub(crate) fn reveal(path: &Path) -> std::io::Result<()> {
     use std::process::Command;
     #[cfg(target_os = "windows")]
@@ -946,6 +1008,30 @@ fn main() {
     let store = Store::open(&config::data_dir());
 
     tauri::Builder::default()
+        .setup(|app| {
+            // The front end shows the window once it has a frame up. This is the
+            // net under that: a page that throws before reaching that call would
+            // otherwise leave a process running with nothing on screen and no
+            // way to reach it. Late and visible beats invisible.
+            if let Some(window) = app.get_webview_window("main") {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    if !matches!(window.is_visible(), Ok(true)) {
+                        let _ = window.show();
+                    }
+                });
+            }
+            /*
+             * The host key dialog has somewhere to go from here on.
+             *
+             * Before this line every connection would be refused rather than
+             * asked about -- see `hosts::HostKeys::ask`. Nothing can connect
+             * before the window exists, so the window is the right moment.
+             */
+            hosts::HOST_KEYS.install(app.handle().clone());
+
+            Ok(())
+        })
         .manage(store)
         .manage(Arc::new(ssh::Sessions::default()))
         .manage(Arc::new(transfer::Transfers::default()))
@@ -963,10 +1049,14 @@ fn main() {
             move_group,
             move_server,
             open_config,
+            host_key_answer,
             set_language,
             schemes_load,
             schemes_save,
             fonts_monospace,
+            fonts_all,
+            theme_load,
+            theme_save,
             terminal_open,
             terminal_input,
             terminal_resize,

@@ -6,6 +6,7 @@
   <title>tshell</title>
   <link rel="stylesheet" href="shared/theme.css">
   <script src="shared/schemes.js"></script>
+  <script src="shared/palette.js"></script>
   <link rel="stylesheet" href="shared/components.css">
   <script src="shared/scrollbars.js"></script>
   <link rel="stylesheet" href="shell/shell.css">
@@ -54,21 +55,6 @@
     </div>
 
     <span class="spacer"></span>
-
-    <!--
-      The two actions that belong to whichever terminal is in front. They used to
-      float over the terminal itself; centred here they stay in one place as tabs
-      change, and they are dimmed rather than hidden when the front tab is not a
-      terminal, so the bar does not shift about.
-    -->
-    <div class="titlebar-center">
-      <button type="button" id="act-ai" class="chrome-button accent-ai" disabled>
-        <svg class="glyph" viewBox="0 0 16 16" aria-hidden="true"><use href="#i-ai"/></svg>
-      </button>
-      <button type="button" id="act-transfer" class="chrome-button accent-transfer" disabled>
-        <svg class="glyph" viewBox="0 0 16 16" aria-hidden="true"><use href="#i-transfer"/></svg>
-      </button>
-    </div>
 
     <!--
       Kept out of the shared icon set on purpose. These three are system

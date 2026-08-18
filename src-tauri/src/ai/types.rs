@@ -29,13 +29,6 @@ impl FileOpKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum MemoryOpKind {
-    Remember,
-    Forget,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub enum MemoryScope {
     Global,
     Server,
@@ -59,16 +52,12 @@ pub enum FileEncoding {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ActionKind {
-    Say,
     Run,
-    Ask,
-    Done,
     Skill,
     Write,
     Append,
     Edit,
     Remember,
-    Forget,
     Upload,
     Download,
 }
@@ -77,16 +66,12 @@ impl ActionKind {
     /// The verb as the model spells it, which is also the i18n-free wire form.
     pub fn tag(self) -> &'static str {
         match self {
-            Self::Say => "say",
             Self::Run => "run",
-            Self::Ask => "ask",
-            Self::Done => "done",
             Self::Skill => "skill",
             Self::Write => "write",
             Self::Append => "append",
             Self::Edit => "edit",
             Self::Remember => "remember",
-            Self::Forget => "forget",
             Self::Upload => "upload",
             Self::Download => "download",
         }
@@ -94,16 +79,12 @@ impl ActionKind {
 
     pub fn parse(value: &str) -> Option<Self> {
         Some(match value {
-            "say" => Self::Say,
             "run" => Self::Run,
-            "ask" => Self::Ask,
-            "done" => Self::Done,
             "skill" => Self::Skill,
             "write" => Self::Write,
             "append" => Self::Append,
             "edit" => Self::Edit,
             "remember" => Self::Remember,
-            "forget" => Self::Forget,
             "upload" => Self::Upload,
             "download" => Self::Download,
             _ => return None,
@@ -119,14 +100,6 @@ impl ActionKind {
         })
     }
 
-    pub fn as_memory_op(self) -> Option<MemoryOpKind> {
-        Some(match self {
-            Self::Remember => MemoryOpKind::Remember,
-            Self::Forget => MemoryOpKind::Forget,
-            _ => return None,
-        })
-    }
-
     pub fn as_transfer(self) -> Option<TransferKind> {
         Some(match self {
             Self::Upload => TransferKind::Upload,
@@ -138,7 +111,7 @@ impl ActionKind {
 
 /// One thing the model asked for.
 ///
-/// Every field is optional because one object carries all twelve verbs, and the
+/// Every field is optional because one object carries all eight verbs, and the
 /// loop reads only the ones its verb uses. Keeping them in one struct rather
 /// than an enum is deliberate: the parser has to accept whatever arrives and
 /// decide afterwards, and a malformed action with the wrong keys must still be
@@ -148,8 +121,7 @@ pub struct AgentAction {
     pub action: Option<ActionKind>,
     pub command: Option<String>,
     pub why: Option<String>,
-    pub question: Option<String>,
-    pub summary: Option<String>,
+    /// The memory action's fact.
     pub text: Option<String>,
     /// The file actions. Content is carried verbatim, newlines and all.
     pub path: Option<String>,
@@ -189,8 +161,6 @@ pub enum MemoryOutcome {
     Ok,
     Duplicate,
     Full,
-    Missing,
-    Ambiguous,
     Failed,
     Off,
     Undone,
@@ -243,15 +213,55 @@ pub struct CommandResult {
     pub truncated: bool,
 }
 
-/// How far a transfer has got. Mirrors the shape the transfer page already uses.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// Which half of a transfer is being reported.
+///
+/// Scanning knows how much it has found so far but not how much there is, so the
+/// page draws a total it is building rather than a percentage it cannot know.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TransferPhase {
+    Scanning,
+    Transferring,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferOverall {
+    pub done_files: u32,
+    pub total_files: u32,
+    pub done_bytes: u64,
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferCurrent {
+    pub name: String,
+    pub transferred: u64,
+    pub total: u64,
+}
+
+/// How far a transfer has got.
+///
+/// # Why this is a type and not a `json!`
+///
+/// It was a `json!` built by hand in `bridge.rs`, and it was wrong in every
+/// field: it read `done` and `filesDone` off an engine that sends `doneBytes` and
+/// `doneFiles`, and it sent them flat to a page that reads `overall.doneBytes`.
+/// Three shapes, none of them the same, and nothing to notice it -- the payload
+/// was all nulls, `paintProgress` threw on the first event, and the bar sat at
+/// zero while the file transferred perfectly.
+///
+/// The nesting is the page's, not a preference: `chat.js` and `transfer.js` both
+/// read `phase`, `overall` and `current`, and both pages are the extension's,
+/// unedited. Expressing that as a type is what makes serde responsible for the
+/// names instead of whoever last touched the call site.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransferProgress {
-    pub done: u64,
-    pub total: u64,
-    pub files_done: u32,
-    pub files_total: u32,
-    pub name: String,
+    pub phase: TransferPhase,
+    pub overall: TransferOverall,
+    pub current: TransferCurrent,
 }
 
 /// What the panel is told, as it happens.
@@ -299,7 +309,6 @@ pub enum AgentEvent {
     /// carries an undo so being told after the fact costs the user nothing.
     #[serde(rename_all = "camelCase")]
     Memory {
-        op: MemoryOpKind,
         scope: MemoryScope,
         text: String,
         outcome: MemoryOutcome,
@@ -364,8 +373,6 @@ pub enum AgentEvent {
     /// again without it.
     Degraded { fields: Vec<String> },
     Reply { text: String },
-    Question { question: String },
-    Summary { summary: String },
     /// `message` is English and is what a consumer without a string table shows.
     /// `code` names the failure so the page can show it in the user's language,
     /// and so a stored transcript still reads correctly after the language changes.
@@ -393,6 +400,64 @@ pub fn risk_key(reason: RiskReason) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The exact keys `paintProgress` reads, spelled out.
+    ///
+    /// This is the test that was missing. The progress payload was built by hand
+    /// and every field name in it was wrong -- flat where the page nests, `done`
+    /// where the engine says `doneBytes` -- and nothing anywhere compared the two
+    /// spellings. The transfer worked; the bar sat at zero; there was no error to
+    /// find, because the page threw on `undefined.doneFiles` and the throw went
+    /// nowhere.
+    ///
+    /// If a field here is renamed, this fails. That is the entire point: both
+    /// pages are the extension's, unedited, so the names are theirs and not ours.
+    #[test]
+    fn transfer_progress_serialises_the_way_both_pages_read_it() {
+        let event = AgentEvent::TransferProgress {
+            progress: TransferProgress {
+                phase: TransferPhase::Transferring,
+                overall: TransferOverall {
+                    done_files: 2,
+                    total_files: 5,
+                    done_bytes: 1024,
+                    total_bytes: 4096,
+                },
+                current: TransferCurrent {
+                    name: "big.log".into(),
+                    transferred: 512,
+                    total: 2048,
+                },
+            },
+        };
+        let json = serde_json::to_value(&event).unwrap();
+
+        assert_eq!(json["type"], "transferProgress");
+        // `chat.js`: const overall = progress.overall; const current = progress.current;
+        assert_eq!(json["progress"]["phase"], "transferring");
+        assert_eq!(json["progress"]["overall"]["doneFiles"], 2);
+        assert_eq!(json["progress"]["overall"]["totalFiles"], 5);
+        assert_eq!(json["progress"]["overall"]["doneBytes"], 1024);
+        assert_eq!(json["progress"]["overall"]["totalBytes"], 4096);
+        assert_eq!(json["progress"]["current"]["name"], "big.log");
+        assert_eq!(json["progress"]["current"]["transferred"], 512);
+        assert_eq!(json["progress"]["current"]["total"], 2048);
+    }
+
+    /// Scanning is the other half, and the page tells it apart by this one word.
+    #[test]
+    fn a_scanning_report_says_so() {
+        let event = AgentEvent::TransferProgress {
+            progress: TransferProgress {
+                phase: TransferPhase::Scanning,
+                overall: TransferOverall { total_files: 9, total_bytes: 99, ..Default::default() },
+                current: TransferCurrent::default(),
+            },
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["progress"]["phase"], "scanning");
+        assert_eq!(json["progress"]["overall"]["totalFiles"], 9);
+    }
 
     #[test]
     fn events_serialise_the_way_the_page_reads_them() {

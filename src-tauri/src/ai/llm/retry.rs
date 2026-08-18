@@ -75,6 +75,7 @@ impl<P: LlmProvider> LlmProvider for WithRetry<P> {
                     timeout_ms: request.timeout_ms,
                     cancel: request.cancel.clone(),
                     watcher: request.watcher.clone(),
+                    tools: request.tools.clone(),
                 };
                 let error = match self.inner.complete(one).await {
                     Ok(reply) => return Ok(reply),
@@ -107,7 +108,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::ai::llm::{Silent, Watcher};
+    use crate::ai::llm::{Reply, Silent, Watcher};
 
     struct Failing {
         kind: LlmFailure,
@@ -134,7 +135,7 @@ mod tests {
             let succeed_on = self.succeed_on;
             Box::pin(async move {
                 if seen >= succeed_on {
-                    Ok("ok".to_string())
+                    Ok(Reply::text("ok"))
                 } else {
                     Err(LlmError::new(kind, "nope"))
                 }
@@ -160,6 +161,7 @@ mod tests {
             timeout_ms: 0,
             cancel,
             watcher,
+            tools: Vec::new(),
         }
     }
 
@@ -169,7 +171,7 @@ mod tests {
         let provider = WithRetry::new(Failing::new(LlmFailure::RateLimited, 3));
         let reply =
             provider.complete(request(Default::default(), watcher.clone())).await.unwrap();
-        assert_eq!(reply, "ok");
+        assert_eq!(reply.text, "ok");
         let retries = watcher.retries.lock().unwrap();
         assert_eq!(retries.len(), 2);
         assert_eq!(retries[0], (1, LlmFailure::RateLimited));

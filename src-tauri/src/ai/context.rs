@@ -34,11 +34,13 @@ pub struct MachineFacts {
 }
 
 pub struct ContextInput<'a> {
-    pub host: &'a str,
-    pub machine: &'a MachineFacts,
     pub transcript: &'a str,
-    /// What `pwd` answered before this task. Empty when the shell would not say.
-    pub cwd: &'a str,
+    /// Whether any of this may be sent at all.
+    ///
+    /// The switch is the user's, and off means off: not a shorter block, not a
+    /// block with the output trimmed out of it, but nothing. What is left here is
+    /// the terminal's own traffic -- what they typed and what it printed -- and
+    /// there is no half of that worth handing over on its own.
     pub send_output: bool,
     pub output_lines: usize,
     pub budget: usize,
@@ -99,54 +101,37 @@ pub fn extract_commands(transcript: &str, limit: Option<usize>) -> Vec<String> {
     }
 }
 
+/// What the terminal has been doing, or nothing at all.
+///
+/// # What is deliberately NOT in here any more
+///
+/// The machine's own facts -- host, OS, kernel, shell, user, home -- moved into
+/// the system prompt. They are global and they do not change while a session
+/// lasts, so a prompt is where they belong: stated once, and identical from one
+/// task to the next, which is what lets an endpoint match its cache from message
+/// zero. Restating them in a turn of the conversation bought nothing and cost the
+/// match.
+///
+/// The working directory left altogether. It was the one fact here that really
+/// does change, and reporting it was worse than useless: it was measured before
+/// the task started, so a task that `cd`s anywhere is reading a stale line for
+/// the rest of its life. The model runs `pwd` when it needs one, which the prompt
+/// already tells it to do.
 pub fn build_context(input: &ContextInput) -> String {
+    if !input.send_output {
+        return String::new();
+    }
     let budget = if input.budget == 0 { DEFAULT_BUDGET } else { input.budget };
     let clean = redact(&strip_ansi(input.transcript));
     let recent = extract_commands(&clean, Some(MAX_COMMANDS));
-    let facts = input.machine;
 
-    let or_unknown = |value: &str| if value.is_empty() { "unknown" } else { value }.to_string();
-    let mut lines = vec![
-        format!("Host: {}", input.host),
-        format!(
-            "OS: {} | kernel {} | shell {} | user {} | home {}",
-            or_unknown(&facts.os),
-            or_unknown(&facts.kernel),
-            or_unknown(&facts.shell),
-            or_unknown(&facts.user),
-            or_unknown(&facts.home)
-        ),
-        /*
-         * Measured, not worked out.
-         *
-         * This used to be replayed from the `cd` commands still visible in the
-         * transcript, which was wrong in more ways than it was right: a `cd`
-         * inside `cd x && make` was read as a directory literally named
-         * "x && make", one written `cd $HOME/x` was dropped without trace, and a
-         * prompt that does not happen to contain an `@` or a `:` hid every
-         * command in the session, pinning this to $HOME however far the user had
-         * walked. The model was then told the result was where its shell had been
-         * placed, so it built absolute paths on it and wrote files into
-         * directories that did not exist.
-         *
-         * The shell can simply be asked. Nothing here is inferred any more, and
-         * when the answer does not arrive the line says so rather than guessing.
-         */
-        if input.cwd.is_empty() {
-            "Working directory: unknown -- run pwd before you build a path out of it".to_string()
-        } else {
-            format!("Working directory: {}", input.cwd)
-        },
-    ];
+    let mut lines: Vec<String> = Vec::new();
     if !recent.is_empty() {
         lines.push("Recent commands:".to_string());
         lines.extend(recent.iter().map(|command| format!("  {command}")));
     }
 
     let context = lines.join("\n");
-    if !input.send_output {
-        return context;
-    }
 
     let all: Vec<&str> = clean
         .split('\n')
@@ -190,16 +175,10 @@ mod tests {
         }
     }
 
-    fn input<'a>(transcript: &'a str, machine: &'a MachineFacts) -> ContextInput<'a> {
-        ContextInput {
-            host: "web-1",
-            machine,
-            transcript,
-            cwd: "/srv/app",
-            send_output: false,
-            output_lines: 40,
-            budget: 0,
-        }
+    /// On by default here: the switch being off is now the whole of the
+    /// behaviour rather than a variation on it, so it gets its own tests.
+    fn input(transcript: &str) -> ContextInput<'_> {
+        ContextInput { transcript, send_output: true, output_lines: 40, budget: 0 }
     }
 
     #[test]
@@ -243,48 +222,48 @@ mod tests {
     }
 
     #[test]
-    fn the_block_names_the_machine_and_where_the_shell_is_standing() {
-        let machine = facts();
-        let context = build_context(&input("me@web-1:/srv$ ls\n", &machine));
-        assert!(context.starts_with("Host: web-1\n"));
-        assert!(context.contains("OS: Ubuntu 24.04 | kernel 6.8.0 | shell /bin/bash"));
-        assert!(context.contains("Working directory: /srv/app"));
+    fn the_block_is_the_terminal_traffic_and_nothing_else() {
+        let context = build_context(&input("me@web-1:/srv$ ls\ntotal 0\n"));
         assert!(context.contains("Recent commands:\n  ls"));
+        assert!(context.contains("Recent output"));
+    }
+
+    /// The machine's own facts belong in the prompt, where they are stated once
+    /// and never change; the working directory belongs nowhere, because a line
+    /// measured before the task started is stale the moment the model runs `cd`.
+    #[test]
+    fn the_machine_and_the_directory_are_not_in_here() {
+        let context = build_context(&input("me@web-1:/srv$ ls\n"));
+        assert!(!context.contains("Host:"));
+        assert!(!context.contains("OS:"));
+        assert!(!context.contains("Working directory"));
+    }
+
+    /// Off means off. Not a shorter block, not one with the output trimmed out --
+    /// nothing, so `context_turn` sends the user's words alone.
+    #[test]
+    fn the_switch_being_off_sends_not_one_word() {
+        let mut given = input("me@h:/$ cat /etc/shadow\nroot:x:\n");
+        given.send_output = false;
+        assert_eq!(build_context(&given), "");
     }
 
     #[test]
-    fn an_unknown_directory_says_so_rather_than_guessing() {
-        let machine = MachineFacts::default();
-        let mut given = input("", &machine);
-        given.cwd = "";
-        let context = build_context(&given);
-        assert!(context.contains("Working directory: unknown -- run pwd"));
-        assert!(context.contains("OS: unknown | kernel unknown"));
-        assert!(!context.contains("Recent commands:"));
-    }
-
-    #[test]
-    fn output_is_only_sent_when_it_was_asked_for() {
-        let machine = facts();
-        let transcript = "me@h:/$ echo hi\nhi\n";
-        let context = build_context(&input(transcript, &machine));
-        assert!(!context.contains("Recent output"));
-
-        let mut given = input(transcript, &machine);
-        given.send_output = true;
-        let context = build_context(&given);
+    fn output_rides_along_with_the_commands() {
+        let context = build_context(&input("me@h:/$ echo hi\nhi\n"));
         assert!(context.contains("Recent output (last 2 lines):"));
         assert!(context.contains("  hi"));
     }
 
     #[test]
     fn the_newest_output_is_what_survives_a_tight_budget() {
-        let machine = facts();
         let transcript = "first line\nsecond line\nthird line\n";
-        let mut given = input(transcript, &machine);
+        let mut given = input(transcript);
         given.send_output = true;
-        // Room for the block, the header and two of the three lines.
-        given.budget = 175;
+        // Room for the header and two of the three lines, and not the third.
+        // Smaller than it was, because the machine facts that used to sit above
+        // the header are in the prompt now and no longer eat into this.
+        given.budget = 60;
         let context = build_context(&given);
         assert!(context.contains("third line"), "{context}");
         assert!(context.contains("second line"), "{context}");
@@ -293,8 +272,7 @@ mod tests {
 
     #[test]
     fn a_budget_with_no_room_at_all_drops_the_output_section() {
-        let machine = facts();
-        let mut given = input("some output\n", &machine);
+        let mut given = input("some output\n");
         given.send_output = true;
         given.budget = 10;
         let context = build_context(&given);
@@ -303,8 +281,7 @@ mod tests {
 
     #[test]
     fn anything_that_looks_like_a_credential_is_masked_on_the_way_out() {
-        let machine = facts();
-        let mut given = input("me@h:/$ env\nAPI_KEY=secret123\n", &machine);
+        let mut given = input("me@h:/$ env\nAPI_KEY=secret123\n");
         given.send_output = true;
         let context = build_context(&given);
         assert!(context.contains("API_KEY=[REDACTED]"));

@@ -11,6 +11,13 @@
 //! "Consolas Bold" and "Consolas Italic" in it is offering two things nobody
 //! wants -- xterm picks the weight itself, per cell, from what the terminal is
 //! being told to draw.
+//!
+//! Two lists come out of one scan: everything installed, for the window's own
+//! text, and the monospaced subset, for the terminal and for code. One scan
+//! because the scan is the expensive part -- a table read out of every font
+//! file on the machine, the better part of a second on a developer's box -- and
+//! running it twice to ask two questions about the same faces would double the
+//! only cost this module has.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -24,16 +31,31 @@ use std::sync::OnceLock;
  * needed by the settings page, which most sessions never open -- and it is
  * worth doing once, because the answer does not change while the window is up.
  */
-static FAMILIES: OnceLock<Vec<String>> = OnceLock::new();
+static FAMILIES: OnceLock<Families> = OnceLock::new();
+
+/// What one scan produces: every family, and the monospaced ones.
+struct Families {
+    all: Vec<String>,
+    monospace: Vec<String>,
+}
 
 /// The monospaced families installed here, in the order a picker should list
 /// them: alphabetical, ignoring case, so "consolas" and "Consolas" do not sit
 /// at opposite ends.
 pub fn monospace() -> &'static [String] {
-    FAMILIES.get_or_init(scan)
+    &FAMILIES.get_or_init(scan).monospace
 }
 
-fn scan() -> Vec<String> {
+/// Every family installed here, in the same order.
+///
+/// For the window's text, where a proportional face is the point -- offering
+/// only the monospaced ones would be offering a terminal font for a settings
+/// page.
+pub fn all() -> &'static [String] {
+    &FAMILIES.get_or_init(scan).all
+}
+
+fn scan() -> Families {
     let mut db = fontdb::Database::new();
     db.load_system_fonts();
 
@@ -43,19 +65,23 @@ fn scan() -> Vec<String> {
      * become two entries. The value keeps the original spelling, which is what
      * goes into a `font-family` and what the user expects to read.
      */
-    let mut families: BTreeMap<String, String> = BTreeMap::new();
+    let mut all: BTreeMap<String, String> = BTreeMap::new();
+    let mut monospace: BTreeMap<String, String> = BTreeMap::new();
 
     for face in db.faces() {
-        if !face.monospaced {
-            continue;
-        }
         let Some(name) = family_name(face) else {
             continue;
         };
-        families.entry(name.to_lowercase()).or_insert(name);
+        if face.monospaced {
+            monospace.entry(name.to_lowercase()).or_insert(name.clone());
+        }
+        all.entry(name.to_lowercase()).or_insert(name);
     }
 
-    families.into_values().collect()
+    Families {
+        all: all.into_values().collect(),
+        monospace: monospace.into_values().collect(),
+    }
 }
 
 /// The English name if the font offers one, else whatever it offers first.

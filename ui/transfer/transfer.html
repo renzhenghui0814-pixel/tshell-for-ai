@@ -5,9 +5,11 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; connect-src 'self'">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="../shared/theme.css">
+  <script src="../shared/palette.js"></script>
   <script src="../shared/host.js"></script>
   <link rel="stylesheet" href="../shared/highlight.css">
   <link rel="stylesheet" href="../shared/components.css">
+  <script src="../shared/dropdown.js"></script>
   <script src="../shared/scrollbars.js"></script>
   <link rel="stylesheet" href="transfer.css">
 </head>
@@ -114,10 +116,12 @@
     <div class="preview-bar">
       <div class="preview-title" id="previewTitle"></div>
       <button class="secondary" id="toggleCsvView" style="display:none"></button>
-      <select id="previewEncoding" data-i18n-title="previewEncoding" data-i18n-aria="previewEncoding">
-        <option value="utf8">UTF-8</option>
-        <option value="gb2312">GB2312</option>
-      </select>
+      <span class="c-select">
+        <select id="previewEncoding" class="c-field" data-i18n-title="previewEncoding" data-i18n-aria="previewEncoding">
+          <option value="utf8">UTF-8</option>
+          <option value="gb2312">GB2312</option>
+        </select>
+      </span>
       <div class="font-control" data-i18n-title="previewFontSize">
         <button class="secondary" id="previewFontDown" aria-label="-">-</button>
         <span class="font-size" id="previewFontSize">12px</span>

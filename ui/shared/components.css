@@ -217,6 +217,249 @@
 textarea.c-field { height: auto; padding: 8px 10px; resize: vertical; line-height: 1.55; }
 select.c-field { cursor: pointer; }
 
+/*
+ * A dropdown that looks like the rest of the window.
+ *
+ * A bare `<select>` keeps the platform's own box -- on WebView2 that is a grey
+ * chrome with a system-drawn arrow, sitting in a row of fields that are all
+ * `--bg-inset` with a `--r-sm` corner. It is the most obvious foreign object
+ * left in the product, and there were four of them.
+ *
+ * The *popup* is still the platform's, and deliberately: it keeps typeahead,
+ * arrow keys, Home/End and the screen reader's idea of what this is, none of
+ * which a div-and-JS listbox gets back without being written twice. It already
+ * follows the theme, because `color-scheme` in theme.css tells the engine which
+ * set of native colours to draw with -- so what was left to fix is only the
+ * closed control, which is what is on screen every moment except one.
+ *
+ * The shell also goes on an `<input list=...>`, whose native arrow is a
+ * different arrow again -- so the scheme picker and the font box beside it, two
+ * controls doing the same job one above the other, were drawn by two different
+ * pieces of platform. Chromium's own indicator is turned off and both wear this.
+ */
+.c-select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.c-select > select,
+.c-select > input {
+  width: 100%;
+  /* Room for the chevron, which is painted over the field rather than in it. */
+  padding-right: 30px;
+  appearance: none;
+}
+
+/*
+ * Chromium's own arrow for an `<input list>`, which it paints in addition to
+ * anything the page draws -- so the font box wore a solid triangle next to our
+ * chevron, two glyphs saying the same thing in two different hands. It is
+ * shown on hover and focus only, which is why it was easy to miss.
+ *
+ * Every property and not just `display`, because which of these the engine
+ * honours has moved between Chromium versions, and a control that grows a
+ * second arrow after an update is not a thing to find out about from a user.
+ * Separate rules and not one selector list: an engine that does not know
+ * `::-webkit-list-button` would throw out the whole list if the two shared one,
+ * and take the working half with it.
+ */
+.c-select > input::-webkit-calendar-picker-indicator {
+  display: none !important;
+  opacity: 0;
+  width: 0;
+  padding: 0;
+  margin: 0;
+  pointer-events: none;
+}
+
+.c-select > input::-webkit-list-button {
+  display: none !important;
+  opacity: 0;
+  width: 0;
+  padding: 0;
+  margin: 0;
+  pointer-events: none;
+}
+
+/*
+ * The chevron, as a mask rather than as an image or a rotated square.
+ *
+ * A `background-image` cannot read `--tx-dim`, so a data: URI would have to
+ * carry a copy of the colour and a second copy for the light theme -- two
+ * literals outside theme.css, which is the one thing the palette is not allowed
+ * to have. Two borders on a square element can read the token, but a square is
+ * what it stays: hard mitred corners, one arm a pixel longer than the other at
+ * most sizes, and no way to round the ends.
+ *
+ * A mask separates the two. The URI carries only the shape; the colour is a
+ * background, so it is the token, it transitions, and it follows the theme
+ * without a second declaration.
+ */
+.c-select::after {
+  content: '';
+  position: absolute;
+  right: 10px;
+  width: 12px;
+  height: 12px;
+  background: var(--tx-dim);
+  -webkit-mask: var(--c-chevron) center / 12px 12px no-repeat;
+  mask: var(--c-chevron) center / 12px 12px no-repeat;
+  pointer-events: none;
+  transition: background-color .12s ease;
+}
+
+.c-select:hover::after { background: var(--tx); }
+.c-select:focus-within::after { background: var(--ac); }
+
+/* Hover on the box as well as on the glyph: it is a control, and the only thing
+   that happened when the pointer arrived was 12px of it changing colour. */
+.c-select:hover > select,
+.c-select:hover > input { border-color: var(--tx-faint); }
+
+.c-select:focus-within > select,
+.c-select:focus-within > input { border-color: var(--ac); }
+
+/* The popup is drawn by the engine, which takes `color-scheme` for the chrome
+ * but the element's own colours for the rows. Stated so a row is the same float
+ * surface a menu is, rather than the engine's guess at one. */
+.c-field option,
+.c-select option {
+  background: var(--bg-float);
+  color: var(--tx);
+}
+
+/*
+ * The list a dropdown opens, drawn by shared/dropdown.js.
+ *
+ * It is a menu, and it is deliberately the same object as one: same float
+ * surface, same hairline, same shadow, same row. The alternative was a third
+ * kind of list in a window that already has `.c-menu` for a right-click and
+ * `.c-row` for a tree, and "choose one of these" is what all three are for.
+ *
+ * Not `.c-menu` itself, because a menu row runs a command and forgets, while
+ * one of these is a value that stays chosen and has to say which one it is --
+ * that state has nowhere to live on a menu item.
+ */
+.c-select-list {
+  position: fixed;
+  z-index: 400;
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-float);
+  color: var(--tx);
+  box-shadow: var(--sh-pop);
+  font-size: var(--fs-sm);
+  user-select: none;
+}
+
+.c-select-option {
+  padding: 6px 9px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+ * The value in force. Said in weight as well as in colour, because a row marked
+ * only by hue is a row some readers cannot pick out of a list of two hundred
+ * font names.
+ */
+.c-select-option.c-current { color: var(--ac); font-weight: 500; }
+
+/*
+ * One highlight for the pointer and for the keyboard, and it is solid.
+ *
+ * `.c-active` is put on by the script whether the row was reached with the
+ * mouse or with an arrow key -- two different marks for "the row you are on"
+ * would mean the list looked different depending on which hand you were using.
+ * Solid for the same reason `.c-menu-item` is solid and `.c-row` is not: a row
+ * here is one line of text, so there is no second level for a fill to flatten.
+ */
+.c-select-option.c-active {
+  background: var(--ac);
+  color: var(--ac-tx);
+}
+
+/* -- tabs ------------------------------------------------------------------ */
+
+/*
+ * Two or three views of the same thing, one showing.
+ *
+ * Not `.c-seg`, though the markup is the same shape. A segmented control
+ * answers a question -- "dark or light", "on or off" -- and the answer it holds
+ * is a value that gets saved. A tab does not answer anything: it says which of
+ * two panels the controls below it belong to, and nothing about the window
+ * changes when it is pressed. Wearing the same filled pill for both taught that
+ * picking "light" in the palette editor had switched the theme, which is the
+ * one thing it does not do.
+ *
+ * So: no fill, no track, and the mark is a rule under the word joining it to
+ * what it governs.
+ */
+.c-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--line);
+}
+
+.c-tab {
+  position: relative;
+  padding: 7px 14px 9px;
+  border: 0;
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  background: none;
+  color: var(--tx-dim);
+  font: inherit;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color .12s ease, background-color .12s ease;
+}
+
+/* Sits on the strip's own rule rather than under it, so the lit tab reads as
+   joined to the panel below instead of underlined. Inset from the word's box so
+   a two-character tab does not get a rule twice the width of its label. */
+.c-tab::after {
+  content: '';
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: transparent;
+  transition: background-color .12s ease;
+}
+
+.c-tab:hover:not(.c-on) { color: var(--tx); background: var(--hover); }
+
+.c-tab.c-on { color: var(--ac); font-weight: 500; }
+.c-tab.c-on::after { background: var(--ac); }
+
+.c-tab:disabled { opacity: .5; cursor: default; }
+
+.c-tab:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--ac-ring); }
+
+/*
+ * Destructive, but not the loudest thing in the row.
+ *
+ * `.c-btn-danger` is a solid red button and belongs at the end of a dialog,
+ * where deleting is the thing being decided. A Delete sitting in a toolbar
+ * beside New and Copy is not that: it is one verb among four, and painting it
+ * red makes the toolbar read as a warning. This one says what it is in the
+ * text colour and commits to the fill only under the pointer.
+ */
+.c-btn-quiet-danger { color: var(--err); }
+.c-btn-quiet-danger:hover { background: var(--err-soft); border-color: var(--err); }
+.c-btn-quiet-danger:disabled,
+.c-btn-quiet-danger[disabled] { color: var(--tx-dim); }
+
 /* The name of the field, above it. Uppercase and tracked so it reads as a label
  * at a glance without needing to be as loud as the value it names. */
 .c-label {

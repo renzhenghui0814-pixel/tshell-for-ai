@@ -35,7 +35,6 @@ pub enum AppendOutcome {
 pub enum RemoveOutcome {
     Ok,
     Missing,
-    Ambiguous,
     Failed,
 }
 
@@ -251,42 +250,6 @@ impl MemoryStore {
         AppendResult { outcome: AppendOutcome::Ok, token: Some(token) }
     }
 
-    /// Removes one line, named by its text.
-    ///
-    /// The match has to be exact and unique, which is the rule `edit` already uses
-    /// for `old` and for the same reason: a model that half-remembers a line
-    /// should be told to look again, not allowed to guess which of two it meant.
-    pub fn remove(
-        &self,
-        scope: MemoryScope,
-        server_id: Option<&str>,
-        text: &str,
-    ) -> RemoveOutcome {
-        let fact = flatten(text);
-        if fact.is_empty() {
-            return RemoveOutcome::Missing;
-        }
-
-        let file = self.file_for(scope, server_id);
-        let current = self.read(scope, server_id);
-        if current.is_empty() {
-            return RemoveOutcome::Missing;
-        }
-
-        let lines: Vec<String> = current.lines().map(str::to_string).collect();
-        let hits = lines.iter().filter(|line| line_text(line) == fact).count();
-        if hits == 0 {
-            return RemoveOutcome::Missing;
-        }
-        if hits > 1 {
-            return RemoveOutcome::Ambiguous;
-        }
-
-        let kept: Vec<String> =
-            lines.into_iter().filter(|line| line_text(line) != fact).collect();
-        rewrite(&file, &kept)
-    }
-
     /// Takes back one specific line the assistant wrote.
     ///
     /// By token and not by text, because between the card appearing and the
@@ -397,27 +360,6 @@ mod tests {
         let temp = Temp::new("empty");
         let store = temp.store();
         assert_eq!(store.append(MemoryScope::Server, Some("s"), "   ", BUDGET).outcome, AppendOutcome::Failed);
-    }
-
-    #[test]
-    fn forget_needs_an_exact_and_unique_match() {
-        let temp = Temp::new("forget");
-        let store = temp.store();
-        store.append(MemoryScope::Global, None, "one", BUDGET);
-        store.append(MemoryScope::Global, None, "two", BUDGET);
-
-        assert_eq!(store.remove(MemoryScope::Global, None, "three"), RemoveOutcome::Missing);
-        assert_eq!(store.remove(MemoryScope::Global, None, "one"), RemoveOutcome::Ok);
-        assert_eq!(store.lines(MemoryScope::Global, None), vec!["- two"]);
-    }
-
-    #[test]
-    fn two_identical_hand_written_lines_are_ambiguous() {
-        let temp = Temp::new("ambiguous");
-        let store = temp.store();
-        std::fs::write(temp.0.join("global.md"), "- same\n- same\n").unwrap();
-        assert_eq!(store.remove(MemoryScope::Global, None, "same"), RemoveOutcome::Ambiguous);
-        assert_eq!(store.lines(MemoryScope::Global, None).len(), 2);
     }
 
     #[test]

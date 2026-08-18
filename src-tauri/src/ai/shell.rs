@@ -166,20 +166,31 @@ impl AgentShell {
     pub fn observe(&self, chunk: &str) -> String {
         let shown = {
             let mut inner = self.inner.lock().unwrap();
-            // Kept whether or not a command is running: what the model is shown as
-            // "recent commands" is mostly the user's own, typed while nothing of
-            // the assistant's was in flight.
-            inner.transcript.push_str(chunk);
-            if inner.transcript.len() > TRANSCRIPT_BYTES {
-                // Cut on a character boundary, and only ever forward, so the tail
-                // that is kept is still decodable text.
-                let mut at = inner.transcript.len() - TRANSCRIPT_BYTES;
-                while at < inner.transcript.len() && !inner.transcript.is_char_boundary(at) {
-                    at += 1;
-                }
-                inner.transcript.drain(..at);
-            }
+            /*
+             * The transcript records what was DISPLAYED, not what crossed the
+             * wire, and the difference is the whole of this.
+             *
+             * `context.rs` reads it back as "recent commands" and "recent
+             * output", and presents both to the model as the terminal's own
+             * activity. What crosses the wire is the marker plumbing: the echo of
+             *
+             *   printf '\033]97;s%s\007' 'nonce'; eval 'pwd'; printf ...
+             *
+             * which the user never sees, and which `strip_ansi` cannot remove --
+             * those are four literal characters `\033` in the echo of a command
+             * line, not an escape sequence. So the model was reading a page of
+             * plumbing per step, being told it was what had been typed. Measured
+             * on a real session: twelve per cent of the whole prompt, and nine of
+             * the ten "recent commands" were the wrapper rather than a command.
+             *
+             * Recording what was shown fixes both halves at once. A visible step
+             * lands as its plain command, which is what the user watched. A
+             * silent one lands as nothing, which is right for a different reason:
+             * the assistant's own probes are not the terminal's activity and
+             * should never have been offered to it as such.
+             */
             if !inner.busy {
+                Self::record(&mut inner, chunk);
                 return chunk.to_string();
             }
             inner.buffer.push_str(chunk);
@@ -217,9 +228,29 @@ impl AgentShell {
                 }
             }
         };
+        Self::record(&mut self.inner.lock().unwrap(), &shown);
         // Outside the lock: a waiting `run` takes the same one the moment it wakes.
         self.woke.notify_waiters();
         shown
+    }
+
+    /// Keeps the tail of what the terminal has displayed, for `ai/context.rs`.
+    ///
+    /// Bounded, because a build that scrolls for ten minutes must not grow the
+    /// process. Cut on a character boundary and only ever forward, so the tail
+    /// that is kept is still decodable text.
+    fn record(inner: &mut Inner, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        inner.transcript.push_str(text);
+        if inner.transcript.len() > TRANSCRIPT_BYTES {
+            let mut at = inner.transcript.len() - TRANSCRIPT_BYTES;
+            while at < inner.transcript.len() && !inner.transcript.is_char_boundary(at) {
+                at += 1;
+            }
+            inner.transcript.drain(..at);
+        }
     }
 
     /// Types a command into the terminal and reads back what it produced.
@@ -408,6 +439,80 @@ mod tests {
     }
     fn end(shell: &AgentShell, code: i32) -> String {
         format!("{}{code}\u{7}", shell.end_prefix())
+    }
+
+    /// What `context.rs` reads back has to be what the user watched, not what
+    /// crossed the wire.
+    ///
+    /// The wire carries the marker plumbing, and the echo of it is literal text
+    /// -- four characters `\033`, not an escape -- so nothing downstream can
+    /// strip it. It reached the model as "recent commands", which is both a page
+    /// of noise per step and a lie about what was typed.
+    #[tokio::test]
+    async fn the_transcript_keeps_the_command_and_not_its_plumbing() {
+        let shell = Arc::new(shell());
+        let watcher = shell.clone();
+
+        let running = tokio::spawn({
+            let shell = shell.clone();
+            async move {
+                let io = Typed::default();
+                shell.run(&io, "pwd", 5_000, &Cancel::new(), &RunOptions::default()).await
+            }
+        });
+        tokio::task::yield_now().await;
+
+        // The shell echoes the line it was sent, plumbing and all, then answers.
+        let echo = wrap_command("pwd", "n0nce");
+        watcher.observe(&format!("{echo}{}", start(&shell)));
+        watcher.observe("/home/trade\r\n");
+        watcher.observe(&end(&shell, 0));
+        running.await.unwrap().unwrap();
+
+        let transcript = shell.transcript();
+        assert!(transcript.contains("pwd"), "the command is there: {transcript:?}");
+        assert!(
+            !transcript.contains("\\033]97"),
+            "the plumbing must not be: {transcript:?}"
+        );
+        assert!(!transcript.contains("eval"), "nor the eval that carried it: {transcript:?}");
+    }
+
+    /// A silent step is the assistant's own bookkeeping. It is not the terminal's
+    /// activity and must not be offered to the model as though the user ran it.
+    #[tokio::test]
+    async fn a_silent_step_leaves_no_command_in_the_transcript() {
+        let shell = Arc::new(shell());
+        let watcher = shell.clone();
+
+        let running = tokio::spawn({
+            let shell = shell.clone();
+            async move {
+                let io = Typed::default();
+                let silent = RunOptions { silent: true, ..Default::default() };
+                shell.run(&io, "uname -r", 5_000, &Cancel::new(), &silent).await
+            }
+        });
+        tokio::task::yield_now().await;
+
+        let echo = wrap_command("uname -r", "n0nce");
+        watcher.observe(&format!("{echo}{}", start(&shell)));
+        watcher.observe("5.14.0\r\n");
+        watcher.observe(&end(&shell, 0));
+        running.await.unwrap().unwrap();
+
+        let transcript = shell.transcript();
+        assert!(!transcript.contains("uname"), "a silent step is not activity: {transcript:?}");
+        assert!(!transcript.contains("\\033]97"), "and neither is its plumbing");
+    }
+
+    /// What the user types is the main thing this exists to record, and none of
+    /// the above may touch it.
+    #[test]
+    fn what_the_user_types_is_recorded_as_it_arrives() {
+        let shell = shell();
+        shell.observe("[me@box ~]$ ls -la\r\ntotal 8\r\n");
+        assert!(shell.transcript().contains("[me@box ~]$ ls -la"));
     }
 
     #[test]

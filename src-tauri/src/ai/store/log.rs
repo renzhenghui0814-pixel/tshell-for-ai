@@ -222,17 +222,31 @@ impl LogStore {
 
     /// Opens a file for one chat panel, or hands back the inactive session.
     ///
-    /// Named for when it was opened and which machine it was talking to, because
-    /// that is what someone looking for "the one from this morning on the trade
-    /// box" actually remembers about it.
-    pub fn open(&self, enabled: bool, keep: usize, server_name: &str) -> LogSession {
+    /// Named for the machine, the conversation, and when it started.
+    ///
+    /// # One file per conversation, not per panel
+    ///
+    /// A panel outlives its conversations: "new chat" starts a fresh one in the
+    /// same tab, and so does loading an old one. Keeping one file per panel put
+    /// all of them end to end, which reads as a single exchange in which the
+    /// model periodically forgets everything and re-reads its prompt.
+    ///
+    /// `chat_id` is the conversation's own id -- the same one the chat store
+    /// files it under -- so a transcript and the conversation it describes can be
+    /// put side by side without guessing from timestamps.
+    pub fn open(
+        &self,
+        enabled: bool,
+        keep: usize,
+        server_name: &str,
+        chat_id: &str,
+    ) -> LogSession {
         if !enabled {
             return LogSession::inactive();
         }
         if std::fs::create_dir_all(&self.dir).is_err() {
             return LogSession::inactive();
         }
-        let file = self.dir.join(format!("{}_{}.log", stamp_file(), slug(server_name)));
         // Before the file is created, so the count is of what is already there
         // and this session is never a candidate for its own pruning.
         self.prune(keep.saturating_sub(1));
@@ -244,15 +258,69 @@ impl LogStore {
              # Recorded verbatim and NOT masked: it holds command output, memory and anything\n\
              # else the model was sent. The API key is not in here. Delete it when you are done.\n\n"
         );
+
         // A log that cannot be opened is not a reason to refuse to hold the
         // conversation it was going to describe.
-        match std::fs::write(&file, header) {
-            Ok(()) => LogSession { file: Some(file), progress: Mutex::new(Progress::default()) },
-            Err(_) => LogSession::inactive(),
+        // Machine first, then the conversation, then when: the machine is what
+        // someone scanning the directory is looking for, and the id is what they
+        // match against a chat they still have open.
+        let base = format!("{}_{}_{}", slug(server_name), slug(chat_id), stamp_file());
+        match self.create(&base, &header) {
+            Some(file) => LogSession { file: Some(file), progress: Mutex::new(Progress::default()) },
+            None => LogSession::inactive(),
         }
     }
 
-    /// Drops the oldest files past `keep`. Names sort chronologically by design.
+    /// Creates a file nobody else is writing to, and puts the header in it.
+    ///
+    /// # Why this is not `fs::write`
+    ///
+    /// It was, and the name is only accurate to the second. Two panels opened
+    /// within one second -- two assistants on one server, which is a normal
+    /// thing to do -- landed on the same name, and `fs::write` truncates: the
+    /// second panel wiped the first one's file, and from then on both appended
+    /// to it with a `Progress` apiece. What that produces is a transcript that
+    /// looks corrupt in a very specific and misleading way. Each panel writes
+    /// the system prompt again, and the whole conversation again, the first time
+    /// it says anything -- because as far as ITS progress is concerned nothing
+    /// has been written yet. Reading it back, the model appears to be resending
+    /// its entire context and re-reading a prompt that never changed.
+    ///
+    /// `create_new` is the whole fix: it fails rather than truncates, so a name
+    /// already taken sends this round the loop for the next one.
+    fn create(&self, base: &str, header: &str) -> Option<PathBuf> {
+        use std::io::Write;
+
+        // Far more than could ever collide -- a second holds a handful of panel
+        // openings -- and bounded so a directory that refuses every write ends
+        // the search rather than spinning in it.
+        for attempt in 0..64 {
+            let name = if attempt == 0 {
+                format!("{base}.log")
+            } else {
+                format!("{base}-{}.log", attempt + 1)
+            };
+            let path = self.dir.join(name);
+            match std::fs::OpenOptions::new().create_new(true).write(true).open(&path) {
+                Ok(mut handle) => {
+                    return handle.write_all(header.as_bytes()).ok().map(|()| path);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                // Not a name that is taken: a directory that is gone, or one this
+                // user may not write to. The next name would fail the same way.
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// Drops the oldest files past `keep`.
+    ///
+    /// By modification time, not by name. The name used to start with the stamp,
+    /// so sorting it sorted by age; it now starts with the machine, so sorting it
+    /// would keep whichever servers come last in the alphabet and delete the rest
+    /// however recent they were. Time is what "oldest" meant all along, and it is
+    /// the one thing that stays true whatever the name is made of.
     fn prune(&self, keep: usize) {
         let Ok(entries) = std::fs::read_dir(&self.dir) else { return };
         let mut names: Vec<PathBuf> = entries
@@ -260,7 +328,11 @@ impl LogStore {
             .map(|entry| entry.path())
             .filter(|path| path.extension().is_some_and(|extension| extension == "log"))
             .collect();
-        names.sort();
+        // A file whose time cannot be read sorts oldest, so it is the first to go
+        // rather than something that survives every sweep by being unreadable.
+        names.sort_by_key(|path| {
+            std::fs::metadata(path).and_then(|meta| meta.modified()).ok()
+        });
         let over = names.len().saturating_sub(keep);
         for path in names.into_iter().take(over) {
             // One file that will not go is not a reason to keep none of the rest.
@@ -299,7 +371,7 @@ mod tests {
     #[test]
     fn logging_off_writes_nothing_at_all() {
         let temp = Temp::new("off");
-        let session = temp.store().open(false, 20, "web-1");
+        let session = temp.store().open(false, 20, "web-1", "chat-1");
         assert!(!session.active());
         assert!(session.file().is_none());
         session.response("would have been written");
@@ -309,7 +381,7 @@ mod tests {
     #[test]
     fn the_file_opens_with_a_header_that_says_what_it_is() {
         let temp = Temp::new("header");
-        let session = temp.store().open(true, 20, "web-1");
+        let session = temp.store().open(true, 20, "web-1", "chat-1");
         assert!(session.active());
         let text = read(&session);
         assert!(text.starts_with("# tshell AI transcript -- web-1\n"));
@@ -319,7 +391,7 @@ mod tests {
     #[test]
     fn only_what_is_new_in_the_conversation_is_written() {
         let temp = Temp::new("incremental");
-        let session = temp.store().open(true, 20, "web-1");
+        let session = temp.store().open(true, 20, "web-1", "chat-1");
         let params = json!({ "model": "m", "temperature": 0 });
 
         session.request(&LogRequest {
@@ -353,10 +425,87 @@ mod tests {
         assert!(text.contains("endpoint:http://x/chat/completions"));
     }
 
+    /// Two panels opened within one second used to land on the same name, and
+    /// the second truncated the first: one file holding two conversations, each
+    /// with a `Progress` of its own. What that produces reads like a client that
+    /// has gone wrong -- every panel rewrites the system prompt and the whole
+    /// conversation the first time it speaks, because as far as its own progress
+    /// is concerned nothing has been written yet.
+    /// The name says which machine, which conversation, and when -- in that
+    /// order, because the machine is what someone scanning the directory is
+    /// looking for and the id is what they match against a chat still on screen.
+    #[test]
+    fn the_name_carries_the_machine_the_conversation_and_the_time() {
+        let temp = Temp::new("naming");
+        let session = temp.store().open(true, 10, "10.0.0.1", "a1b2c3d4");
+        let name = session
+            .file()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        assert!(name.starts_with("10.0.0.1_a1b2c3d4_"), "name was {name}");
+        assert!(name.ends_with(".log"), "name was {name}");
+        // `<machine>_<id>_<date>_<time>.log`
+        let stamp = name
+            .trim_start_matches("10.0.0.1_a1b2c3d4_")
+            .trim_end_matches(".log");
+        let parts: Vec<&str> = stamp.split('_').collect();
+        assert_eq!(parts.len(), 2, "date and time, in {name}");
+        assert_eq!(parts[0].split('-').count(), 3, "a date, in {name}");
+        assert_eq!(parts[1].split('-').count(), 3, "a time, in {name}");
+    }
+
+    /// One conversation, one transcript. A panel outlives its conversations, and
+    /// putting them all in one file reads as a single exchange in which the model
+    /// keeps forgetting everything and re-reading its prompt.
+    #[test]
+    fn each_conversation_gets_a_file_of_its_own() {
+        let temp = Temp::new("perchat");
+        let store = temp.store();
+        let first = store.open(true, 10, "web-1", "chat-one");
+        let second = store.open(true, 10, "web-1", "chat-two");
+
+        first.response("BEFORE THE NEW CHAT");
+        second.response("AFTER IT");
+
+        let one = read(&first);
+        let two = read(&second);
+        assert!(one.contains("BEFORE THE NEW CHAT") && !one.contains("AFTER IT"));
+        assert!(two.contains("AFTER IT") && !two.contains("BEFORE THE NEW CHAT"));
+        assert!(first.file() != second.file());
+    }
+
+    #[test]
+    fn two_sessions_opened_in_the_same_second_do_not_share_a_file() {
+        let temp = Temp::new("collide");
+        // The same conversation id on purpose: two ids would differ in the name
+        // anyway, and what is being pinned here is the second-resolution stamp.
+        let first = temp.store().open(true, 10, "10.0.0.1", "chat-1");
+        let second = temp.store().open(true, 10, "10.0.0.1", "chat-1");
+
+        let one = first.file().expect("the first has a file").to_path_buf();
+        let two = second.file().expect("the second has a file").to_path_buf();
+        assert_ne!(one, two, "both panels wrote to {}", one.display());
+
+        first.response("FIRST PANEL");
+        second.response("SECOND PANEL");
+
+        let text_one = read(&first);
+        let text_two = read(&second);
+        assert!(text_one.contains("FIRST PANEL") && !text_one.contains("SECOND PANEL"));
+        assert!(text_two.contains("SECOND PANEL") && !text_two.contains("FIRST PANEL"));
+        // One header apiece is what says each file is whole rather than restarted.
+        assert_eq!(text_one.matches("# tshell AI transcript").count(), 1);
+        assert_eq!(text_two.matches("# tshell AI transcript").count(), 1);
+    }
+
     #[test]
     fn a_changed_system_prompt_is_written_again_whole() {
         let temp = Temp::new("system");
-        let session = temp.store().open(true, 20, "web-1");
+        let session = temp.store().open(true, 20, "web-1", "chat-1");
         let params = json!({});
         for system in ["ONE", "ONE", "TWO"] {
             session.request(&LogRequest {
@@ -374,7 +523,7 @@ mod tests {
     #[test]
     fn a_new_conversation_starts_the_count_over() {
         let temp = Temp::new("newchat");
-        let session = temp.store().open(true, 20, "web-1");
+        let session = temp.store().open(true, 20, "web-1", "chat-1");
         let params = json!({});
         session.request(&LogRequest {
             endpoint: "e",
@@ -394,7 +543,7 @@ mod tests {
     #[test]
     fn records_are_written_verbatim_with_their_newlines() {
         let temp = Temp::new("verbatim");
-        let session = temp.store().open(true, 20, "web-1");
+        let session = temp.store().open(true, 20, "web-1", "chat-1");
         session.response("line one\nline two");
         let text = read(&session);
         assert!(text.contains("content:line one\nline two\n\n"));
@@ -402,25 +551,40 @@ mod tests {
         assert!(read(&session).contains("type:reasoning content:thought"));
     }
 
+    /// Oldest means oldest by the clock, and the times are set rather than
+    /// assumed: two files written in the same millisecond would otherwise settle
+    /// it by whatever order the directory happened to be read in.
+    ///
+    /// The names here are deliberately in the opposite order to the ages. Sorting
+    /// by name -- which is what this did while the stamp came first -- would keep
+    /// the wrong one, and would do it silently.
+    fn write_aged(dir: &Path, name: &str, hours_ago: u64) {
+        let path = dir.join(name);
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(b"old").unwrap();
+        let when =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(hours_ago * 3600);
+        file.set_modified(when).unwrap();
+    }
+
     #[test]
     fn the_oldest_files_go_when_the_count_is_reached() {
         let temp = Temp::new("prune");
         let store = temp.store();
-        for name in ["2026-01-01_00-00-00_a.log", "2026-01-02_00-00-00_b.log"] {
-            std::fs::write(temp.0.join(name), "old").unwrap();
-        }
-        let session = store.open(true, 2, "web-1");
+        write_aged(&temp.0, "zzz_old.log", 48);
+        write_aged(&temp.0, "aaa_recent.log", 1);
+
+        let session = store.open(true, 2, "web-1", "chat-1");
         assert!(session.active());
 
-        let mut names: Vec<String> = std::fs::read_dir(&temp.0)
+        let names: Vec<String> = std::fs::read_dir(&temp.0)
             .unwrap()
             .flatten()
             .map(|entry| entry.file_name().into_string().unwrap())
             .collect();
-        names.sort();
         assert_eq!(names.len(), 2, "{names:?}");
-        assert!(!names.contains(&"2026-01-01_00-00-00_a.log".to_string()));
-        assert!(names.contains(&"2026-01-02_00-00-00_b.log".to_string()));
+        assert!(!names.contains(&"zzz_old.log".to_string()), "{names:?}");
+        assert!(names.contains(&"aaa_recent.log".to_string()), "{names:?}");
     }
 
     #[test]

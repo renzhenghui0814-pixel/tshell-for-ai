@@ -1,13 +1,16 @@
 //! Pulls the action out of a reply.
 //!
-//! Models wrap JSON in prose and code fences even when told not to, so the first
-//! balanced object wins rather than requiring the whole reply to parse.
+//! A reply is prose, and an action is one JSON object at the very end of it.
+//! Only that trailing object is read: JSON anywhere else in a reply is the model
+//! showing the user an example, and reading it would run something nobody asked
+//! for. That rule is what lets the assistant answer "what does this webhook body
+//! look like?" without the answer being mistaken for an instruction.
 //!
-//! A fence around the JSON needs no removing: the scan below looks for a
-//! balanced object and steps over anything else. Stripping them used to come
-//! first, which also emptied the fences the model had written *inside* "text" --
-//! so every snippet the assistant showed the user arrived as unmarked prose, and
-//! the panel had nothing left to highlight.
+//! Nothing here strips fences. A fence around the trailing object is stepped
+//! over by the scan; stripping them used to come first, which also emptied the
+//! fences the model had written *inside* its prose -- so every snippet the
+//! assistant showed the user arrived unmarked and the panel had nothing left to
+//! highlight.
 
 use std::sync::LazyLock;
 
@@ -18,57 +21,36 @@ use super::types::{ActionKind, AgentAction, MemoryScope};
 
 /// What a reply turned out to hold.
 ///
-/// `unreadable` is the part that used to go unrecorded. A candidate carrying an
-/// `"action"` key that will not parse is not noise to step over: it is an action
-/// the model believes it sent. Stepping over it silently ran the *next* one
-/// instead -- so a reply of "say this, then run that" whose say had a real line
-/// break in it ran the command and never showed the sentence, while the model
-/// went on believing the user had read it.
+/// `unreadable` is the part that used to go unrecorded. A trailing object
+/// carrying an `"action"` key that will not parse is not noise to step over: it
+/// is an action the model believes it sent, and treating it as prose would
+/// report the sentence before it as the answer to a task still waiting.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParsedReply {
     pub actions: Vec<AgentAction>,
-    /// Action-shaped candidates that would not parse, repaired or not.
-    pub unreadable: u32,
-    /// True when the first action-shaped thing in the reply was one of those.
-    pub leading: bool,
-    /// Whatever the model wrote before the action, with any code fence stripped.
+    /// True when the reply ended in something action-shaped that would not parse.
+    pub unreadable: bool,
+    /// What the model wrote, with any trailing action object taken off the end.
     ///
     /// Models narrate. "I'll run a few read-only commands and tidy the result
-    /// into a table" arrives ahead of the object perhaps half the time, and every
-    /// word of it used to be dropped on the floor: the loop took the action and
-    /// had nowhere to put the sentence. What the user saw was a command card
+    /// into a table" arrives ahead of the object most of the time, and every word
+    /// of it used to be dropped on the floor: the loop took the action and had
+    /// nowhere to put the sentence. What the user saw was a command card
     /// appearing out of nowhere, which is most of why the assistant could seem to
     /// work in silence.
-    pub preamble: String,
+    pub prose: String,
 }
 
-/// The key that marks a candidate as something that meant to be an action.
-static ACTION_KEY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""action"\s*:"#).unwrap());
+/// The verb of a candidate that will not parse, read off the text it was written
+/// in. Matched rather than parsed precisely because the object around it is
+/// broken; the value is a short bare word and arrives whole.
+static ACTION_VERB: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#""action"\s*:\s*"([A-Za-z]+)""#).unwrap());
+/// The fence a model puts around its object, matched at the end of a slice: once
+/// after the object to find it, and once after the prose to tidy the line that
+/// opened the fence.
 static TRAILING_FENCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"```[A-Za-z]*\s*$").unwrap());
-static FENCE_LINE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^[ \t]*```[A-Za-z]*[ \t]*$\r?\n?").unwrap());
 static NEWLINES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\r\n]+").unwrap());
-
-/// True when nothing in the reply was ever trying to be an action.
-///
-/// A model that mangled its JSON leaves the wreck behind: an `"action"` key sat
-/// in something that would not parse, or named a verb this client does not have.
-/// A model that simply answered leaves no trace of one -- and brace-shaped text
-/// is no evidence either way, because the CSS in a design plan balances exactly
-/// as well as an action does. So the key is what is looked for, not the braces.
-pub fn is_prose(reply: &str) -> bool {
-    !ACTION_KEY.is_match(reply)
-}
-
-/// A fence and the whitespace around it are punctuation, not something said.
-///
-/// Stripped rather than shown because a model that wraps its object in ```json
-/// writes the opening fence before it, which would otherwise arrive as a line of
-/// the assistant's own speech reading "```json".
-fn clean_preamble(text: &str) -> String {
-    let text = TRAILING_FENCE.replace(text, "");
-    FENCE_LINE.replace_all(&text, "").trim().to_string()
-}
 
 /// The escapes JSON actually has. `u` is left out: its digits are checked instead.
 const VALID_ESCAPES: &[char] = &['"', '\\', '/', 'b', 'f', 'n', 'r', 't'];
@@ -156,7 +138,11 @@ fn repair_json(candidate: &str) -> Option<String> {
 }
 
 /// One candidate as an object, tried straight and then mended.
-fn read_object(candidate: &str) -> Option<serde_json::Map<String, Value>> {
+///
+/// Public because the tool-calling track needs the same repair: constrained
+/// decoding makes a mangled argument list rare rather than impossible, and a
+/// second repair written beside this one would drift from it.
+pub fn read_object(candidate: &str) -> Option<serde_json::Map<String, Value>> {
     let mended = repair_json(candidate);
     for text in [Some(candidate.to_string()), mended].into_iter().flatten() {
         // The straight read failing is the normal case here; the mended one
@@ -200,25 +186,58 @@ fn path_list(value: Option<&Value>) -> Vec<String> {
         .collect()
 }
 
-/// One candidate, or `None` when it does not parse or is not an action.
-pub fn read_action(candidate: &str) -> Option<AgentAction> {
-    let record = read_object(candidate)?;
+/// The fields a verb cannot be carried out without.
+///
+/// Checked here rather than left to the step that would run it, because this is
+/// also what tells an action apart from JSON the model was showing the user:
+/// `{"action":"run"}` in the middle of an explanation names a verb but asks for
+/// nothing, and carrying it out would be acting on an example.
+///
+/// `why` and `scope` are required of the model and deliberately not required
+/// here. The parser has a safe answer for both -- an empty reason on the card,
+/// the current server -- so refusing an otherwise complete action over one of
+/// them would spend a round trip to gain a word.
+///
+/// `content`, `old` and `new` are checked for presence rather than for content:
+/// an empty string is a file truncated to nothing and a fragment deleted, both
+/// of which are things to ask for.
+fn is_complete(action: &AgentAction, kind: ActionKind) -> bool {
+    let given = |field: &Option<String>| field.as_ref().is_some_and(|text| !text.trim().is_empty());
+    match kind {
+        ActionKind::Run => given(&action.command),
+        ActionKind::Write | ActionKind::Append => given(&action.path) && action.content.is_some(),
+        ActionKind::Edit => {
+            given(&action.path) && action.old_text.is_some() && action.new_text.is_some()
+        }
+        ActionKind::Download => !action.paths.is_empty(),
+        // An upload naming nothing opens the file picker, which is the point of
+        // it: the user chooses on their own machine, where the model cannot look.
+        ActionKind::Upload => true,
+        ActionKind::Remember => given(&action.text),
+        ActionKind::Skill => given(&action.name),
+    }
+}
 
+/// The fields of one action, however the object was arrived at.
+///
+/// Split out so a tool call and a JSON object become the same `AgentAction` by
+/// the same rules. The tool track puts the verb in under `action` and hands the
+/// arguments straight here -- which is what makes the two tracks agree about
+/// every alias and every coercion below rather than only about most of them.
+pub fn action_from_object(record: serde_json::Map<String, Value>) -> Option<AgentAction> {
     let verb = match record.get("action") {
         Some(Value::String(text)) => text.trim().to_lowercase(),
         _ => String::new(),
     };
-    let action = ActionKind::parse(&verb)?;
+    let kind = ActionKind::parse(&verb)?;
 
-    Some(AgentAction {
-        action: Some(action),
+    let action = AgentAction {
+        action: Some(kind),
         // A command stays one line: the marker protocol it is typed into is built
         // on that, which is exactly why the file actions exist instead.
         command: text_of(record.get("command"))
             .map(|command| NEWLINES.replace_all(&command, " ").trim().to_string()),
         why: text_of(record.get("why")),
-        question: text_of(record.get("question")),
-        summary: text_of(record.get("summary")),
         text: text_of(record.get("text")),
         path: text_of(record.get("path")),
         content: raw_of(record.get("content")),
@@ -240,7 +259,9 @@ pub fn read_action(candidate: &str) -> Option<AgentAction> {
         // it reaches for the right one.
         name: text_of(record.get("name")).or_else(|| text_of(record.get("skill"))),
         file: text_of(record.get("file")),
-    })
+    };
+
+    is_complete(&action, kind).then_some(action)
 }
 
 /// Where the object opening at `start` closes, or `None`. Braces in strings do
@@ -278,81 +299,99 @@ pub fn balanced_end(chars: &[char], start: usize) -> Option<usize> {
     None
 }
 
-/// Every `{...}` that balances, in the order they appear.
+/// Every place the object at the end of the reply could begin, nearest last.
 ///
-/// The first one used to be the only one tried, which threw away the answer
-/// whenever anything brace-shaped came before it -- an `awk '{print $1}'` quoted
-/// in a sentence, a snippet of JSON being discussed rather than sent. The step
-/// then ended in a protocol complaint over a reply that had the action in it all
-/// along. Trying the rest costs nothing: a reply holds a handful of braces.
+/// A start qualifies when its object closes exactly at the end of the reply, or
+/// never closes at all. The second case is a reply that ran out of room inside
+/// its own action: the half that arrived is not an answer to show anyone, and
+/// the task is waiting on something that was never finished being written.
 ///
-/// Spans rather than slices, so the caller can tell a candidate that follows
-/// another from one that sits inside it. Only the first distinction matters: the
-/// braces inside a `say` belong to the sentence it is showing the user, and are
-/// not a second action that the reader was cheated out of.
-fn json_objects(chars: &[char]) -> Vec<(usize, usize)> {
-    let mut found = Vec::new();
-    for start in 0..chars.len() {
-        if chars[start] != '{' {
-            continue;
-        }
-        if let Some(end) = balanced_end(chars, start) {
-            found.push((start, end));
-        }
-    }
-    found
+/// Several can qualify at once, because an unbalanced brace in the prose --
+/// `awk '{print $1` in a sentence -- borrows the action's closing brace and
+/// looks like a start too. So the caller tries them from the end backwards and
+/// takes the first that reads: the nearest one is the object, and the ones
+/// before it are the sentence it was written after.
+///
+/// The trailing fence is off before this is called, so an object is "at the end"
+/// whether or not the model wrapped it in ```json.
+fn trailing_starts(chars: &[char]) -> Vec<usize> {
+    (0..chars.len())
+        .filter(|start| chars[*start] == '{')
+        .filter(|start| !matches!(balanced_end(chars, *start), Some(end) if end < chars.len()))
+        .collect()
 }
 
-/// Every action in a reply, in the order they were written.
+/// True when a candidate that will not parse was still trying to be an action.
 ///
-/// The loop takes one step at a time and runs the first. The rest matter anyway:
-/// a model that sent two edits believes both happened, so it has to be told they
-/// did not rather than left to find out from a compiler.
-///
-/// Candidates nested inside one that was already read are skipped rather than
-/// counted. A `say` may legitimately quote the protocol at the user, and the
-/// braces inside its own text are not a second action that went missing.
-pub fn parse_actions(reply: &str) -> ParsedReply {
-    let chars: Vec<char> = reply.chars().collect();
-    let mut actions = Vec::new();
-    let mut unreadable = 0;
-    let mut leading = false;
-    let mut covered = 0;
-    // Where the first thing that meant to be an action began.
-    let mut first_at = chars.len();
+/// The verb is the evidence, and the only evidence there is. A broken object
+/// naming `run` is an instruction that lost its escaping, and the task is
+/// waiting on it. A broken object naming `create` is the tail of an answer about
+/// somebody else's API -- there are a lot of those -- and treating it as a lost
+/// instruction costs the user their answer and two requests to not get it.
+fn meant_to_act(candidate: &str) -> bool {
+    ACTION_VERB
+        .captures(candidate)
+        .and_then(|found| ActionKind::parse(&found[1].to_lowercase()))
+        .is_some()
+}
 
-    for (start, end) in json_objects(&chars) {
-        if start < covered {
-            continue;
-        }
-        let candidate: String = chars[start..end].iter().collect();
-        if let Some(action) = read_action(&candidate) {
-            if actions.is_empty() && unreadable == 0 {
-                first_at = start;
+/// What the model wrote and, if it ended in one, the action it asked for.
+///
+/// Only the trailing object is considered. JSON earlier in the reply is the
+/// model showing the user something -- a config, a request body, the protocol
+/// itself -- and reading it would carry out an example.
+pub fn parse_actions(reply: &str) -> ParsedReply {
+    let body = TRAILING_FENCE.replace(reply.trim_end(), "");
+    let chars: Vec<char> = body.trim_end().chars().collect();
+
+    // The line that opened the fence belongs to the object, not to the sentence
+    // before it, so it goes with the object rather than being shown as speech.
+    let prose_before = |start: usize| {
+        let head: String = chars[..start].iter().collect();
+        TRAILING_FENCE.replace(head.trim_end(), "").trim().to_string()
+    };
+    let prose_only =
+        || ParsedReply { actions: Vec::new(), unreadable: false, prose: reply.trim().to_string() };
+
+    let starts = trailing_starts(&chars);
+    let mut wreck = None;
+    for start in starts.into_iter().rev() {
+        let candidate: String = chars[start..].iter().collect();
+        match read_object(&candidate) {
+            // It reads. Whether it is an action is then a question about its verb
+            // and its fields, and anything failing that is JSON the model was
+            // quoting rather than sending.
+            Some(record) => {
+                if let Some(action) = action_from_object(record) {
+                    return ParsedReply {
+                        actions: vec![action],
+                        unreadable: false,
+                        prose: prose_before(start),
+                    };
+                }
             }
-            actions.push(action);
-            covered = end;
-            continue;
+            // Kept in case nothing further out reads either. Only the outermost
+            // wreck is reported, because that is the whole of what was lost.
+            None if meant_to_act(&candidate) => wreck = Some(start),
+            None => {}
         }
-        if !ACTION_KEY.is_match(&candidate) {
-            continue;
-        }
-        if unreadable == 0 && actions.is_empty() {
-            leading = true;
-            first_at = start;
-        }
-        unreadable += 1;
-        covered = end;
     }
 
-    // Only what came before the protocol started. A reply that is entirely prose
-    // has no action to precede, and the loop shows the whole of it as the answer.
-    let preamble = if !actions.is_empty() || unreadable > 0 {
-        clean_preamble(&chars[..first_at].iter().collect::<String>())
-    } else {
-        String::new()
-    };
-    ParsedReply { actions, unreadable, leading, preamble }
+    match wreck {
+        Some(start) => {
+            ParsedReply { actions: Vec::new(), unreadable: true, prose: prose_before(start) }
+        }
+        None => prose_only(),
+    }
+}
+
+/// True when a piece of text ends in an action.
+///
+/// For the one caller that has text but no reply: a model that wrote its action
+/// into the reasoning field instead of the answer.
+pub fn carries_action(text: &str) -> bool {
+    let parsed = parse_actions(text);
+    !parsed.actions.is_empty() || parsed.unreadable
 }
 
 #[cfg(test)]
@@ -365,6 +404,12 @@ mod tests {
         parsed.actions.into_iter().next().unwrap()
     }
 
+    fn none(reply: &str) -> ParsedReply {
+        let parsed = parse_actions(reply);
+        assert!(parsed.actions.is_empty(), "expected no action in {reply:?}");
+        parsed
+    }
+
     #[test]
     fn a_bare_object_is_read() {
         let action = one(r#"{"action":"run","command":"ls -la","why":"look"}"#);
@@ -375,53 +420,91 @@ mod tests {
 
     #[test]
     fn a_fenced_object_needs_no_unwrapping() {
-        let parsed = parse_actions("Let me look.\n```json\n{\"action\":\"run\",\"command\":\"ls\"}\n```");
+        let parsed =
+            parse_actions("Let me look.\n```json\n{\"action\":\"run\",\"command\":\"ls\"}\n```");
         assert_eq!(parsed.actions.len(), 1);
-        assert_eq!(parsed.preamble, "Let me look.");
+        assert_eq!(parsed.prose, "Let me look.");
     }
 
     #[test]
     fn narration_before_the_object_is_kept() {
-        let parsed = parse_actions("I'll check the disk first.\n{\"action\":\"run\",\"command\":\"df -h\"}");
-        assert_eq!(parsed.preamble, "I'll check the disk first.");
+        let parsed =
+            parse_actions("I'll check the disk first.\n{\"action\":\"run\",\"command\":\"df -h\"}");
+        assert_eq!(parsed.prose, "I'll check the disk first.");
     }
 
     #[test]
-    fn a_reply_that_is_all_prose_has_no_preamble_to_take() {
-        let parsed = parse_actions("The disk is nearly full. You should clear /var/log.");
-        assert!(parsed.actions.is_empty());
-        assert_eq!(parsed.unreadable, 0);
-        assert_eq!(parsed.preamble, "");
-        assert!(is_prose("The disk is nearly full."));
+    fn a_reply_that_is_all_prose_is_the_answer() {
+        let parsed = none("The disk is nearly full. You should clear /var/log.");
+        assert!(!parsed.unreadable);
+        assert_eq!(parsed.prose, "The disk is nearly full. You should clear /var/log.");
     }
 
     #[test]
     fn brace_shaped_prose_before_the_action_does_not_swallow_it() {
-        let parsed = parse_actions("Use awk '{print $1}' for that.\n{\"action\":\"done\",\"summary\":\"ok\"}");
-        assert_eq!(parsed.actions.len(), 1);
-        assert_eq!(parsed.actions[0].action, Some(ActionKind::Done));
-    }
-
-    #[test]
-    fn braces_inside_a_say_are_not_a_second_action() {
-        let parsed = parse_actions(r#"{"action":"say","text":"send {\"action\":\"run\"} to run one"}"#);
-        assert_eq!(parsed.actions.len(), 1);
-        assert_eq!(parsed.actions[0].action, Some(ActionKind::Say));
-    }
-
-    #[test]
-    fn every_action_in_a_reply_is_reported() {
         let parsed = parse_actions(
-            r#"{"action":"say","text":"one"} then {"action":"run","command":"ls"}"#,
+            "Use awk '{print $1}' for that.\n{\"action\":\"run\",\"command\":\"ls\"}",
         );
-        assert_eq!(parsed.actions.len(), 2);
-        assert_eq!(parsed.actions[1].action, Some(ActionKind::Run));
+        assert_eq!(parsed.actions.len(), 1);
+        assert_eq!(parsed.prose, "Use awk '{print $1}' for that.");
+    }
+
+    /// The whole point of reading only the trailing object. An answer that shows
+    /// the user a request body is an answer, not an instruction -- and the older
+    /// rule ran it.
+    #[test]
+    fn an_example_inside_the_answer_is_not_an_action() {
+        let parsed = none(
+            "You would post this:\n```json\n{\"action\":\"run\",\"command\":\"rm -rf /\"}\n```\n\
+             and the server replies with 202.",
+        );
+        assert!(!parsed.unreadable);
+        assert!(parsed.prose.contains("202"));
+    }
+
+    /// The commonest false alarm there was: any API with an "action" field. It
+    /// used to leave the reply carrying wreckage, which cost the user the answer
+    /// and two requests to not get it.
+    #[test]
+    fn a_verb_this_build_does_not_have_is_not_an_action() {
+        let parsed = none(r#"Send {"action":"create","user":"bob"} to the endpoint."#);
+        assert!(!parsed.unreadable);
+        let broken = none(r#"Roughly: {"action": "create", "user": ...}"#);
+        assert!(!broken.unreadable);
+    }
+
+    /// An object that names a verb but asks for nothing is an example of the
+    /// protocol, not a use of it.
+    #[test]
+    fn an_action_missing_the_field_its_verb_needs_is_not_an_action() {
+        none(r#"The shape is {"action":"run","why":"..."}"#);
+        none(r#"{"action":"write","path":"/tmp/x"}"#);
+        none(r#"{"action":"edit","path":"/tmp/x","old":"a"}"#);
+        none(r#"{"action":"skill"}"#);
+    }
+
+    /// An empty file and a deleted fragment are things to ask for, so presence is
+    /// what is checked and not length.
+    #[test]
+    fn an_empty_content_is_still_a_file_being_written() {
+        let written = one(r#"{"action":"write","path":"/tmp/x","content":""}"#);
+        assert_eq!(written.content.as_deref(), Some(""));
+        let edited = one(r#"{"action":"edit","path":"/x","old":"a","new":""}"#);
+        assert_eq!(edited.new_text.as_deref(), Some(""));
+    }
+
+    /// Naming nothing is how the user is shown a file picker.
+    #[test]
+    fn an_upload_needs_no_path_but_a_download_does() {
+        assert!(one(r#"{"action":"upload","to":"/tmp","why":"x"}"#).paths.is_empty());
+        none(r#"{"action":"download","to":"/tmp","why":"x"}"#);
     }
 
     #[test]
     fn a_real_line_break_inside_a_string_is_mended() {
-        let action = one("{\"action\":\"say\",\"text\":\"line one\nline two\"}");
-        assert_eq!(action.text.as_deref(), Some("line one\nline two"));
+        let action =
+            one("{\"action\":\"write\",\"path\":\"/a\",\"content\":\"line one\nline two\"}");
+        assert_eq!(action.content.as_deref(), Some("line one\nline two"));
     }
 
     #[test]
@@ -432,23 +515,16 @@ mod tests {
 
     #[test]
     fn a_valid_unicode_escape_survives_the_repair() {
-        let action = one(r#"{"action":"say","text":"\u4f60\u597d"}"#);
+        let action = one(r#"{"action":"remember","text":"你好"}"#);
         assert_eq!(action.text.as_deref(), Some("你好"));
     }
 
+    /// A broken object naming a verb this build has is an instruction that lost
+    /// its escaping, and the task is waiting on it.
     #[test]
     fn an_unmendable_action_is_counted_rather_than_stepped_over() {
-        let parsed = parse_actions("{\"action\":\"say\",\"text\":\"he said \"hi\" loudly\"}");
-        assert!(parsed.actions.is_empty());
-        assert_eq!(parsed.unreadable, 1);
-        assert!(parsed.leading);
-    }
-
-    #[test]
-    fn an_unknown_verb_is_not_an_action_but_is_still_wreckage() {
-        let parsed = parse_actions(r#"{"action":"teleport","to":"mars"}"#);
-        assert!(parsed.actions.is_empty());
-        assert_eq!(parsed.unreadable, 1);
+        let parsed = none("{\"action\":\"run\",\"command\":\"echo \"hi\" loudly\"}");
+        assert!(parsed.unreadable);
     }
 
     #[test]
@@ -507,14 +583,40 @@ mod tests {
         assert_eq!(action.old_text.as_deref(), Some("a"));
     }
 
+    /// The outermost object, not the innermost: both close in the same place.
     #[test]
-    fn a_wreck_before_a_good_action_marks_the_reply_as_leading() {
-        let parsed = parse_actions(
-            "{\"action\":\"say\",\"text\":\"he said \"hi\"\"} {\"action\":\"run\",\"command\":\"ls\"}",
-        );
-        assert_eq!(parsed.actions.len(), 1);
-        assert_eq!(parsed.unreadable, 1);
-        assert!(parsed.leading);
+    fn an_object_holding_an_object_is_read_whole() {
+        let action = one(r#"{"action":"run","command":"x","meta":{"a":1}}"#);
+        assert_eq!(action.command.as_deref(), Some("x"));
+    }
+
+    /// A `{` the model never closed borrows the action's closing brace and looks
+    /// like the start of one. The nearest start is the object; the ones before it
+    /// are the sentence it was written after.
+    #[test]
+    fn an_unclosed_brace_in_the_prose_does_not_swallow_the_action() {
+        let action = one("Use awk '{print $1 for that.
+{\"action\":\"run\",\"command\":\"ls\"}");
+        assert_eq!(action.command.as_deref(), Some("ls"));
+    }
+
+    /// An action inside a container is an example of one. Only the object the
+    /// reply itself ends in is an instruction.
+    #[test]
+    fn an_action_nested_in_another_object_is_not_an_instruction() {
+        let parsed = none(r#"The body is {"payload":{"action":"run","command":"rm -rf /"}}"#);
+        assert!(!parsed.unreadable);
+    }
+
+    /// A reply that ran out of room stops inside its own action. Half an
+    /// instruction is not an answer, and showing it as one would end a task that
+    /// is still waiting.
+    #[test]
+    fn a_reply_cut_off_inside_its_action_is_not_shown_as_an_answer() {
+        let parsed = none("I will look.
+{\"action\":\"run\",\"command\":\"tail -n 200 /var/log/mes");
+        assert!(parsed.unreadable);
+        assert_eq!(parsed.prose, "I will look.");
     }
 
     #[test]
@@ -523,5 +625,11 @@ mod tests {
         assert_eq!(balanced_end(&chars, 0), None);
         let chars: Vec<char> = "{\"a\":\"}\"}".chars().collect();
         assert_eq!(balanced_end(&chars, 0), Some(9));
+    }
+
+    #[test]
+    fn reasoning_that_carries_an_action_is_told_apart_from_reasoning_that_does_not() {
+        assert!(carries_action(r#"I should look. {"action":"run","command":"ls"}"#));
+        assert!(!carries_action("I should look at the disk next."));
     }
 }

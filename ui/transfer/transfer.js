@@ -66,25 +66,42 @@
     return svg;
   }
 
-  /* File kinds worth telling apart at a glance. Anything else stays neutral. */
+  /*
+    * File kinds worth telling apart at a glance. Anything else stays neutral.
+    *
+    * The kind is one word, and both halves of the icon are derived from it: the
+    * glyph is `#i-file-<kind>` in the shared sprite and the colour is `.ic-<kind>`
+    * in this page's stylesheet. It used to name the class directly, which meant
+    * the shape and the colour were two independent decisions -- and they had
+    * quietly diverged into one shape and eight colours, an icon column that said
+    * "file" forty times over in a range of hues.
+    */
   const ICON_KINDS = [
-    ['ic-code', ['c', 'cc', 'cpp', 'cxx', 'h', 'hpp', 'java', 'js', 'jsx', 'ts', 'tsx', 'py', 'sh', 'bash', 'go', 'rs', 'rb', 'php', 'vue', 'lua', 'pl']],
-    ['ic-markup', ['html', 'htm', 'xml', 'css', 'scss', 'less', 'svg', 'vcxproj', 'sln']],
-    ['ic-data', ['json', 'yml', 'yaml', 'ini', 'conf', 'cfg', 'properties', 'env', 'csv', 'dbf', 'sql', 'toml']],
-    ['ic-archive', ['zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar', 'jar', 'war']],
-    ['ic-binary', ['so', 'dll', 'exe', 'bin', 'o', 'a', 'lib', 'pdb', 'obj', 'class', 'pyc']],
-    ['ic-doc', ['md', 'txt', 'log', 'pdf', 'doc', 'docx', 'rtf']]
+    ['code', ['c', 'cc', 'cpp', 'cxx', 'h', 'hpp', 'java', 'js', 'jsx', 'ts', 'tsx', 'py', 'sh', 'bash', 'go', 'rs', 'rb', 'php', 'vue', 'lua', 'pl']],
+    ['markup', ['html', 'htm', 'xml', 'css', 'scss', 'less', 'svg', 'vcxproj', 'sln']],
+    ['data', ['json', 'yml', 'yaml', 'ini', 'conf', 'cfg', 'properties', 'env', 'csv', 'dbf', 'sql', 'toml']],
+    ['archive', ['zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar', 'jar', 'war']],
+    ['binary', ['so', 'dll', 'exe', 'bin', 'o', 'a', 'lib', 'pdb', 'obj', 'class', 'pyc']],
+    /* New with the solid set. There was no reason to tell a picture apart while
+     * every kind was the same page in a different colour; there is now, and a
+     * remote directory of screenshots is a common thing to be looking at. */
+    ['image', ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'ico', 'tif', 'tiff', 'avif', 'heic']],
+    ['doc', ['md', 'txt', 'log', 'pdf', 'doc', 'docx', 'rtf']]
   ];
 
   const EXTENSION_KIND = new Map();
   ICON_KINDS.forEach(([kind, extensions]) => extensions.forEach((extension) => EXTENSION_KIND.set(extension, kind)));
 
   function iconKind(entry) {
-    if (entry.type === 'directory') return 'ic-dir';
+    if (entry.type === 'directory') return 'dir';
+    /* Before the extension is looked at: what is on the far end of a symlink is
+     * not known from a listing, and guessing from the name it happens to carry
+     * would be the icon claiming to know. */
+    if (entry.type === 'symlink') return 'link';
     const name = String(entry.name || '');
     const dot = name.lastIndexOf('.');
-    if (dot <= 0) return 'ic-plain';
-    return EXTENSION_KIND.get(name.slice(dot + 1).toLowerCase()) || 'ic-plain';
+    if (dot <= 0) return 'plain';
+    return EXTENSION_KIND.get(name.slice(dot + 1).toLowerCase()) || 'plain';
   }
 
   function applyStrings() {
@@ -193,9 +210,10 @@
     if (index === pane.dropIndex) row.classList.add('drop-target');
     row.draggable = true;
 
-    const iconId = entry.type === 'directory' ? '#i-folder'
-      : entry.type === 'symlink' ? '#i-link' : '#i-file';
-    const iconClass = 'icon ' + iconKind(entry);
+    /* One decision, two uses: the sprite symbol and the colour class. */
+    const kind = iconKind(entry);
+    const iconId = '#i-file-' + kind;
+    const iconClass = 'icon ic-' + kind;
     const name = document.createElement('span');
     name.className = 'name';
     name.textContent = entry.name;

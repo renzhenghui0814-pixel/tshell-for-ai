@@ -322,6 +322,9 @@ details[open] > .group-head .chevron { transform: rotate(90deg); }
  * answer the same one. That spacing is the only thing grouping them -- no rules,
  * no boxes, which at this width would be four nested frames. */
 .form-section { margin-bottom: 18px; }
+
+/* The shell stands where the select stood, so it takes the column. */
+.form-section .c-select { width: 100%; }
 .form-section .c-label { margin-top: 12px; }
 .form-section .c-label:first-child { margin-top: 0; }
 

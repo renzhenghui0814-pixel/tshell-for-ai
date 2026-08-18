@@ -799,8 +799,6 @@
     ok: { tone: 'ok' },
     duplicate: { label: 'memoryDuplicate', tone: 'muted' },
     full: { label: 'memoryFull', tone: 'warn' },
-    missing: { label: 'memoryMissing', tone: 'muted' },
-    ambiguous: { label: 'memoryAmbiguous', tone: 'muted' },
     failed: { label: 'memoryFailed', tone: 'bad' },
     oversize: { label: 'memoryOversize', tone: 'warn' },
     off: { label: 'memoryOff', tone: 'muted' },
@@ -827,9 +825,7 @@
 
     const label = document.createElement('span');
     label.className = 'memory-label';
-    label.textContent = state.label
-      ? S[state.label]
-      : event.op === 'remember' ? S.memoryRemembered : S.memoryForgotten;
+    label.textContent = state.label ? S[state.label] : S.memoryRemembered;
 
     const scope = document.createElement('span');
     scope.className = 'memory-scope';
@@ -841,7 +837,7 @@
 
     const actions = document.createElement('span');
     actions.className = 'memory-actions';
-    if (!replaying && event.op === 'remember' && event.outcome === 'ok' && event.token) {
+    if (!replaying && event.outcome === 'ok' && event.token) {
       const undo = document.createElement('button');
       undo.className = 'memory-action';
       undo.type = 'button';
@@ -1225,6 +1221,39 @@
       card.append(view);
       return view;
     });
+  }
+
+  /*
+   * A transfer opens its own card, because nothing else opens one for it.
+   *
+   * Every other step in this thread arrives behind a `command` event, and that
+   * is what sets `openCard`. A transfer does not: the loop emits `transfer`
+   * straight after planning, with no command to show. So `openCard` was null,
+   * `addTransfer` never ran, and every progress event that followed was dropped
+   * on the floor by the `if (openTransfer)` below it -- a download that worked
+   * perfectly, reported by a bar that never left zero, and no result card at the
+   * end either, because that needs `openCard` too.
+   *
+   * Marked unconfirmed so it does not fold itself away when the result lands.
+   * Transfers run without asking, so this card is the only look the user gets.
+   */
+  function transferCard(event) {
+    const card = document.createElement('details');
+    card.className = 'card';
+    card.open = true;
+    card.__unconfirmed = true;
+
+    const head = document.createElement('summary');
+    head.className = 'card-head';
+    const label = document.createElement('span');
+    label.className = 'card-why';
+    // The bare verb: the view inside says which files and where to, and saying
+    // it twice would only push the bars further down.
+    label.textContent = event.kind === 'upload' ? S.agentUpload : S.agentDownload;
+    head.append(label);
+    card.append(head);
+
+    return appendStep(card, 'ran');
   }
 
   function askConfirm(data) {
@@ -1944,7 +1973,12 @@
         if (openCard) addFile(openCard, event);
         break;
       case 'transfer':
-        if (openCard) openTransfer = addTransfer(openCard, event);
+        // A transfer arrives with no command card in front of it, so it opens
+        // one. Reusing an open card when there is one keeps a transfer that
+        // really did follow a command in the same step as that command.
+        clearThinking();
+        if (!openCard) openCard = transferCard(event);
+        openTransfer = addTransfer(openCard, event);
         break;
       case 'transferProgress':
         if (openTransfer) follow(() => paintProgress(openTransfer, event.progress));
@@ -1953,18 +1987,6 @@
         if (openCard) addResult(openCard, event);
         openCard = null;
         openTransfer = null;
-        break;
-      // A question and a wrap-up are both just the assistant talking, and both
-      // stream the same way an ordinary reply does.
-      case 'question':
-        clearThinking();
-        settleReasoning();
-        if (!settleDelta(event.question)) turn(event.question, 'assistant');
-        break;
-      case 'summary':
-        clearThinking();
-        settleReasoning();
-        if (!settleDelta(event.summary)) turn(event.summary, 'assistant');
         break;
       case 'stepLimit':
         clearThinking();

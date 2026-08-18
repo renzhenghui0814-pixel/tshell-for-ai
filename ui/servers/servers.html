@@ -6,7 +6,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="../shared/theme.css">
   <link rel="stylesheet" href="../shared/components.css">
+  <script src="../shared/dropdown.js"></script>
   <script src="../shared/scrollbars.js"></script>
+  <script src="../shared/palette.js"></script>
   <script src="../shared/host.js"></script>
   <link rel="stylesheet" href="servers.css">
 </head>
@@ -79,10 +81,12 @@
 
       <div class="form-section">
         <label id="authTypeLabel" class="c-label" for="authType" data-i18n="authType"></label>
-        <select id="authType" class="c-field">
-          <option value="password" data-i18n="passwordAuth"></option>
-          <option value="privateKey" data-i18n="privateKeyAuth"></option>
-        </select>
+        <span class="c-select">
+          <select id="authType" class="c-field">
+            <option value="password" data-i18n="passwordAuth"></option>
+            <option value="privateKey" data-i18n="privateKeyAuth"></option>
+          </select>
+        </span>
 
         <label id="passwordLabel" class="c-label" for="password" data-i18n="password"></label>
         <input id="password" class="c-field" type="password">
@@ -97,10 +101,12 @@
       <div class="form-section">
         <label id="encodingLabel" class="c-label" for="encoding" data-i18n="encoding"></label>
         <!-- Encoding names are the names of the encodings, in every language. -->
-        <select id="encoding" class="c-field">
-          <option value="utf-8">UTF-8</option>
-          <option value="gb18030">GB2312 / GBK</option>
-        </select>
+        <span class="c-select">
+          <select id="encoding" class="c-field">
+            <option value="utf-8">UTF-8</option>
+            <option value="gb18030">GB2312 / GBK</option>
+          </select>
+        </span>
       </div>
 
       <div class="actions">

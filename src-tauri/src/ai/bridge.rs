@@ -32,6 +32,7 @@ use super::cancel::Cancel;
 use super::context::{build_context, ContextInput, MachineFacts};
 use super::files::{self, FileOpError, FilePlan, FileRequest, FileRunner};
 use super::host::{AgentConfig, Asker, Bytes, Emitter, Executor, Judge, Stores};
+use super::link::LinkError;
 use super::llm::http::{HttpProvider, Unconfigured};
 use super::llm::retry::WithRetry;
 use super::llm::LlmProvider;
@@ -47,10 +48,42 @@ use super::settings::{model_secret_key, AiSettings};
 use super::shell::{AgentShell, RunOptions, TerminalIo, DEFAULT_OUTPUT_BUDGET};
 use super::store::chat::{now_ms, ChatEntry, ChatRecord, ChatStore, ChatUsage};
 use super::store::log::LogStore;
-use super::store::memory::{AppendResult, MemoryStore, RemoveOutcome};
+use super::store::memory::{AppendResult, MemoryStore};
 use super::store::skill::{SkillRead, SkillStore};
 use super::store::trust::TrustStore;
-use super::types::{AgentEvent, AgentMode, CommandResult, MemoryScope, TransferKind};
+use super::types::{
+    AgentEvent, AgentMode, CommandResult, MemoryScope, TransferCurrent, TransferKind,
+    TransferOverall, TransferPhase, TransferProgress,
+};
+
+/// One number out of the engine's message, 0 for anything that is not one.
+///
+/// The engine's own JSON, so the fields are there -- but reading a missing one as
+/// `null` and passing it on is exactly the failure this was written after, and a
+/// zero at least paints a bar that says zero rather than throwing on the page.
+fn number(value: &Value) -> u64 {
+    value.as_u64().unwrap_or(0)
+}
+
+/// The progress event as the page reads it, with serde owning the field names.
+fn progress_event(progress: TransferProgress) -> Value {
+    json!({ "type": "event", "event": AgentEvent::TransferProgress { progress } })
+}
+
+/// `base` and `rest`, with exactly one separator between them.
+///
+/// POSIX rules only: the far side of an SSH session is a POSIX machine whatever
+/// this one is, and borrowing the host's separator here is how a Windows client
+/// writes a backslash into a Linux path.
+fn join_under(base: &str, rest: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let rest = rest.trim_start_matches('/');
+    if base.is_empty() {
+        format!("/{rest}")
+    } else {
+        format!("{base}/{rest}")
+    }
+}
 
 // ------------------------------------------------------------- where things live ---
 
@@ -111,6 +144,11 @@ pub struct Host {
     sessions: Arc<ssh::Sessions>,
     transfers: Arc<crate::transfer::Transfers>,
     target: ssh::Target,
+    /// The assistant's own connection, for bytes that should not be typed.
+    ///
+    /// Held even where it is never opened: it is lazy, so a task that touches no
+    /// file costs nothing for having one. See `link.rs`.
+    link: Arc<super::link::Link>,
     agent: Arc<AgentShell>,
     typist: Typist,
     stores: Arc<AiStores>,
@@ -187,6 +225,70 @@ impl Host {
         }
     }
 
+    /*
+     * A path both connections read the same way.
+     *
+     * The assistant's own connection has a session of its own, so its working
+     * directory is the login directory rather than wherever the user has walked
+     * to. A relative path handed to it lands somewhere the user was not looking,
+     * and lands there silently -- which is the one failure mode a second channel
+     * could introduce that the shared terminal never had.
+     *
+     * So it is resolved here, on this side, once, against the terminal's own
+     * `pwd`, and everything downstream sees an absolute path: the SFTP write, the
+     * shell commit, and the confirmation dialog the user reads. An absolute path
+     * in that dialog is worth having on its own -- "write config.yml" is not a
+     * question anyone can answer.
+     *
+     * `~` is resolved for a second reason. It never worked: every path reaches
+     * the shell inside `quote`, and a tilde in single quotes is a directory
+     * called `~`. Expanding it here is what makes the paths models actually
+     * write do what models actually mean.
+     *
+     * Both lookups cost a silent round trip, and neither happens for a path that
+     * is already absolute -- which the prompt asks for and which is nearly always
+     * what arrives.
+     */
+    async fn resolve_path(&self, path: &str, cancel: &Cancel) -> String {
+        let path = path.trim();
+        if path.is_empty() || path.starts_with('/') {
+            return path.to_string();
+        }
+
+        if path == "~" || path.starts_with("~/") {
+            let home = self.ask_shell("printf %s \"$HOME\"", cancel).await;
+            // Nothing better to say than what the model said. It will fail, and
+            // it will fail naming the path the model wrote, which is the failure
+            // that can be acted on.
+            if home.is_empty() {
+                return path.to_string();
+            }
+            return if path == "~" { home } else { join_under(&home, &path[2..]) };
+        }
+        // `~user` is left alone: only the far side knows where that is, and a
+        // guess would be a plausible wrong answer.
+        if path.starts_with('~') {
+            return path.to_string();
+        }
+
+        let cwd = self.ask_shell("pwd", cancel).await;
+        if cwd.is_empty() {
+            return path.to_string();
+        }
+        join_under(&cwd, path.strip_prefix("./").unwrap_or(path))
+    }
+
+    /// One silent question to the shell, trimmed. Empty when it would not answer.
+    async fn ask_shell(&self, command: &str, cancel: &Cancel) -> String {
+        let silent = RunOptions { silent: true, ..Default::default() };
+        let result = self.run(command, silent, cancel).await;
+        if result.exit_code == 0 {
+            result.output.trim().to_string()
+        } else {
+            String::new()
+        }
+    }
+
     /// The machine's own answers, asked once per task.
     async fn machine_facts(&self, cancel: &Cancel) -> MachineFacts {
         let silent = RunOptions { silent: true, ..Default::default() };
@@ -207,24 +309,30 @@ impl Host {
         }
     }
 
-    /// The system prompt as it stands right now.
+    /// What the machine looks like at the moment this task starts.
     ///
-    /// Rebuilt per task rather than kept, because memory, the skill manifest and
-    /// the thinking switch all change it between messages.
-    async fn system_prompt(&self, identity: &str, cancel: &Cancel) -> String {
+    /// Its own thing rather than part of the prompt, and the split is the point:
+    /// this changes on every task and the prompt does not. Costs two silent
+    /// commands, which is why it is asked once per task and not once per step.
+    async fn task_context(&self, _cancel: &Cancel) -> String {
         let settings = self.settings();
-        let facts = self.machine_facts(cancel).await;
-        let cwd = self.working_directory(cancel).await;
-
-        let context = build_context(&ContextInput {
-            host: &self.server_name,
-            machine: &facts,
+        build_context(&ContextInput {
             transcript: &self.agent.transcript(),
-            cwd: &cwd,
             send_output: settings.send_terminal_output,
             output_lines: settings.output_lines,
             budget: 0,
-        });
+        })
+    }
+
+    /// The system prompt as it stands right now.
+    ///
+    /// Rebuilt per task rather than kept, because memory, the skill manifest and
+    /// the thinking switch all change it between messages. Nothing about the
+    /// machine is in here any more -- see `task_context` -- so in the ordinary
+    /// case it comes out byte-identical every time, which is what lets an
+    /// endpoint match its cache from message zero.
+    fn system_prompt(&self, identity: &str, machine: &MachineFacts) -> String {
+        let settings = self.settings();
 
         let memory = settings.memory.enabled.then(|| MemoryPrompt {
             global: self.stores.memory.read(MemoryScope::Global, None),
@@ -240,7 +348,8 @@ impl Host {
 
         build_system_prompt(&PromptInput {
             language: self.language,
-            context: &context,
+            host: &self.server_name,
+            machine,
             identity,
             memory: memory.as_ref(),
             local_places: &places,
@@ -335,14 +444,81 @@ impl FileRunner for Host {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = CommandResult> + Send + 'a>> {
         Box::pin(async move { self.run(&command, options, &Cancel::new()).await })
     }
+
+    /*
+     * The three that go over the assistant's own connection.
+     *
+     * Each of them can answer `None`, and every `None` here means the same thing:
+     * the second connection could not be had -- no network for it, a server that
+     * refuses a second session, an SFTP subsystem that is not enabled -- so the
+     * shell carries the bytes as it always did. That is a real configuration and
+     * not only a failure mode, which is why the fallback is not treated as one.
+     *
+     * `fetch` is the exception. A connection that opened and then said no is
+     * answering about the file, not about itself, and repeating the question
+     * through the shell would report the shell's words for the same refusal.
+     */
+    fn fetch<'a>(
+        &'a self,
+        path: String,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Option<Result<Vec<u8>, String>>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            match self.link.read(&path, files::MAX_FILE_BYTES).await {
+                Ok(bytes) => Some(Ok(bytes)),
+                Err(LinkError::Unavailable(_)) => None,
+                Err(LinkError::Failed(why)) => Some(Err(why)),
+            }
+        })
+    }
+
+    fn stash<'a>(
+        &'a self,
+        path: String,
+        bytes: Vec<u8>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Result<(), String>>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            match self.link.write(&path, &bytes).await {
+                Ok(()) => Some(Ok(())),
+                Err(LinkError::Unavailable(_)) => None,
+                Err(LinkError::Failed(why)) => Some(Err(why)),
+            }
+        })
+    }
+
+    fn probe<'a>(
+        &'a self,
+        path: String,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<files::Presence>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            match self.link.probe(&path).await {
+                Ok(Some(true)) => Some(files::Presence::Directory),
+                Ok(Some(false)) => Some(files::Presence::File),
+                Ok(None) => Some(files::Presence::Absent),
+                // Unlike the other two this never reports a failure onward. The
+                // shell's `[ -d ]` answers the same question and copes with the
+                // cases SFTP has no word for, so a channel that stumbled here
+                // simply steps aside.
+                Err(_) => None,
+            }
+        })
+    }
 }
 
 impl Bytes for Host {
     async fn plan_file(
         &self,
         request: FileRequest,
-        _cancel: &Cancel,
+        cancel: &Cancel,
     ) -> Result<FilePlan, FileOpError> {
+        // Resolved before anything is planned, so the path in the plan -- the one
+        // written, the one committed, and the one the user is shown -- is the
+        // same path on both connections. See `resolve_path`.
+        let request =
+            FileRequest { path: self.resolve_path(&request.path, cancel).await, ..request };
         files::plan_file_op(&request, self).await
     }
 
@@ -376,10 +552,6 @@ impl Stores for Host {
             MemoryScope::Server => settings.memory.server_budget,
         };
         self.stores.memory.append(scope, self.scope_id(scope), text, budget)
-    }
-
-    async fn forget(&self, scope: MemoryScope, text: &str) -> RemoveOutcome {
-        self.stores.memory.remove(scope, self.scope_id(scope), text)
     }
 
     fn skills_enabled(&self) -> bool {
@@ -491,19 +663,39 @@ impl Host {
                         transfers.answer(&watching, id, "skip");
                     }
                 }
+                /*
+                 * Both halves are reported, and both go out as the typed event
+                 * rather than as a hand-built object. The engine's names and the
+                 * page's names are not the same -- `doneFiles` here, nested under
+                 * `overall` there -- and the one time that translation was written
+                 * out by hand it read fields the engine does not send, which is
+                 * how a transfer that worked perfectly showed a bar stuck at zero.
+                 */
+                "scanning" => {
+                    let _ = out.send(progress_event(TransferProgress {
+                        phase: TransferPhase::Scanning,
+                        overall: TransferOverall {
+                            total_files: number(&text["totalFiles"]) as u32,
+                            total_bytes: number(&text["totalBytes"]),
+                            ..Default::default()
+                        },
+                        current: TransferCurrent::default(),
+                    }));
+                }
                 "progress" => {
-                    let _ = out.send(json!({
-                        "type": "event",
-                        "event": {
-                            "type": "transferProgress",
-                            "progress": {
-                                "done": text["done"],
-                                "total": text["total"],
-                                "filesDone": text["filesDone"],
-                                "filesTotal": text["filesTotal"],
-                                "name": text["name"],
-                            }
-                        }
+                    let _ = out.send(progress_event(TransferProgress {
+                        phase: TransferPhase::Transferring,
+                        overall: TransferOverall {
+                            done_files: number(&text["doneFiles"]) as u32,
+                            total_files: number(&text["totalFiles"]) as u32,
+                            done_bytes: number(&text["doneBytes"]),
+                            total_bytes: number(&text["totalBytes"]),
+                        },
+                        current: TransferCurrent {
+                            name: text["name"].as_str().unwrap_or_default().to_string(),
+                            transferred: number(&text["transferred"]),
+                            total: number(&text["total"]),
+                        },
                     }));
                 }
                 "item" if text["status"] == "failed" => {
@@ -755,7 +947,6 @@ pub fn open_panel(
     // to the tab, which is what lets a command's own output be told apart.
     sessions.attach(&terminal, agent.clone());
 
-    let log = Arc::new(stores.logs.open(settings.log.enabled, settings.log.keep, &server_name));
 
     let host = Arc::new(Host {
         pane: pane.clone(),
@@ -765,6 +956,7 @@ pub fn open_panel(
         language,
         sessions: sessions.clone(),
         transfers,
+        link: super::link::Link::new(target.clone()),
         target,
         agent,
         typist: Typist { sessions, terminal, encoding },
@@ -781,8 +973,11 @@ pub fn open_panel(
     agent_config.context_budget = settings.agent.context_budget;
     agent_config.request_timeout_ms = settings.request_timeout_ms;
 
-    let session = AgentSession::new(host.clone(), agent_config).with_log(log);
+    let session = AgentSession::new(host.clone(), agent_config);
     let panel = Arc::new(Panel { host: host.clone(), session });
+    // Opening a panel opens a conversation, so it opens a transcript too. Named
+    // for the record the host was just built around.
+    panel.open_log();
 
     let bootstrap = PanelBootstrap {
         language: language.tag(),
@@ -816,8 +1011,22 @@ impl Panel {
     pub async fn send(&self, text: String) {
         let identity = self.session.describe_provider();
         let cancel = Cancel::new();
-        let system = self.host.system_prompt(&identity, &cancel).await;
-        self.session.configure(|current| current.system = system);
+        // Asked again per task rather than cached, because a machine can be
+        // rebooted into a new kernel under a conversation. The answer is the same
+        // string almost every time, so the prompt stays byte-identical and the
+        // cache still matches -- this costs a round trip, not a cache miss.
+        let machine = self.host.machine_facts(&cancel).await;
+        self.session
+            .configure(|current| current.system = self.host.system_prompt(&identity, &machine));
+        /*
+         * The machine goes in as part of this turn rather than into the prompt.
+         *
+         * Everything before it is then byte-identical to the last request -- the
+         * prompt, and every turn of the conversation so far -- which is the only
+         * shape a prefix cache can match. What the user typed is what the thread
+         * and the record show; the framing is only ever sent.
+         */
+        let context = self.host.task_context(&cancel).await;
 
         let named = {
             let mut record = self.host.record.lock().unwrap();
@@ -843,7 +1052,7 @@ impl Panel {
         self.host.post(json!({ "type": "user", "text": text }));
         self.host.post(json!({ "type": "state", "running": true }));
 
-        self.session.send(&text).await;
+        self.session.send(&super::prompt::context_turn(&context, &text)).await;
 
         // The conversation as the model saw it, kept so a reopened panel carries
         // on rather than starting again knowing nothing.
@@ -857,10 +1066,26 @@ impl Panel {
 
     pub fn close(&self) {
         self.session.stop();
-        self.host.sessions.detach(&self.host.terminal);
+        self.host.sessions.detach(&self.host.terminal, &self.host.agent);
         // Anything still waiting on the user resolves as declined when the
         // senders drop with the map.
         self.host.pending.lock().unwrap().clear();
+
+        /*
+         * The assistant's own connection, said goodbye to rather than dropped.
+         *
+         * Dropping the handle closes the socket, but only once whatever is
+         * holding it lets go, and the server then keeps the session until its own
+         * timeout notices. A panel opened and closed a few times over an
+         * afternoon leaves that many sessions in `who` -- the same mistake the
+         * terminal's pump was written to avoid.
+         *
+         * Spawned because this is not async and there is nothing to wait for:
+         * the panel is already gone from the map, and the disconnect is a
+         * courtesy to the far side.
+         */
+        let link = Arc::clone(&self.host.link);
+        tauri::async_runtime::spawn(async move { link.close().await });
     }
 
     pub fn record_id(&self) -> String {
@@ -876,7 +1101,30 @@ impl Panel {
         self.session.reset();
         *self.host.record.lock().unwrap() =
             fresh_record(&self.host.server_id, &self.host.server_name);
+        // A new conversation is a new transcript. Without this the old file goes
+        // on collecting, and reads as one exchange in which the model keeps
+        // forgetting everything and re-reading its prompt.
+        self.open_log();
         self.host.post(json!({ "type": "cleared" }));
+    }
+
+    /// Starts the transcript for whichever conversation the panel now holds.
+    ///
+    /// Reads the id off the record rather than being told it, so the file and the
+    /// conversation it describes cannot drift apart: there is one id and both
+    /// take it from the same place.
+    fn open_log(&self) {
+        let settings = self.host.settings();
+        let (server_name, chat_id) = {
+            let record = self.host.record.lock().unwrap();
+            (record.server_name.clone(), record.id.clone())
+        };
+        self.session.set_log(Arc::new(self.host.stores.logs.open(
+            settings.log.enabled,
+            settings.log.keep,
+            &server_name,
+            &chat_id,
+        )));
     }
 
     /// Puts a recorded conversation back on screen and into the model's context.
@@ -895,6 +1143,9 @@ impl Panel {
             "usage": record.usage,
         });
         *self.host.record.lock().unwrap() = record;
+        // Reopening an old conversation is entering one, not continuing the one
+        // that was on screen. It gets its own transcript, named for itself.
+        self.open_log();
         Some(view)
     }
 

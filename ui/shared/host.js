@@ -66,6 +66,30 @@
 
   applyTheme(frame.theme);
 
+  /*
+   * The user's edits to the palette, applied before anything is drawn.
+   *
+   * They ride the fragment for the same reason the bootstrap does: a page reads
+   * its fragment synchronously, and a page that had to wait for a message would
+   * paint once in the shipped palette and once in the user's. Both halves are
+   * written at once, so the theme switch above needs nothing from here.
+   *
+   * `palette.js` has to be loaded before this file for a page to wear them. A
+   * page that does not load it is not broken -- it wears the palette that
+   * ships, which is a complete one.
+   */
+  function applyPalette(file) {
+    if (!window.tshellPalette) return;
+    try {
+      window.tshellPalette.apply(document, file);
+    } catch (error) {
+      // A palette is decoration. Nothing here is worth failing a page load over.
+      console.error('tshell: could not apply the palette', error);
+    }
+  }
+
+  applyPalette(frame.palette);
+
   var stateKey = 'tshell:state:' + frame.paneId;
 
   var api = {
@@ -127,6 +151,13 @@
     // on, so no page needs a case for a message it never had under VS Code.
     if (data.payload && data.payload.type === 'theme') {
       applyTheme(data.payload.theme);
+      return;
+    }
+
+    // Same reasoning: which colours the window is made of is the host's
+    // business, and no page ever had a case for it.
+    if (data.payload && data.payload.type === 'palette') {
+      applyPalette(data.payload.palette);
       return;
     }
 

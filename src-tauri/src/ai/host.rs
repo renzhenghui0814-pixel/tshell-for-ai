@@ -26,7 +26,7 @@ use super::moves::{TransferOpError, TransferPlan, TransferRequest};
 use super::policy::command::PolicyResult;
 use super::policy::path::PathPolicyResult;
 use super::policy::risk::RiskReason;
-use super::store::memory::{AppendResult, RemoveOutcome};
+use super::store::memory::AppendResult;
 use super::store::skill::SkillRead;
 use super::types::{AgentEvent, AgentMode, CommandResult, MemoryScope};
 
@@ -91,10 +91,9 @@ pub trait Bytes: Send + Sync {
 
 /// The only thing that touches the disk on this side.
 pub trait Stores: Send + Sync {
-    /// False means the two memory actions were never offered, so one is a mistake.
+    /// False means `remember` was never offered, so using it is a mistake.
     fn memory_enabled(&self) -> bool;
     fn remember(&self, scope: MemoryScope, text: &str) -> impl Future<Output = AppendResult> + Send;
-    fn forget(&self, scope: MemoryScope, text: &str) -> impl Future<Output = RemoveOutcome> + Send;
     /// False means no skill was ever offered, so naming one is a mistake rather
     /// than a miss.
     fn skills_enabled(&self) -> bool;

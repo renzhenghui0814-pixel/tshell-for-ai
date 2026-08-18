@@ -36,33 +36,37 @@ body {
 }
 
 /*
- * `min-height`, never `height`.
+ * The reset, and only the reset.
  *
- * Not every button here is a label on one line: a row in the history list is a
- * button with a title and the machine-and-date under it, and a fixed 28px
- * clipped the second line into the first. A minimum keeps the ordinary buttons
- * on the same 28px as the rest of the product and lets the ones with a block
- * inside them grow to fit it.
+ * It used to be a filled accent button: every `<button>` on this page arrived
+ * indigo with white-on-dark text, and every one of the ten kinds of button here
+ * -- the icon buttons, the panel actions, the history rows, the dialog options,
+ * the copy button, the model chip, the memory verbs, the segments -- began by
+ * cancelling that. Which they each did slightly differently, and that is where
+ * the drift came from: nobody compares two components whose first three
+ * declarations are apologies for the default.
  *
- * `font-weight` is on the filled variants only, for the same reason: the
- * history rows are buttons and their titles are not headings.
+ * What is left is the shape the whole product agrees on -- 28px, `--r-sm`,
+ * `--fs-sm`, the shared focus ring -- and no colour. A button that wants to be
+ * filled says so.
+ *
+ * `min-height`, never `height`. A row in the history list is a button with a
+ * title and the machine-and-date under it, and a fixed 28px clipped the second
+ * line into the first.
  */
 button {
   cursor: pointer;
   min-height: 28px;
   padding: 0 13px;
-  color: var(--ac-tx);
-  background: var(--ac);
+  color: var(--tx);
+  background: transparent;
   border: 1px solid transparent;
   border-radius: var(--r-sm);
   font: inherit;
   font-size: var(--fs-sm);
-  font-weight: 500;
   white-space: nowrap;
-  transition: background-color .12s ease, color .12s ease;
+  transition: background-color .12s ease, color .12s ease, border-color .12s ease;
 }
-
-button:hover { background: var(--ac-hover); }
 
 button:focus-visible {
   outline: none;
@@ -70,25 +74,6 @@ button:focus-visible {
 }
 
 button:disabled { opacity: .38; cursor: default; }
-
-/*
- * Outlined rather than filled, and it matters more here than anywhere else in
- * the product: an action card asks a question with two answers on it, and the
- * one that runs the command should be the only filled thing in the panel.
- */
-button.quiet,
-button.secondary {
-  color: var(--tx);
-  background: transparent;
-  border-color: var(--line-strong);
-  font-weight: 400;
-}
-
-button.quiet:hover,
-button.secondary:hover { background: var(--hover); }
-
-button.stop { color: var(--err); background: transparent; border-color: var(--line-strong); font-weight: 400; }
-button.stop:hover { background: var(--err-soft); }
 
 /* No `fill`. The shared sprite carries fill and stroke on a group inside each
  * symbol, which beats anything inherited from here -- and has to, since most of
@@ -114,6 +99,15 @@ button.stop:hover { background: var(--err-soft); }
 }
 
 .icon-button:hover { color: var(--tx); background: var(--hover); }
+/*
+ * Pressed is `--ac` on `--ac-soft`, which is what `.c-btn-icon.c-on` in
+ * shared/components.css is and what a lit icon button looks like everywhere
+ * else in the window. Colour alone was doing the job here, and a blue glyph at
+ * the same weight as the grey ones beside it is a difference you have to go
+ * looking for -- the tinted plate is the part that is seen without looking.
+ */
+.icon-button[aria-pressed="true"] { color: var(--ac); background: var(--ac-soft); }
+.icon-button[aria-pressed="true"]:hover { color: var(--ac); background: var(--ac-soft); }
 .icon-button .icon { margin: 0; width: 15px; height: 15px; }
 .icon-button.danger:hover { color: var(--err); background: var(--err-soft); }
 
@@ -121,7 +115,7 @@ button.stop:hover { background: var(--err-soft); }
   outline: none;
   box-shadow: 0 0 0 2px var(--ac-ring);
 }
-.toggle { display: flex; align-items: center; gap: 5px; color: var(--vscode-descriptionForeground); font-size: .9em; cursor: pointer; white-space: nowrap; }
+.toggle { display: flex; align-items: center; gap: 5px; color: var(--vscode-descriptionForeground); font-size: var(--fs-sm); cursor: pointer; white-space: nowrap; }
 
 /* -- thread ------------------------------------------------------------- */
 
@@ -368,7 +362,7 @@ button.stop:hover { background: var(--err-soft); }
   border-radius: var(--r-md);
 }
 
-.md-table { border-collapse: collapse; width: 100%; font-size: .95em; }
+.md-table { border-collapse: collapse; width: 100%; font-size: var(--fs-sm); }
 
 .md-table th,
 .md-table td {
@@ -396,7 +390,7 @@ button.stop:hover { background: var(--err-soft); }
   border-radius: var(--r-sm);
   background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
   font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 12.5px;
+  font-size: var(--fs-mono);
   word-break: break-word;
 }
 
@@ -425,7 +419,7 @@ button.stop:hover { background: var(--err-soft); }
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--vscode-descriptionForeground);
-  font-size: .8em;
+  font-size: var(--fs-xs);
   text-transform: lowercase;
 }
 
@@ -437,7 +431,7 @@ button.stop:hover { background: var(--err-soft); }
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--r-sm);
-  font-size: .8em;
+  font-size: var(--fs-xs);
   opacity: .75;
 }
 
@@ -459,7 +453,7 @@ button.stop:hover { background: var(--err-soft); }
   overflow-y: auto;
   padding: 8px 0;
   font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 12.5px;
+  font-size: var(--fs-mono);
   line-height: 1.5;
   white-space: pre;
   user-select: text;
@@ -495,7 +489,7 @@ button.stop:hover { background: var(--err-soft); }
 
 .note {
   color: var(--vscode-descriptionForeground);
-  font-size: .92em;
+  font-size: var(--fs-sm);
   padding: 2px 2px;
   display: flex;
   align-items: center;
@@ -556,7 +550,7 @@ button.stop:hover { background: var(--err-soft); }
   cursor: pointer;
   list-style: none;
   color: var(--vscode-descriptionForeground);
-  font-size: .92em;
+  font-size: var(--fs-sm);
   padding: 1px 0;
 }
 
@@ -577,7 +571,7 @@ button.stop:hover { background: var(--err-soft); }
   overflow: auto;
   margin: 4px 0 6px;
   padding-right: 4px;
-  font-size: .9em;
+  font-size: var(--fs-sm);
   line-height: 1.55;
   color: var(--vscode-descriptionForeground);
 }
@@ -610,7 +604,7 @@ button.stop:hover { background: var(--err-soft); }
   gap: 7px;
   padding: 4px 8px;
   border-radius: var(--r-md);
-  font-size: .92em;
+  font-size: var(--fs-sm);
   color: var(--vscode-descriptionForeground);
   background: color-mix(in srgb, var(--vscode-editorWidget-background, var(--vscode-editor-background)) 70%, transparent);
 }
@@ -628,7 +622,7 @@ button.stop:hover { background: var(--err-soft); }
   flex: none;
   padding: 0 6px;
   border-radius: var(--r-lg);
-  font-size: .85em;
+  font-size: var(--fs-xs);
   background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
 }
 
@@ -654,7 +648,7 @@ button.stop:hover { background: var(--err-soft); }
   color: var(--info);
   background: none;
   font: inherit;
-  font-size: .95em;
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 
@@ -682,7 +676,7 @@ button.stop:hover { background: var(--err-soft); }
 
 .card-head::-webkit-details-marker { display: none; }
 .card-head:hover { background: var(--vscode-list-hoverBackground); }
-.card-why { flex: 1 1 auto; min-width: 0; color: var(--vscode-foreground); font-size: .92em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-why { flex: 1 1 auto; min-width: 0; color: var(--vscode-foreground); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card[open] .card-why { white-space: normal; }
 
 /*
@@ -697,7 +691,7 @@ button.stop:hover { background: var(--err-soft); }
   border: 1px solid var(--line-strong);
   border-radius: var(--r-pill);
   color: var(--tx-dim);
-  font-size: .74em;
+  font-size: var(--fs-xs);
   white-space: nowrap;
 }
 
@@ -723,7 +717,7 @@ button.stop:hover { background: var(--err-soft); }
   padding: 5px 10px;
   border-top: 1px solid var(--hairline);
   color: var(--vscode-descriptionForeground);
-  font-size: .9em;
+  font-size: var(--fs-sm);
 }
 
 .result-head .exit { font-variant-numeric: tabular-nums; }
@@ -844,7 +838,7 @@ textarea::placeholder { color: var(--tx-dim); }
   min-width: 0;
   padding: 0 6px;
   color: var(--vscode-descriptionForeground);
-  font-size: .82em;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
@@ -864,7 +858,7 @@ textarea::placeholder { color: var(--tx-dim); }
   white-space: nowrap;
   padding: 0 6px;
   color: var(--vscode-descriptionForeground);
-  font-size: .82em;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
 }
 
@@ -877,7 +871,7 @@ textarea::placeholder { color: var(--tx-dim); }
   flex: 0 0 auto;
   padding: 0 6px;
   color: var(--vscode-descriptionForeground);
-  font-size: .82em;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -889,6 +883,12 @@ textarea::placeholder { color: var(--tx-dim); }
  * with similar names are told apart by reading them. Truncated hard: the name is
  * a reminder of a choice already made, and the title carries the whole of it.
  */
+/*
+ * Worn like the icon buttons beside it, not like a badge. It sits in their row
+ * and does what they do -- press it and a window opens -- so a filled accent
+ * pill made it read as the one lit control on a row of quiet ones, which is a
+ * thing to say about a setting that has changed, not about the model's name.
+ */
 .model-chip {
   flex: 0 1 auto;
   min-width: 0;
@@ -897,27 +897,33 @@ textarea::placeholder { color: var(--tx-dim); }
   text-overflow: ellipsis;
   white-space: nowrap;
   margin-right: 2px;
-  padding: 2px 7px;
-  border: 0;
-  border-radius: var(--r-lg);
-  background: var(--vscode-badge-background);
-  color: var(--vscode-badge-foreground);
+  padding: 3px 7px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--tx-dim);
   font: inherit;
-  font-size: .82em;
-  opacity: .8;
+  font-size: var(--fs-xs);
+  opacity: .7;
   cursor: pointer;
+  transition: background-color .12s ease, color .12s ease;
 }
 
-.model-chip:hover { opacity: 1; }
+.model-chip:hover { opacity: 1; color: var(--tx); background: var(--hover); }
+
+.model-chip:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--ac-ring); }
 
 /* A toolbar under a text box, not a title bar: smaller, and quieter until used. */
 .composer-status .icon-button { width: 24px; height: 24px; opacity: .7; }
 .composer-status .icon-button:hover { opacity: 1; }
-/* Pressed reads as lit: full strength and the accent, against the row's .7 grey. */
-.composer-status .icon-button[aria-pressed="true"] {
-  opacity: 1;
-  color: var(--vscode-textLink-foreground);
-}
+/*
+ * Pressed reads as lit: full strength and the accent, against the row's .7 grey.
+ *
+ * `--ac` and not the link colour it used to be. The link colour is `--info`, a
+ * lighter blue than anything else on this row, so a toggle wearing it read as a
+ * third colour rather than as the same "on" the rest of the window draws in.
+ */
+.composer-status .icon-button[aria-pressed="true"] { opacity: 1; }
 
 .icon-button.submit { flex: none; padding: 3px; border-radius: var(--r-sm); }
 .icon-button.submit .icon { width: 16px; height: 16px; margin: 0; }
@@ -930,32 +936,53 @@ textarea::placeholder { color: var(--tx-dim); }
  * The glyph has already changed shape; this is the second thing saying it, for
  * the sweep of an eye that never reaches the shape.
  */
-.composer-status .icon-button.danger-on { opacity: 1; color: var(--vscode-errorForeground); }
+.composer-status .icon-button.danger-on {
+  opacity: 1;
+  color: var(--err);
+  background: var(--err-soft);
+}
 
 /* -- permission dialog --------------------------------------------------- */
 
+/*
+ * The same scrim `.c-backdrop` draws, including the light half of it. It was a
+ * flat 45% black in both themes, which under the light theme is a stage
+ * blackout behind a white card -- every other dialog in the window dims to a
+ * soft blue-grey there.
+ */
 .backdrop {
   position: fixed;
   inset: 0;
-  z-index: 10;
+  z-index: 300;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: var(--gutter);
-  background: rgba(0, 0, 0, .45);
+  background: rgba(6, 8, 14, 0.55);
 }
+
+:root[data-theme="light"] .backdrop { background: rgba(24, 28, 48, 0.28); }
 
 .backdrop[hidden] { display: none; }
 
+/*
+ * `--line-strong` and not `--vscode-focusBorder`.
+ *
+ * That alias is `--ac`, so every window in this panel was outlined in the
+ * accent -- the colour that means "this has focus" -- while the dialogs in the
+ * server tree and the host-key prompt wear a hairline. A ring of accent round
+ * the whole card also leaves nothing for the control inside it that really is
+ * focused to say.
+ */
 .dialog {
   width: min(560px, 100%);
   max-height: 100%;
   overflow-y: auto;
   padding: 14px 16px 12px;
-  border: 1px solid var(--vscode-focusBorder);
+  border: 1px solid var(--line-strong);
   border-radius: var(--r-lg);
-  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
-  box-shadow: 0 8px 28px rgba(0, 0, 0, .38);
+  background: var(--bg-float);
+  box-shadow: var(--sh-dlg);
 }
 
 .dialog-title { font-weight: 600; margin-bottom: 10px; }
@@ -967,7 +994,7 @@ textarea::placeholder { color: var(--tx-dim); }
   border-radius: var(--r-sm);
   background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
   font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 12.5px;
+  font-size: var(--fs-mono);
   white-space: pre-wrap;
   word-break: break-all;
   user-select: text;
@@ -979,7 +1006,7 @@ textarea::placeholder { color: var(--tx-dim); }
 .file-meta {
   margin-bottom: 6px;
   color: var(--vscode-descriptionForeground);
-  font-size: .85em;
+  font-size: var(--fs-xs);
   word-break: break-all;
 }
 
@@ -1013,7 +1040,7 @@ textarea::placeholder { color: var(--tx-dim); }
   border-radius: var(--r-sm);
   background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
   font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 12px;
+  font-size: var(--fs-mono);
   user-select: text;
 }
 
@@ -1054,7 +1081,7 @@ textarea::placeholder { color: var(--tx-dim); }
 
 .file-part-label {
   margin-bottom: 3px;
-  font-size: .82em;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: .04em;
   color: var(--vscode-descriptionForeground);
@@ -1097,7 +1124,6 @@ textarea::placeholder { color: var(--tx-dim); }
 }
 
 .history-row:hover { background: var(--vscode-list-hoverBackground); }
-.history-row.current { border-color: var(--hairline); }
 
 /* The row is the button: the whole thing is the target, not a link inside it. */
 .history-open {
@@ -1129,7 +1155,7 @@ textarea::placeholder { color: var(--tx-dim); }
   margin-top: 4px;
   color: var(--tx-dim);
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   line-height: 1.3;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1154,7 +1180,31 @@ textarea::placeholder { color: var(--tx-dim); }
 }
 
 .panel-row:hover { background: var(--vscode-list-hoverBackground); }
-.panel-row.current { border-color: var(--hairline); }
+
+/*
+ * The row in force, drawn once for all five lists.
+ *
+ * There were three of these. A conversation and a skill marked themselves with
+ * `border-color: --hairline`, which is a 1px line at 6% opacity and is not a
+ * mark; the model marked itself by filling solid with the accent, which needed
+ * five more rules to rescue the second line, the buttons and the icons from the
+ * fill they were now sitting on. Neither was what the rest of the window does.
+ *
+ * `--ac-soft` with an accent hairline inside it is `.c-row.c-selected` from
+ * shared/components.css, and the argument for it is the one theme.css makes
+ * about the server tree: these rows are two lines, a name and a note under it,
+ * and a solid fill flattens the second into the first. Every row here has that
+ * shape, the model rows included.
+ */
+.history-row.current,
+.panel-row.current {
+  background: var(--ac-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ac) 34%, transparent);
+}
+
+.history-row.current:hover,
+.panel-row.current:hover { background: var(--ac-soft); }
+
 /* The one mode that can let something through unwatched, named in colour too. */
 .panel-row.mode-auto .panel-title { color: var(--vscode-errorForeground); }
 
@@ -1185,7 +1235,7 @@ textarea::placeholder { color: var(--tx-dim); }
 .panel-meta {
   margin-top: 2px;
   color: var(--vscode-descriptionForeground);
-  font-size: .82em;
+  font-size: var(--fs-xs);
   overflow-wrap: anywhere;
 }
 
@@ -1193,17 +1243,27 @@ textarea::placeholder { color: var(--tx-dim); }
 /* Nothing to do to this row, so no gutter is held open for it. */
 .panel-buttons:empty { display: none; }
 
+/*
+ * A `.c-btn` at the size a list row can hold one.
+ *
+ * `--line-strong` and not `--hairline`: every bordered control in the product
+ * draws its edge at the stronger of the two, and this one was at 6% -- a button
+ * you can only see by knowing it is there. The shape, the radius, the hover and
+ * the focus ring are the shared ones; what is this panel's is the padding,
+ * because it sits inside a row rather than at the foot of a dialog.
+ */
 .panel-action {
+  min-height: 0;
   padding: 3px 9px;
   border-radius: var(--r-sm);
-  border: 1px solid var(--hairline);
+  border: 1px solid var(--line-strong);
   background: transparent;
-  color: var(--vscode-foreground);
-  font-size: .86em;
+  color: var(--tx);
+  font-size: var(--fs-xs);
   white-space: nowrap;
 }
 
-.panel-action:hover { background: var(--vscode-list-hoverBackground); }
+.panel-action:hover { background: var(--hover); }
 
 /*
  * The segmented control is `.c-seg` in shared/components.css now -- the
@@ -1214,11 +1274,17 @@ textarea::placeholder { color: var(--tx-dim); }
  * control's: its type scale, which is relative to a panel that sizes itself off
  * the host, and the track losing its outline on a row that is already faded.
  */
-.c-seg-item { font-size: .86em; padding: 3px 11px; }
+.c-seg-item { font-size: var(--fs-xs); padding: 3px 11px; }
 .panel-row.off .c-seg { border-color: transparent; }
-.panel-action.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: transparent; }
-.panel-action.primary:hover { background: var(--vscode-button-hoverBackground); }
-.panel-action.danger { color: var(--vscode-errorForeground); }
+.panel-action.primary { background: var(--ac); color: var(--ac-tx); border-color: transparent; font-weight: 500; }
+.panel-action.primary:hover { background: var(--ac-hover); }
+
+/* Destructive, and quiet about it until the pointer is on it -- the same pair
+   `.c-btn-quiet-danger` draws, which is what the Delete in the settings page's
+   scheme toolbar wears. A verb that is red on every row it appears on is a
+   warning nobody is reading by the third time. */
+.panel-action.danger { color: var(--err); }
+.panel-action.danger:hover { background: var(--err-soft); border-color: var(--err); }
 
 /*
  * Small enough to sit inside a heading or beside one line, still a real target.
@@ -1242,7 +1308,7 @@ textarea::placeholder { color: var(--tx-dim); }
   margin: 14px 4px 5px;
   padding: 0 4px 4px 5px;
   border-bottom: 1px solid var(--hairline);
-  font-size: .82em;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--vscode-descriptionForeground);
 }
@@ -1251,18 +1317,24 @@ textarea::placeholder { color: var(--tx-dim); }
 .panel-group-empty { padding: 3px 9px; }
 
 /* Editing happens where the line is, so the list never moves under the cursor. */
+/* Already focused when it appears -- it is put there by a click on the pencil
+   -- so it wears the focus state a `.c-field` wears, ring and all, rather than
+   an accent border with nothing behind it. */
 .panel-edit {
   flex: 1 1 auto;
   min-width: 0;
   padding: 4px 6px;
   border-radius: var(--r-sm);
-  border: 1px solid var(--vscode-focusBorder);
-  background: var(--vscode-input-background);
-  color: var(--vscode-input-foreground);
+  border: 1px solid var(--ac);
+  box-shadow: 0 0 0 2px var(--ac-ring);
+  background: var(--bg-inset);
+  color: var(--tx);
   font-family: inherit;
   font-size: inherit;
   resize: vertical;
 }
+
+.panel-edit:focus { outline: none; }
 
 .panel-foot { border-top: 1px solid var(--hairline); margin-top: 8px; padding-top: 8px; }
 
@@ -1273,25 +1345,44 @@ textarea::placeholder { color: var(--tx-dim); }
  */
 .panel-note {
   color: var(--vscode-descriptionForeground);
-  font-size: .82em;
+  font-size: var(--fs-xs);
   line-height: 1.45;
 }
 
-.model-form { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.model-form { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; }
 .model-form[hidden] { display: none; }
-.model-label { font-size: .82em; color: var(--vscode-descriptionForeground); }
-
-.model-input {
-  padding: 5px 7px;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--hairline);
-  background: var(--vscode-input-background);
-  color: var(--vscode-input-foreground);
-  font-family: inherit;
+/* `.c-label` and `.c-field`, which is what the three inputs in this form should
+   have been from the start: the endpoint and the model name are typed into the
+   same kind of box the server dialog and the settings page use, and they were
+   the one pair in the product that answered a focus with a border and no ring. */
+.model-label {
+  color: var(--tx-dim);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
 }
 
-.model-input:focus { outline: none; border-color: var(--vscode-focusBorder); }
-.model-hint { font-size: .8em; color: var(--vscode-descriptionForeground); margin-top: 2px; }
+.model-input {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-inset);
+  color: var(--tx);
+  font: inherit;
+  font-size: var(--fs-sm);
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+
+.model-input::placeholder { color: var(--tx-dim); }
+
+.model-input:focus {
+  outline: none;
+  border-color: var(--ac);
+  box-shadow: 0 0 0 2px var(--ac-ring);
+}
+.model-hint { font-size: var(--fs-xs); color: var(--vscode-descriptionForeground); margin-top: 2px; }
 .model-buttons { display: flex; gap: 6px; margin-top: 6px; }
 
 /* A file change inside a card is one more section of it, framed like the rest. */
@@ -1303,7 +1394,7 @@ textarea::placeholder { color: var(--tx-dim); }
 
 .transfer-meta {
   color: var(--vscode-descriptionForeground);
-  font-size: .85em;
+  font-size: var(--fs-xs);
   word-break: break-all;
 }
 
@@ -1321,7 +1412,7 @@ textarea::placeholder { color: var(--tx-dim); }
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: baseline;
   gap: 8px;
-  font-size: .85em;
+  font-size: var(--fs-xs);
 }
 
 .transfer-row[hidden] { display: none; }
@@ -1366,7 +1457,7 @@ textarea::placeholder { color: var(--tx-dim); }
   transition: width .12s linear;
 }
 
-.dialog-why { margin-top: 8px; color: var(--vscode-descriptionForeground); font-size: .92em; word-break: break-word; }
+.dialog-why { margin-top: 8px; color: var(--vscode-descriptionForeground); font-size: var(--fs-sm); word-break: break-word; }
 .dialog-why:empty { display: none; }
 .dialog-options { display: grid; gap: 4px; margin-top: 12px; }
 
@@ -1389,14 +1480,18 @@ textarea::placeholder { color: var(--tx-dim); }
 
 .dialog-option:hover { background: var(--vscode-list-hoverBackground); }
 
+/* The row Enter takes, marked the way every other chosen row in the window is
+   marked -- the tint, and the accent hairline drawn inside it rather than as a
+   border, so the row does not shift by a pixel when it becomes the selected
+   one. */
 .dialog-option[aria-selected="true"] {
-  color: var(--vscode-list-activeSelectionForeground);
-  background: var(--vscode-list-activeSelectionBackground);
-  border-color: var(--vscode-focusBorder);
+  color: var(--tx);
+  background: var(--ac-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ac) 34%, transparent);
 }
 
 .dialog-option .key { flex: none; opacity: .7; font-variant-numeric: tabular-nums; }
-.dialog-hint { margin-top: 10px; color: var(--vscode-descriptionForeground); font-size: .85em; }
+.dialog-hint { margin-top: 10px; color: var(--vscode-descriptionForeground); font-size: var(--fs-xs); }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

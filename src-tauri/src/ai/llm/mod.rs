@@ -5,7 +5,7 @@
 
 pub mod http;
 pub mod retry;
-pub mod say;
+pub mod prose;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -68,13 +68,15 @@ pub struct TransportInfo {
 /// A request field that not every "OpenAI-compatible" endpoint understands.
 ///
 /// They are named rather than lumped together because the user is told which one
-/// went missing, and the two mean different things: without `thinking` the model
-/// thinks whether or not it was asked to, and without `reasoning_effort` it
-/// thinks as hard as it likes.
+/// went missing, and they mean different things: without `thinking` the model
+/// thinks whether or not it was asked to, without `reasoning_effort` it thinks as
+/// hard as it likes, and without `tools` it falls back to writing the protocol
+/// out as JSON in its answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ExtraField {
     Thinking,
     ReasoningEffort,
+    Tools,
 }
 
 impl ExtraField {
@@ -82,7 +84,70 @@ impl ExtraField {
         match self {
             Self::Thinking => "thinking",
             Self::ReasoningEffort => "reasoning_effort",
+            Self::Tools => "tools",
         }
+    }
+}
+
+/// One thing the model may call, described the way the endpoint wants it.
+///
+/// Sent on every request that has any. An endpoint that does not know the field
+/// refuses the whole request, which is what [`ExtraField::Tools`] is for: it
+/// comes off, the request goes again without it, and the model answers in the
+/// JSON protocol the system prompt describes instead. Both are supported for the
+/// life of the product -- see `ai/tools.rs`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    /// A JSON Schema object for the arguments.
+    pub parameters: serde_json::Value,
+}
+
+/// One call the model made.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolCall {
+    /// The endpoint's own id for it. Carried because a model that sees its own
+    /// call echoed back reads the id as part of it; nothing here matches on it.
+    pub id: String,
+    pub name: String,
+    /// Still a string, exactly as the model wrote it.
+    ///
+    /// Not parsed here on purpose. Constrained decoding makes malformed arguments
+    /// rare rather than impossible, and the repair this client already has for a
+    /// mangled object -- see `parse.rs` -- is the same repair this needs. So it
+    /// travels as text and is read in one place.
+    pub arguments: String,
+}
+
+/// What one request came back with.
+///
+/// Both halves can be present at once and routinely are: a model that is about to
+/// call a tool usually says what it is about to do first, and that sentence is
+/// the user's.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reply {
+    pub text: String,
+    pub calls: Vec<ToolCall>,
+}
+
+impl From<&str> for Reply {
+    fn from(text: &str) -> Self {
+        Reply::text(text)
+    }
+}
+
+impl Reply {
+    /// Prose and nothing else, which on either track is the answer and the end of
+    /// the task.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self { text: text.into(), calls: Vec::new() }
+    }
+
+    /// A reply that carried calls and nothing else, which is the ordinary shape
+    /// of a working step on the tool track.
+    pub fn calls(calls: Vec<ToolCall>) -> Self {
+        Self { text: String::new(), calls }
     }
 }
 
@@ -203,7 +268,13 @@ pub trait Watcher: Send + Sync {
     /// The log, when the user has asked for one. Written whole, once per attempt.
     fn logged_request(&self, _body: &serde_json::Value) {}
     fn logged_reasoning(&self, _text: &str) {}
-    fn logged_response(&self, _text: &str) {}
+    /// The answer, whole: the prose AND whatever it asked to call.
+    ///
+    /// Takes the reply rather than the text because on the tool track the text is
+    /// routinely empty -- the commands are in `calls`, and a log that recorded
+    /// only the prose recorded a model that said nothing and then, somehow, ran
+    /// five things.
+    fn logged_response(&self, _reply: &Reply) {}
 }
 
 /// A watcher that wants none of it. What a test uses when it only wants the text.
@@ -223,9 +294,12 @@ pub struct CompletionRequest {
     pub timeout_ms: u64,
     pub cancel: super::cancel::Cancel,
     pub watcher: Arc<dyn Watcher>,
+    /// What the model may call. Empty asks for the JSON protocol instead, which
+    /// is also what an endpoint that refused the field gets on the second try.
+    pub tools: Vec<ToolSpec>,
 }
 
-pub type Completion<'a> = Pin<Box<dyn Future<Output = Result<String, LlmError>> + Send + 'a>>;
+pub type Completion<'a> = Pin<Box<dyn Future<Output = Result<Reply, LlmError>> + Send + 'a>>;
 
 pub trait LlmProvider: Send + Sync {
     /// Shown in error messages so the user knows which path failed.

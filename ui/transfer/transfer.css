@@ -59,15 +59,18 @@ input {
   transition: border-color .12s ease, box-shadow .12s ease;
 }
 
-select {
-  height: 28px;
-  padding: 0 8px;
-  color: var(--tx);
-  background: var(--bg-inset);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-sm);
-  font: inherit;
-  font-size: var(--fs-sm);
+/*
+ * The one dropdown on this page wears `.c-field` and the `.c-select` shell from
+ * shared/components.css now, like every other dropdown in the window. What was
+ * here was a second field definition: 28px against the shared 30px, 8px of
+ * padding against 10px, and -- once the shell arrived -- no room reserved for
+ * the chevron, so the glyph sat on top of the encoding name.
+ *
+ * The height is the one thing this page still has an opinion about: the picker
+ * shares a row with the preview's buttons, which are 26px.
+ */
+select.c-field {
+  height: 26px;
   cursor: pointer;
 }
 
@@ -360,6 +363,19 @@ button:focus-visible,
 .ic-data { color: var(--syn-yellow); }
 .ic-archive { color: var(--syn-purple); }
 .ic-binary { color: var(--syn-red); }
+.ic-image { color: var(--syn-teal); }
+/*
+ * A symlink is the one row whose colour is not about what the file is -- it is
+ * about the row not knowing. `--syn-sky` rather than `--syn-blue`, so a link
+ * standing next to a directory is a different blue and not the same one.
+ */
+.ic-link { color: var(--syn-sky); }
+/*
+ * Two kinds share the dim ink, and on purpose. Prose and "no idea" are the two
+ * cases where the colour has nothing to add -- everything above is a hue
+ * because it is a category, and these two are the absence of one. The shapes
+ * still differ: a page with lines in it, and a page without.
+ */
 .ic-doc { color: var(--tx-dim); }
 .ic-plain { color: var(--tx-dim); }
 

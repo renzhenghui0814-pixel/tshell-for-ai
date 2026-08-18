@@ -204,8 +204,6 @@
         ...(state.aiEnabled ? [[text('agentTitle'), () => post('openAssistant', { groupId: group.id, serverId: server.id }), 'ai']] : []),
         '-',
         [text('edit'), () => openServerDialog(group.id, server), 'edit'],
-        // What the assistant remembers is only on offer while there is one.
-        ...(state.aiEnabled ? [[text('memoryTitle'), () => post('openMemory', { serverId: server.id }), 'memory']] : []),
         '-',
         [text('delete'), () => post('requestDeleteServer', { groupId: group.id, serverId: server.id }), 'trash', true]
       ]);

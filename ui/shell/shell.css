@@ -83,26 +83,6 @@ body {
   pointer-events: none;
 }
 
-/*
- * Centred on the window, not on what is left between the two clusters -- those
- * are different widths and always will be. The container itself is transparent
- * to the pointer so the bar around the buttons still drags the window.
- */
-.titlebar-center {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  pointer-events: none;
-}
-
-.titlebar-center .chrome-button {
-  pointer-events: auto;
-  margin-right: 0;
-}
-
 /* The window's own two switches, beside the name. A little air after the
  * version so they read as a pair of controls rather than more of the title. */
 .titlebar-tools {
@@ -141,24 +121,6 @@ body {
   outline: none;
   box-shadow: 0 0 0 2px var(--ac-ring);
 }
-
-/*
- * The two terminal actions keep colours of their own: everything else on this
- * bar is chrome, and these two are the only things on it that *do* something to
- * the tab in front. Violet for the assistant; green for the transfer, which is
- * the same green the status dot uses for a live connection.
- */
-.chrome-button.accent-ai { color: var(--ai); }
-.chrome-button.accent-transfer { color: var(--ok); }
-
-/*
- * They keep their colour under the pointer. The base rule brightens a chrome
- * button towards `--tx` on hover, which for these two meant the one thing that
- * identifies them draining away at the moment of reaching for them; only the
- * backing plate should change.
- */
-.chrome-button.accent-ai:hover { color: var(--ai); }
-.chrome-button.accent-transfer:hover { color: var(--ok); }
 
 /* Dimmed in place: a bar whose buttons come and go is a bar that moves. */
 .chrome-button:disabled {
@@ -693,6 +655,88 @@ body.maximized .glyph-restore { display: block; }
 .modal-button:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--ac-ring);
+}
+
+/* ------------------------------------------------------------- host keys --- */
+
+/*
+ * The host key sheet is the same modal with more to say.
+ *
+ * Wider because a SHA256 fingerprint is 50-odd characters and wrapping the one
+ * thing on the sheet the user is supposed to compare against something else
+ * would be the one place wrapping actually costs something.
+ */
+.modal.hostkey {
+  width: min(520px, calc(100vw - 48px));
+}
+
+.hostkey-facts {
+  margin-top: 14px;
+  padding: 12px;
+  background: var(--bg-inset);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  display: grid;
+  gap: 7px;
+}
+
+.hostkey-row {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  gap: 10px;
+  align-items: baseline;
+  font-size: var(--fs-sm);
+}
+
+.hostkey-key {
+  color: var(--tx-dim);
+}
+
+.hostkey-value {
+  color: var(--tx);
+  overflow-wrap: anywhere;
+}
+
+/*
+ * Selectable, against the `user-select: none` the sheet sets on everything else.
+ * Reading a fingerprint off the screen and typing it somewhere is how people
+ * actually compare one, so it has to be copyable; the surrounding prose does not
+ * and would only get in the way of a drag that meant to start here.
+ */
+.hostkey-value.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  /* Several pinned fingerprints arrive newline-separated. */
+  white-space: pre-wrap;
+  user-select: text;
+  cursor: text;
+}
+
+/* The changed case earns the alarm; a first connection is not an alarm. */
+.modal.hostkey.changed .hostkey-facts {
+  background: var(--err-soft);
+  border-color: var(--err);
+}
+
+/*
+ * Why the question is being asked at all, when the reason is that the pinned-key
+ * file could not be read. Warning rather than error: nothing is broken about
+ * this connection, only about our memory of the last one.
+ */
+.hostkey-notice {
+  margin-top: 12px;
+  padding: 9px 11px;
+  background: var(--warn-soft);
+  border-radius: var(--r-sm);
+  color: var(--tx-dim);
+  font-size: var(--fs-xs);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+/* Three buttons do not fit the 78px floor on a narrow window. */
+.modal.hostkey .modal-button {
+  min-width: 0;
 }
 
 /* -------------------------------------------------------------- dragging --- */

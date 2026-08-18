@@ -14,21 +14,24 @@ use std::sync::{Arc, Mutex};
 use super::cancel::Cancel;
 use super::files::{FileOpError, FileRequest};
 use super::host::{AgentConfig, AgentHost};
-use super::llm::say::SayStreamer;
-use super::llm::{ChatMessage, CompletionRequest, LlmError, LlmFailure, TokenUsage, TransportInfo, Watcher};
+use super::llm::{
+    ChatMessage, CompletionRequest, LlmError, LlmFailure, Reply, TokenUsage, TransportInfo, Watcher,
+};
 use super::moves::TransferRequest;
-use super::parse::{is_prose, parse_actions};
+use super::parse::{carries_action, parse_actions, ParsedReply};
+use super::llm::ToolCall;
+use super::tools::{action_from_call, tool_specs};
 use super::policy::command::Verdict;
 use super::policy::path::PathVerdict;
 use super::prompt::{
     describe_memory, describe_result, describe_skill_failure, estimate_tokens, fold_output,
     fold_skill, skill_header, skill_key_of, KEEP_RECENT, MAX_FACT_CHARS,
 };
-use super::store::memory::{AppendOutcome, RemoveOutcome};
+use super::store::memory::AppendOutcome;
 use super::store::skill::MAIN_FILE;
 use super::types::{
-    ActionKind, AgentAction, AgentEvent, AgentMode, MemoryOpKind, MemoryOutcome, MemoryScope,
-    SkillOutcome, Unconfirmed,
+    ActionKind, AgentAction, AgentEvent, AgentMode, MemoryOutcome, MemoryScope, SkillOutcome,
+    Unconfirmed,
 };
 
 /// What one request told the session while it was in flight.
@@ -84,7 +87,7 @@ impl<H: AgentHost + 'static> Watcher for StepWatcher<H> {
      * would do next.
      */
     fn salvage_reasoning(&self, text: &str) -> bool {
-        !is_prose(text)
+        carries_action(text)
     }
     fn truncated(&self) {
         self.cut_off.store(true, Ordering::SeqCst);
@@ -114,8 +117,86 @@ impl<H: AgentHost + 'static> Watcher for StepWatcher<H> {
     fn logged_reasoning(&self, text: &str) {
         self.log.reasoning(text);
     }
-    fn logged_response(&self, text: &str) {
+    fn logged_response(&self, reply: &Reply) {
+        // The same rendering the conversation itself gets, so what the log shows
+        // the model asking for and what the next request carries are one thing.
+        let text = &transcribe_reply(reply);
         self.log.response(text);
+    }
+}
+
+/// One tool call written back out as the JSON object it stands for.
+///
+/// Serialised rather than formatted so that a value the model wrote -- a file
+/// full of quotes and newlines -- survives into the history exactly. Arguments
+/// that will not parse are kept as the text they were: this is a record of what
+/// was asked for, and a record that silently dropped the unreadable part would be
+/// the wrong record to read back when working out what went wrong.
+fn render_call(call: &ToolCall) -> String {
+    let verb = call.name.trim().to_lowercase();
+    match super::parse::read_object(call.arguments.trim()) {
+        Some(mut record) => {
+            record.insert("action".into(), serde_json::Value::String(verb));
+            serde_json::to_string(&serde_json::Value::Object(record))
+                .unwrap_or_else(|_| call.arguments.clone())
+        }
+        None => format!("{{\"action\":\"{verb}\",\"arguments\":{}}}",
+            serde_json::to_string(&call.arguments).unwrap_or_else(|_| "\"\"".into())),
+    }
+}
+
+/// The reply as the conversation should remember it.
+///
+/// A tool call is written back out as the JSON object it is equivalent to, so
+/// that a history read a week later shows the same thing whichever track produced
+/// it -- and so that a task which started on one endpoint and continued on
+/// another does not look like it changed language halfway.
+///
+/// A free function because two callers need it and only one of them has a
+/// session: the loop, which puts this into the history, and the log's watcher,
+/// which writes the same words into the transcript. Those two agreeing is the
+/// point -- a log that disagreed with the context would be worse than no log.
+fn transcribe_reply(reply: &Reply) -> String {
+    if reply.calls.is_empty() {
+        return reply.text.clone();
+    }
+    let mut out = reply.text.trim().to_string();
+    for call in &reply.calls {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&render_call(call));
+    }
+    out
+}
+
+/// The transcript of one reply, for the log test that has no session to reach
+/// through.
+#[cfg(test)]
+pub fn transcribe_for_test(reply: &Reply) -> String {
+    transcribe_reply(reply)
+}
+
+/// One action named the way a label above its result should name it.
+///
+/// The verb plus the one field that says which of several similar calls this was:
+/// three `run`s in a batch are only distinguishable by their commands.
+fn describe_call(action: &AgentAction) -> String {
+    let verb = action.action.map(|kind| kind.tag()).unwrap_or("action");
+    let detail = action
+        .command
+        .clone()
+        .or_else(|| action.path.clone())
+        .or_else(|| action.name.clone())
+        .or_else(|| action.paths.first().cloned())
+        .unwrap_or_default();
+    if detail.is_empty() {
+        verb.to_string()
+    } else {
+        // Long enough to tell two commands apart, short enough that a batch of
+        // labels is not itself a wall of context.
+        let clipped: String = detail.chars().take(80).collect();
+        format!("{verb} {clipped}")
     }
 }
 
@@ -130,16 +211,16 @@ pub struct AgentSession<H: AgentHost> {
     /// a body away -- at that point the text really is gone, and refusing to
     /// reload it would be the bug rather than the saving.
     loaded: Mutex<HashSet<String>>,
-    /// A notice waiting to ride out on the next observation.
+    /// Results being collected, while a step is carrying out more than one action.
     ///
-    /// Only ever set for a reply that carried more than one action. The loop runs
-    /// one action per step and silently threw the rest away, which the model had
-    /// no way of knowing: it was told the first one's result and read that as the
-    /// result of everything it sent, so an edit it believed had landed had not.
-    dropped: Mutex<String>,
+    /// `None` outside a batch, which is every step on the JSON track and most of
+    /// them on the tool track too. See [`Self::flush_batch`].
+    gathering: Mutex<Option<Vec<String>>>,
     cancel: Mutex<Option<Cancel>>,
     running: AtomicBool,
-    log: Arc<super::store::log::LogSession>,
+    /// Swappable, because a conversation gets a transcript of its own and a
+    /// panel may start several. See `Panel::new_chat`.
+    log: Mutex<Arc<super::store::log::LogSession>>,
 }
 
 impl<H: AgentHost + 'static> AgentSession<H> {
@@ -149,22 +230,31 @@ impl<H: AgentHost + 'static> AgentSession<H> {
             config: Mutex::new(config),
             messages: Mutex::new(Vec::new()),
             loaded: Mutex::new(HashSet::new()),
-            dropped: Mutex::new(String::new()),
+            gathering: Mutex::new(None),
             cancel: Mutex::new(None),
             running: AtomicBool::new(false),
-            log: Arc::new(super::store::log::LogSession::inactive()),
+            log: Mutex::new(Arc::new(super::store::log::LogSession::inactive())),
         }
     }
 
-    pub fn with_log(mut self, log: Arc<super::store::log::LogSession>) -> Self {
-        self.log = log;
-        self
+    /// Points this session at a different transcript, for the conversation that
+    /// has just replaced the last one.
+    pub fn set_log(&self, log: Arc<super::store::log::LogSession>) {
+        *self.log.lock().unwrap() = log;
     }
 
     /// How the model should answer "what are you?", taken from whichever endpoint
     /// is currently wired in.
     pub fn describe_provider(&self) -> String {
         self.config.lock().unwrap().provider.describe()
+    }
+
+    /// The conversation as it stands, for tests that assert on what the model
+    /// will be handed next -- which is where the difference between the two
+    /// tracks actually shows up.
+    #[cfg(test)]
+    pub fn messages_for_test(&self) -> Vec<ChatMessage> {
+        self.messages.lock().unwrap().clone()
     }
 
     pub fn is_running(&self) -> bool {
@@ -252,16 +342,6 @@ impl<H: AgentHost + 'static> AgentSession<H> {
         }
 
         self.running.store(false, Ordering::SeqCst);
-        /*
-         * The notice belongs to the task that raised it and dies with it.
-         *
-         * It is only ever consumed by the next observation, and a task that ended
-         * on "say", "ask" or "done" made no further observation -- so the notice
-         * sat here until some later task, minutes or days away, made one. It then
-         * arrived attached to an unrelated command's output, telling the model
-         * that actions it had never sent were discarded.
-         */
-        self.dropped.lock().unwrap().clear();
         *self.cancel.lock().unwrap() = None;
         self.host.emit(AgentEvent::Idle);
     }
@@ -269,24 +349,6 @@ impl<H: AgentHost + 'static> AgentSession<H> {
     async fn steps(&self, cancel: &Cancel) -> Result<(), LlmError> {
         let mut repairs = 0;
         let mut blanks = 0;
-        /*
-         * Whether this task has actually carried something out yet.
-         *
-         * What separates "the model answered a question" from "the model narrated
-         * a step and forgot to send it". Before the first action either reading is
-         * possible and the generous one is right; after it, a reply with no action
-         * in it has left the task hanging. Deliberately not `step > 0`, which also
-         * counts the rounds spent nudging a model back to the protocol -- those
-         * carried nothing out and must not make prose look like a lost step.
-         */
-        let mut acted = false;
-        /*
-         * One narration is worth asking about. Two IN A ROW means the model meant
-         * it. In a row, like `repairs`, and for the same reason: two accidents
-         * twenty steps apart are two accidents.
-         */
-        let mut prose_nudges = 0;
-
         let max_steps = self.config.lock().unwrap().max_steps;
         // An unlimited task is the normal one: it ends when the work is done, when
         // the user stops it, or when the model gives up. The step limit is left in
@@ -308,7 +370,7 @@ impl<H: AgentHost + 'static> AgentSession<H> {
                 host: self.host.clone(),
                 billed: AtomicBool::new(false),
                 cut_off: AtomicBool::new(false),
-                log: self.log.clone(),
+                log: self.log.lock().unwrap().clone(),
             });
             let (system, timeout_ms) = {
                 let config = self.config.lock().unwrap();
@@ -320,6 +382,15 @@ impl<H: AgentHost + 'static> AgentSession<H> {
                 timeout_ms,
                 cancel: cancel.clone(),
                 watcher: watcher.clone(),
+                /*
+                 * Offered every step, and offered to every endpoint. Whether they
+                 * survive is the transport's business: one that rejects the field
+                 * has the request sent again without it, remembers the refusal for
+                 * the window, and the model answers in the JSON protocol the
+                 * system prompt still describes. Nothing here has to know which
+                 * track it got -- `reply.calls` is empty either way.
+                 */
+                tools: tool_specs(self.host.memory_enabled(), self.host.skills_enabled()),
             };
 
             // The handle is taken and the lock let go before the request starts:
@@ -372,7 +443,11 @@ impl<H: AgentHost + 'static> AgentSession<H> {
                         .sum::<u32>();
                 self.host.emit(AgentEvent::Usage {
                     prompt,
-                    completion: estimate_tokens(&reply),
+                    // The transcript rather than the prose: on the tool track the
+                    // calls are most of what the model actually produced, and
+                    // billing the sentence in front of them would report a
+                    // fraction of the step.
+                    completion: estimate_tokens(&transcribe_reply(&reply)),
                     estimated: Some(true),
                 });
             }
@@ -380,210 +455,127 @@ impl<H: AgentHost + 'static> AgentSession<H> {
                 self.host.emit(AgentEvent::Stopped);
                 return Ok(());
             }
-            self.messages.lock().unwrap().push(ChatMessage::assistant(&reply));
+            /*
+             * What went into the history, which is not always what came back.
+             *
+             * On the JSON track the two are the same text. On the tool track the
+             * model's calls arrived beside its prose in a field of their own, and
+             * a history holding only the prose would show the model announcing
+             * work with no record of having asked for it -- so the calls are
+             * written out as the objects they are equivalent to. Both tracks then
+             * read back identically, days later, out of the chat store.
+             */
+            let spoken = transcribe_reply(&reply);
+            self.messages.lock().unwrap().push(ChatMessage::assistant(&spoken));
 
             // The reply as it was written is already in the log, put there by the
             // provider that received it. What this client made of it is visible in
             // the thread, and in what the next request carries.
-            let parsed = parse_actions(&reply);
+            let ParsedReply { actions, unreadable, prose } = self.read_reply(&reply);
+
             /*
-             * A reply whose FIRST action would not parse runs nothing at all.
+             * A reply asking for nothing is the answer, and the task is over.
              *
-             * Running the next one instead is what this used to do, and it was the
-             * worst of the three possible outcomes. The model meant "say this,
-             * then run that"; the say was lost to a real line break inside its
-             * string, so the command ran, the sentence never appeared, and the
-             * model carried on believing the user had read it.
+             * Both tracks, for the same reason: the model had a channel for acting
+             * and did not use it, so what it wrote is what it meant. The nudge that
+             * used to follow prose on the JSON track cost a whole extra request and
+             * produced a second card under an answer the user had already read --
+             * it was telling the model "NOTHING happened" while drawing that same
+             * reply to the user as the answer, and one of those two had to be wrong.
              */
-            let action = if parsed.leading { None } else { parsed.actions.first().cloned() };
-            /*
-             * One step is one action, and a reply that carried more has just had
-             * the rest dropped. Saying so is the whole fix: the model was told the
-             * first one's result and read it as the result of everything it sent.
-             */
-            let total = parsed.actions.len() + parsed.unreadable as usize;
-            if action.is_some() && total > 1 {
-                let unparsed = if parsed.unreadable > 0 {
-                    format!(", {} of which could not be parsed as JSON", parsed.unreadable)
-                } else {
-                    String::new()
-                };
-                *self.dropped.lock().unwrap() = format!(
-                    "[tshell client notice -- not from the user. Do not reply to this message, do \
-                     not apologise.] Your last reply carried {total} actions{unparsed}. One step \
-                     is ONE action: only the first was carried out and the rest were discarded. \
-                     The result below is that first action alone. Send the next one on its own, \
-                     and do not assume any of the others happened."
-                );
+            if actions.is_empty() && !unreadable {
+                self.host.emit(AgentEvent::Reply { text: prose });
+                /*
+                 * A reply that ran out of room is shown and then said to be short.
+                 * Not retried: the ceiling that stopped it is still there. Not
+                 * hidden either -- the text stops mid-sentence, and a reader who is
+                 * not told why is left thinking the assistant froze.
+                 */
+                if cut_off {
+                    self.emit_truncated();
+                }
+                return Ok(());
             }
 
-            let Some(action) = action else {
-                match self.handle_no_action(&reply, acted, cut_off, &mut prose_nudges) {
-                    NoAction::Done => return Ok(()),
-                    NoAction::Continue => {
-                        step += 1;
-                        continue;
-                    }
-                    NoAction::Nudge => {}
-                }
+            /*
+             * A reply whose action would not parse runs nothing at all.
+             *
+             * The prose before it is not the answer either: the model wrote it on
+             * the way to doing something, and the something is what was lost. So
+             * the step is spent asking for the action again rather than drawing
+             * half a turn and stopping.
+             */
+            if unreadable {
                 repairs += 1;
                 if repairs > 1 {
                     self.host.emit(AgentEvent::Error {
-                        message: "The model did not reply with a single JSON object, twice in a row."
+                        message: "The model did not reply with a readable action, twice in a row."
                             .into(),
                         code: Some("protocol".into()),
                     });
                     return Ok(());
                 }
-                self.observe(&protocol_nudge(parsed.leading, parsed.actions.len(), cut_off));
+                self.observe(&protocol_nudge(cut_off));
                 step += 1;
                 continue;
-            };
+            }
 
-            // Both counters are about a run of bad replies, and this is the line
-            // that says the run is over: something parsed and is about to be
+            // A run of bad replies is over: something parsed and is about to be
             // carried out.
             repairs = 0;
-            prose_nudges = 0;
-
-            let kind = action.action.unwrap_or(ActionKind::Say);
-            match kind {
-                ActionKind::Say => {
-                    let text = action
-                        .text
-                        .clone()
-                        .or_else(|| action.summary.clone())
-                        .unwrap_or_default();
-                    self.host.emit(AgentEvent::Reply { text });
-                    return Ok(());
-                }
-                ActionKind::Ask => {
-                    self.host.emit(AgentEvent::Question {
-                        question: action.question.clone().unwrap_or_default(),
-                    });
-                    return Ok(());
-                }
-                ActionKind::Done => {
-                    self.host.emit(AgentEvent::Summary {
-                        summary: action.summary.clone().unwrap_or_default(),
-                    });
-                    return Ok(());
-                }
-                _ => {}
-            }
 
             /*
-             * Past here the step carries something out, which is what makes a
-             * later reply with no action in it a lost step rather than an answer.
-             * Set before the work rather than after it: an action that fails, is
-             * refused or is declined has still been taken.
+             * A batch gathers its results and reports them as one turn.
+             *
+             * Every action pushes an observation, and a batch of three pushed
+             * three user messages in a row -- which reads to the model as the user
+             * having spoken three times, and leaves the results with nothing
+             * saying which call each belonged to. So for a batch the observations
+             * are collected and joined, labelled by call. A single action is
+             * untouched by any of this and still pushes its result the moment it
+             * has one.
              */
-            acted = true;
+            let batch = actions;
+            if batch.len() > 1 {
+                *self.gathering.lock().unwrap() = Some(Vec::new());
+            }
+
             /*
              * What the model said on its way to acting, shown before the card it
-             * drew. Deliberately below the three spoken verbs rather than above
-             * them: for those the text field IS the answer and it is already being
-             * streamed into a bubble.
+             * drew. Once for the step rather than once per action: it is one
+             * sentence about everything that follows.
              */
-            if !parsed.preamble.is_empty() {
-                self.host.emit(AgentEvent::Reply { text: parsed.preamble.clone() });
+            if !prose.is_empty() {
+                self.host.emit(AgentEvent::Reply { text: prose });
             }
 
-            if kind.as_file_op().is_some() {
-                self.run_file_action(&action, cancel).await;
-            } else if kind.as_memory_op().is_some() {
-                self.run_memory_action(&action).await;
-            } else if kind == ActionKind::Skill {
-                self.run_skill_action(&action).await;
-            } else if kind.as_transfer().is_some() {
-                self.run_transfer_action(&action, cancel).await;
-            } else {
-                self.run_command_action(&action, cancel).await;
+            for action in &batch {
+                if cancel.is_cancelled() {
+                    self.flush_batch(&batch);
+                    self.host.emit(AgentEvent::Stopped);
+                    return Ok(());
+                }
+
+                let kind = action.action.expect("a verb, or it would not be an action");
+                if kind.as_file_op().is_some() {
+                    self.run_file_action(action, cancel).await;
+                } else if kind == ActionKind::Remember {
+                    self.run_memory_action(action).await;
+                } else if kind == ActionKind::Skill {
+                    self.run_skill_action(action).await;
+                } else if kind.as_transfer().is_some() {
+                    self.run_transfer_action(action, cancel).await;
+                } else {
+                    self.run_command_action(action, cancel).await;
+                }
             }
+
+            self.flush_batch(&batch);
             step += 1;
         }
 
         self.host.emit(AgentEvent::StepLimit { steps: max_steps });
         Ok(())
-    }
-
-    /// What to do with a reply that carried no action this step could run.
-    fn handle_no_action(
-        &self,
-        reply: &str,
-        acted: bool,
-        cut_off: bool,
-        prose_nudges: &mut u32,
-    ) -> NoAction {
-        /*
-         * Prose is an answer -- until the task has started, after which it is a
-         * step that lost its action.
-         *
-         * Before anything has been carried out, a reply with nothing action-shaped
-         * in it was never an attempt at the protocol: it is the model talking,
-         * because the question it was asked wanted an answer rather than a
-         * command. Once an action HAS run, the same shape means the model
-         * announced its next move and never sent it.
-         */
-        if is_prose(reply) {
-            self.host.emit(AgentEvent::Reply { text: reply.trim().to_string() });
-            if acted && *prose_nudges == 0 {
-                *prose_nudges += 1;
-                self.observe(
-                    "[tshell client notice -- not from the user, who saw none of this. Do not \
-                     reply to this message and do not apologise.] That reply described what you \
-                     were about to do but did not carry the action that does it, so NOTHING \
-                     happened and the task is still waiting on you. Send that action now, as \
-                     exactly one JSON object and nothing else. If the work is genuinely finished, \
-                     send {\"action\":\"done\",\"summary\":\"...\"}. If you need a decision only \
-                     the user can make, send {\"action\":\"ask\",\"question\":\"...\"}.",
-                );
-                return NoAction::Continue;
-            }
-            /*
-             * A reply that ran out of room is shown and then said to be short. Not
-             * retried: the ceiling that stopped it is still there. Not hidden
-             * either -- the text stops mid-sentence, and a reader who is not told
-             * why is left thinking the assistant froze.
-             */
-            if cut_off {
-                self.emit_truncated();
-            }
-            return NoAction::Done;
-        }
-
-        /*
-         * An answer whose object never closed is kept, not thrown away.
-         *
-         * Far more often than running out of room, the model simply finishes its
-         * sentence and forgets the closing `"}`. Salvaged through the streamer for
-         * two reasons: it decodes the open string exactly as the panel already
-         * painted it, and it yields nothing at all for a verb not addressed to the
-         * user -- so an unterminated `write` or `run` falls through to the nudge.
-         * Half a file's content must never become a whole instruction.
-         */
-        let mut streamer = SayStreamer::new();
-        let partial = streamer.push(reply).trim().to_string();
-        /*
-         * Only when the string was still open at the end of the reply. Without
-         * that condition this also fires on a bare `"` inside the text, which
-         * closes the string early and leaves the rest of the reply after it --
-         * handing the user the handful of words before the stray quote as though
-         * they were the answer.
-         */
-        if !partial.is_empty() && streamer.unterminated() {
-            self.host.emit(AgentEvent::Reply { text: partial });
-            // Only when the room really did run out. The far commoner case is a
-            // finished sentence missing its brace, and telling the reader that
-            // stops mid-sentence -- when it plainly does not -- would teach them
-            // to distrust the notice on the occasions it is true.
-            if cut_off {
-                self.emit_truncated();
-            }
-            return NoAction::Done;
-        }
-
-        NoAction::Nudge
     }
 
     fn emit_truncated(&self) {
@@ -895,33 +887,26 @@ impl<H: AgentHost + 'static> AgentSession<H> {
         false
     }
 
-    /// One step of the loop, for the two actions that change what is remembered.
+    /// One step of the loop, for the action that files a durable fact.
     ///
     /// The shortest step there is: no machine, no plan, no confirmation. It is
     /// worth being a step at all rather than something inferred afterwards because
     /// the model decides what is worth keeping while it still has the reason in
-    /// front of it, and because the result has to come back -- a full scope or a
-    /// line that matched nothing is something it must act on.
+    /// front of it, and because the result has to come back -- a full scope is
+    /// something it must act on.
+    ///
+    /// There is no verb for the other direction. A line that stopped being true is
+    /// the user's to drop, in the memory panel, where they can see everything that
+    /// is filed about a machine at once -- a model deleting the user's own notes on
+    /// its own initiative is a change nobody is watching being made.
     async fn run_memory_action(&self, action: &AgentAction) {
-        let op = action.action.and_then(ActionKind::as_memory_op).expect("a memory verb");
         let scope = action.scope.unwrap_or(MemoryScope::Server);
         let text = action.text.clone().unwrap_or_default();
 
         if !self.host.memory_enabled() {
             self.observe(
-                "Memory is switched off for this setup, so nothing was stored. Carry on without \
-                 it, and do not try again.",
+                "Memory is switched off for this setup, so nothing was stored. Carry on without                  it, and do not try again.",
             );
-            return;
-        }
-        if text.trim().is_empty() {
-            self.observe(&format!(
-                "The {} action needs a non-empty \"text\". Send it again with the fact on one line.",
-                match op {
-                    MemoryOpKind::Remember => "remember",
-                    MemoryOpKind::Forget => "forget",
-                }
-            ));
             return;
         }
         /*
@@ -930,14 +915,10 @@ impl<H: AgentHost + 'static> AgentSession<H> {
          * transcribed paragraph that cannot misread a genuine fact, and refusing
          * is safe either way, because the answer sends the model back to write a
          * shorter one rather than stopping the task.
-         *
-         * Only `remember` is measured. `forget` names a line that is already in
-         * the file, so a long one there is the user's own writing being matched.
          */
         let length = text.chars().count();
-        if op == MemoryOpKind::Remember && length > MAX_FACT_CHARS {
+        if length > MAX_FACT_CHARS {
             self.host.emit(AgentEvent::Memory {
-                op,
                 scope,
                 text: text.clone(),
                 outcome: MemoryOutcome::Oversize,
@@ -948,45 +929,29 @@ impl<H: AgentHost + 'static> AgentSession<H> {
                     "NOT stored: that line is {length} characters and a remembered fact must be under"
                 ),
                 format!(
-                    "{MAX_FACT_CHARS}. A line that long is a piece of command output written out, \
-                     not a fact"
+                    "{MAX_FACT_CHARS}. A line that long is a piece of command output written out,                      not a fact"
                 ),
-                "about how this setup is put together. Either boil it down to one short sentence \
-                 that"
+                "about how this setup is put together. Either boil it down to one short sentence                  that"
                     .into(),
-                "would still be true if you had run nothing today, or drop it and put it in your \
-                 answer"
+                "would still be true if you had run nothing today, or drop it and put it in your                  answer"
                     .into(),
                 "to the user instead. Do not send this line again. This does not block the task."
                     .into(),
             ]
-            .join("\n"));
+            .join("
+"));
             return;
         }
 
-        let (outcome, token) = match op {
-            MemoryOpKind::Remember => {
-                let result = self.host.remember(scope, &text).await;
-                let outcome = match result.outcome {
-                    AppendOutcome::Ok => MemoryOutcome::Ok,
-                    AppendOutcome::Duplicate => MemoryOutcome::Duplicate,
-                    AppendOutcome::Full => MemoryOutcome::Full,
-                    AppendOutcome::Failed => MemoryOutcome::Failed,
-                };
-                (outcome, result.token)
-            }
-            MemoryOpKind::Forget => {
-                let outcome = match self.host.forget(scope, &text).await {
-                    RemoveOutcome::Ok => MemoryOutcome::Ok,
-                    RemoveOutcome::Missing => MemoryOutcome::Missing,
-                    RemoveOutcome::Ambiguous => MemoryOutcome::Ambiguous,
-                    RemoveOutcome::Failed => MemoryOutcome::Failed,
-                };
-                (outcome, None)
-            }
+        let result = self.host.remember(scope, &text).await;
+        let outcome = match result.outcome {
+            AppendOutcome::Ok => MemoryOutcome::Ok,
+            AppendOutcome::Duplicate => MemoryOutcome::Duplicate,
+            AppendOutcome::Full => MemoryOutcome::Full,
+            AppendOutcome::Failed => MemoryOutcome::Failed,
         };
-        self.host.emit(AgentEvent::Memory { op, scope, text, outcome, token });
-        self.observe(&describe_memory(op, scope, outcome));
+        self.host.emit(AgentEvent::Memory { scope, text, outcome, token: result.token });
+        self.observe(&describe_memory(scope, outcome));
     }
 
     /// One step of the loop, for the action that pulls a written procedure in.
@@ -1080,16 +1045,65 @@ impl<H: AgentHost + 'static> AgentSession<H> {
 
     /// Feeds an observation back as the next user turn, which is what drives the
     /// loop.
-    ///
-    /// A dropped-actions notice rides on the front of the next one rather than
-    /// going in as a turn of its own, so the model never receives two user
-    /// messages in a row -- and so the warning arrives attached to the result it
-    /// qualifies.
     fn observe(&self, text: &str) {
-        let notice = std::mem::take(&mut *self.dropped.lock().unwrap());
-        let content =
-            if notice.is_empty() { text.to_string() } else { format!("{notice}\n\n{text}") };
-        self.messages.lock().unwrap().push(ChatMessage::user(content));
+        // Mid-batch this is held rather than pushed; `flush_batch` sends the lot
+        // as one turn. Outside a batch -- which is every step on the JSON track --
+        // nothing about this changed.
+        if let Some(gathering) = self.gathering.lock().unwrap().as_mut() {
+            gathering.push(text.to_string());
+            return;
+        }
+        self.messages.lock().unwrap().push(ChatMessage::user(text));
+    }
+
+    /// Turns a batch's gathered results into the one turn the model reads.
+    ///
+    /// Labelled by call, because a model that asked three things at once and got
+    /// three answers in a row has no other way to tell which is which -- and
+    /// guessing wrongly about that is worse than not having asked in parallel at
+    /// all. Idempotent: a step that was never a batch has nothing gathered and
+    /// this does nothing.
+    fn flush_batch(&self, batch: &[AgentAction]) {
+        let Some(results) = self.gathering.lock().unwrap().take() else { return };
+        if results.is_empty() {
+            return;
+        }
+        let total = results.len();
+        let joined = results
+            .into_iter()
+            .enumerate()
+            .map(|(index, result)| {
+                let what = batch
+                    .get(index)
+                    .map(describe_call)
+                    .unwrap_or_else(|| "action".to_string());
+                format!("[{} of {total} -- {what}]\n{result}", index + 1)
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        self.observe(&joined);
+    }
+
+    /// What one reply amounted to, whichever track it came back on.
+    fn read_reply(&self, reply: &Reply) -> ParsedReply {
+        if reply.calls.is_empty() {
+            return parse_actions(&reply.text);
+        }
+
+        let actions: Vec<AgentAction> = reply.calls.iter().filter_map(action_from_call).collect();
+        ParsedReply {
+            /*
+             * One call this build cannot read stops the whole batch, the same way
+             * one unreadable object does on the other track. A model that said
+             * "read this, then change that" and lost the reading must not have the
+             * change carried out on its own.
+             */
+            unreadable: actions.len() != reply.calls.len(),
+            actions,
+            // Whatever it wrote alongside the calls. On this track it is ordinary
+            // prose rather than something taken off the end of an object.
+            prose: reply.text.trim().to_string(),
+        }
     }
 
     /// Folds the oldest command output away once the conversation outgrows its
@@ -1159,15 +1173,6 @@ impl<H: AgentHost + 'static> AgentSession<H> {
     }
 }
 
-enum NoAction {
-    /// The task is over; the reply was the answer.
-    Done,
-    /// A nudge has already been queued; go round again.
-    Continue,
-    /// Nothing usable at all; the protocol nudge below applies.
-    Nudge,
-}
-
 fn kind_tag(kind: super::types::TransferKind) -> &'static str {
     match kind {
         super::types::TransferKind::Upload => "upload",
@@ -1183,27 +1188,13 @@ fn kind_tag(kind: super::types::TransferKind) -> &'static str {
 /// That apology is a valid "say" and lands in the thread as a reply out of
 /// nowhere. The rule for anything the client says to the model about itself: name
 /// the sender, say what to do, forbid the acknowledgement.
-fn protocol_nudge(leading: bool, followed: usize, cut_off: bool) -> String {
-    let opening = if leading {
-        // Naming what was thrown away is what stops the resend being a different
-        // reply. A model told only "that did not parse" tends to send the tail it
-        // can still see -- the command -- and drop the sentence that came before
-        // it, which is the one that failed.
-        let tail = if followed > 0 {
-            format!(" -- not it, and not the {followed} that followed it")
-        } else {
-            String::new()
-        };
-        format!(
-            "The FIRST action in your last reply could not be parsed as JSON, so NOTHING was \
-             carried out{tail}. Send that action again, on its own and correctly escaped. "
-        )
-    } else {
-        "Your last reply could not be parsed as a JSON object. Send the SAME thing again as \
-         exactly one JSON object and nothing else -- if it was an answer for the user, it goes in \
-         {\"action\":\"say\",\"text\":\"...\"}. "
-            .to_string()
-    };
+fn protocol_nudge(cut_off: bool) -> String {
+    // Naming what was thrown away is what stops the resend being a different
+    // reply. A model told only "that did not parse" tends to send the tail it can
+    // still see -- the command -- and drop the sentence that came before it,
+    // which is the one that failed.
+    let opening = "The action at the end of your last reply could not be parsed as JSON, so \
+                   NOTHING was carried out. Send it again, on its own and correctly escaped. ";
 
     /*
      * A reply that was cut off is told so, and told nothing else. Its JSON is
