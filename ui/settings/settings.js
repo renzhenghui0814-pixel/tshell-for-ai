@@ -49,9 +49,9 @@
       resetAccept: '恢复',
       schemeBroken: '方案文件读不了，现在用的是内置方案。在你修好它之前这里不会写入，以免覆盖掉里面的东西。{0}',
       palette: '窗口配色',
-      paletteHint: '深浅两套各十五个颜色，其余的（悬停、描边、强调色上的文字、焦点环）由它们算出来。没改过的颜色不写进文件，跟随产品更新',
-      paletteSurface: '底色，由低到高',
-      paletteInk: '文字与强调',
+      paletteHint: '深浅两套各十八个颜色，其余的（悬停、描边、填充上的文字、焦点环）由它们算出来。没改过的颜色不写进文件，跟随产品更新',
+      paletteSurface: '底色与填充',
+      paletteInk: '文字',
       paletteMeaning: '语义色',
       paletteReset: '恢复默认',
       paletteResetTitle: '恢复默认配色',
@@ -67,23 +67,40 @@
       paletteOn: '{0} 压在 {1} 上',
       paletteSample: '示例文字 Aa 0123',
       paletteSampleDim: '次一级的说明文字',
-      paletteBgInset: '凹陷（输入框、代码块）',
-      paletteBgBase: '主底色（窗口与终端）',
-      paletteBgElev: '侧栏、标题栏、状态栏',
-      paletteBgRaise: '卡片与当前标签',
-      paletteBgRaiseHi: '已抬起之物的悬停',
-      paletteBgFloat: '对话框与菜单',
+      paletteBgInput: '输入框',
+      paletteBgCode: '代码块与命令输出',
+      paletteBgBase: '面板底色（也是终端的）',
+      paletteBgElev: '窗口底色（标题栏与缝隙）',
+      paletteBgTab: '当前标签',
+      paletteBgCard: '卡片',
+      paletteBgDialog: '对话框',
+      paletteBgMenu: '菜单',
+      paletteAc: '强调色',
+      paletteChatUser: '用户消息',
+      paletteProgress: '传输进度条',
       paletteTx: '正文',
       paletteTxDim: '次级文字',
       paletteTxFaint: '极淡（只画线，不承载文字）',
-      paletteAc: '强调色',
       paletteOk: '成功',
       paletteWarn: '警告',
       paletteErr: '错误',
       paletteInfo: '链接与提示',
-      paletteAi: '助手',
       paletteAcTx: '强调色上的文字',
       paletteErrTx: '错误色上的文字',
+      paletteChatUserTx: '用户消息上的文字',
+      keysTitle: '快捷键',
+      keysHint: '在终端里按下也有效——组合键会被窗口拦下，不会发给远端的 shell',
+      keysReset: '恢复默认',
+      keysCapturing: '按下组合键，Esc 取消',
+      keysChange: '点击后按下新的组合键',
+      keysOpenTransfer: '打开文件传输',
+      keysOpenAssistant: '打开 AI 助手',
+      keysToggleFullscreen: '全屏 / 退出全屏',
+      keysNeedsShift: '{0} 不能用：除功能键外，快捷键必须带 Shift。不带 Shift 的组合是远端 shell 的——Ctrl+A 是行首、Ctrl+E 是行尾、Ctrl+R 是搜索历史，被窗口拿走就再也传不过去了',
+      keysNeedsModifier: '{0} 不能用：还需要 Ctrl、Alt 或 Meta 之一',
+      keysModifierOnly: '这只是一个修饰键，还需要一个主键',
+      keysBadShape: '这个按键认不出来，换一个',
+      keysTaken: '{0} 已经绑给「{1}」了',
       pickerField: '饱和度与明度，方向键微调',
       pickerHue: '色相',
       pickerHex: '十六进制颜色值',
@@ -130,9 +147,9 @@
       resetAccept: 'Restore',
       schemeBroken: 'The schemes file could not be read, so the built-in schemes are what you are looking at. Nothing here is saved until you fix it, so that whatever is in there is not written over. {0}',
       palette: 'Window palette',
-      paletteHint: 'Fifteen colours per half. The rest -- hovers, hairlines, the ink on an accent fill, the focus ring -- follow from them. A colour you never change is not stored, so it keeps up with the product',
-      paletteSurface: 'Surfaces, low to high',
-      paletteInk: 'Text and accent',
+      paletteHint: 'Eighteen colours per half. The rest -- hovers, hairlines, the ink on a fill, the focus ring -- follow from them. A colour you never change is not stored, so it keeps up with the product',
+      paletteSurface: 'Surfaces and fills',
+      paletteInk: 'Text',
       paletteMeaning: 'Meanings',
       paletteReset: 'Restore defaults',
       paletteResetTitle: 'Restore the palette',
@@ -148,23 +165,40 @@
       paletteOn: '{0} on {1}',
       paletteSample: 'Sample text Aa 0123',
       paletteSampleDim: 'the line under it',
-      paletteBgInset: 'Inset (inputs, code blocks)',
-      paletteBgBase: 'Base (the window and the terminal)',
-      paletteBgElev: 'Sidebar, title bar, status bar',
-      paletteBgRaise: 'Cards and the active tab',
-      paletteBgRaiseHi: 'Hover on something already raised',
-      paletteBgFloat: 'Dialogs and menus',
+      paletteBgInput: 'Input fields',
+      paletteBgCode: 'Code blocks and command output',
+      paletteBgBase: 'Panel surface (and the terminal)',
+      paletteBgElev: 'Window ground (title bar and the gaps)',
+      paletteBgTab: 'The tab in front',
+      paletteBgCard: 'Cards',
+      paletteBgDialog: 'Dialogs',
+      paletteBgMenu: 'Menus',
+      paletteAc: 'Accent',
+      paletteChatUser: 'User message',
+      paletteProgress: 'Transfer progress bar',
       paletteTx: 'Text',
       paletteTxDim: 'Secondary text',
       paletteTxFaint: 'Faint (hairlines only, never words)',
-      paletteAc: 'Accent',
       paletteOk: 'Success',
       paletteWarn: 'Warning',
       paletteErr: 'Error',
       paletteInfo: 'Links and hints',
-      paletteAi: 'Assistant',
       paletteAcTx: 'the ink on the accent',
       paletteErrTx: 'the ink on the error colour',
+      paletteChatUserTx: 'the ink on a user message',
+      keysTitle: 'Shortcuts',
+      keysHint: 'These work inside a terminal too -- the window takes the combination before it can be sent to the shell on the far end',
+      keysReset: 'Restore defaults',
+      keysCapturing: 'Press the combination; Esc to cancel',
+      keysChange: 'Click, then press the new combination',
+      keysOpenTransfer: 'Open file transfer',
+      keysOpenAssistant: 'Open the AI assistant',
+      keysToggleFullscreen: 'Full screen on and off',
+      keysNeedsShift: '{0} cannot be used: apart from the function keys, a shortcut has to include Shift. What it would otherwise take belongs to the shell on the far end -- Ctrl+A is the start of the line, Ctrl+E the end, Ctrl+R the history search -- and a key this window keeps is a key that never gets there',
+      keysNeedsModifier: '{0} cannot be used: it also needs Ctrl, Alt or Meta',
+      keysModifierOnly: 'That is only a modifier; it needs a key as well',
+      keysBadShape: 'That key was not recognised. Try another',
+      keysTaken: '{0} is already bound to "{1}"',
       pickerField: 'Saturation and value; arrow keys nudge',
       pickerHue: 'Hue',
       pickerHex: 'Hex colour value',
@@ -542,7 +576,7 @@
   }
 
   /*
-   * The window's palette: fifteen colours per half, and what they add up to.
+   * The window's palette: eighteen colours per half, and what they add up to.
    *
    * The other thirty tokens theme.css defines are not here, because they are
    * not decisions -- `palette.js` computes them from these, and it computes
@@ -591,15 +625,18 @@
     var monoOptions = document.getElementById('palette-monos');
 
     /*
-     * Which block each group of tokens is drawn into. Text and accent share
-     * one: three levels of ink and the colour that goes on top of them is one
-     * question -- what can be read here -- and splitting it would put the pair
-     * that has to be checked against each other in two different places.
+     * Which block each group of tokens is drawn into.
+     *
+     * The accent used to sit with the text, on the argument that ink and the
+     * colour under it are one question. It sits with the surfaces now, because
+     * the question it actually answers is the one the whole first block asks --
+     * this is a fill, what colour is it -- and because the ink that goes on it
+     * is not a decision at all: `--ac-tx` is derived, and the contrast list
+     * below reports it whether or not the swatch is nearby.
      */
     var boxes = {
       surface: document.getElementById('palette-surface'),
       text: document.getElementById('palette-ink'),
-      accent: document.getElementById('palette-ink'),
       meaning: document.getElementById('palette-meaning')
     };
 
@@ -614,7 +651,7 @@
     fontField.placeholder = text.paletteFontDefault;
     monoField.placeholder = text.paletteMonoDefault;
 
-    /* The name a person reads, for a token the stylesheet calls `--bg-raise-hi`. */
+    /* The name a person reads, for a token the stylesheet calls `--bg-dialog`. */
     function label(key) {
       return text['palette' + key.charAt(0).toUpperCase() + key.slice(1)] || key;
     }
@@ -816,12 +853,24 @@
      * Checking it would produce a warning that is always up, and a warning that
      * is always up is furniture.
      */
-    var PAIRS = [
-      ['tx', 'bgBase'], ['tx', 'bgElev'], ['tx', 'bgFloat'], ['tx', 'bgInset'],
-      ['txDim', 'bgBase'], ['txDim', 'bgElev'], ['txDim', 'bgFloat'],
-      ['ac', 'bgBase'], ['ok', 'bgBase'], ['warn', 'bgBase'],
-      ['err', 'bgBase'], ['info', 'bgBase'], ['ai', 'bgBase']
+    var SURFACES = [
+      'bgInput', 'bgCode', 'bgBase', 'bgElev',
+      'bgTab', 'bgCard', 'bgDialog', 'bgMenu'
     ];
+
+    /*
+     * Both levels of readable text on every surface, and not on the four that
+     * were listed back when there were six surfaces and four of them could not
+     * be reached separately anyway. Every one of the eight is its own decision
+     * now, which means every one of them can be taken somewhere `--tx-dim`
+     * cannot be read.
+     */
+    var PAIRS = SURFACES.map(function (ground) { return ['tx', ground]; })
+      .concat(SURFACES.map(function (ground) { return ['txDim', ground]; }))
+      .concat([
+        ['ac', 'bgBase'], ['ok', 'bgBase'], ['warn', 'bgBase'],
+        ['err', 'bgBase'], ['info', 'bgBase']
+      ]);
 
     function drawContrast() {
       var full = api.resolved(file, half);
@@ -833,11 +882,13 @@
       });
 
       /*
-       * The two derived pairs. They are the ones nobody can see coming: the ink
-       * on a fill is chosen by rule, and when the rule has nothing good to
+       * The three derived pairs. They are the ones nobody can see coming: the
+       * ink on a fill is chosen by rule, and when the rule has nothing good to
        * choose from it is the fill underneath that has to move.
        */
-      [['acTx', '--ac-tx', '--ac', 'ac'], ['errTx', '--err-tx', '--err', 'err']]
+      [['acTx', '--ac-tx', '--ac', 'ac'],
+        ['errTx', '--err-tx', '--err', 'err'],
+        ['chatUserTx', '--chat-user-tx', '--chat-user', 'chatUser']]
         .forEach(function (item) {
           var ratio = api.contrast(full[item[1]], full[item[2]]);
           if (ratio && ratio < 4.5) bad.push([label(item[0]), label(item[3]), ratio]);
@@ -866,7 +917,7 @@
      *
      * They looked the same and they are not the same thing. The theme switch
      * two rows above is a segmented control because pressing it changes the
-     * window; this one changes which fifteen swatches are on screen and nothing
+     * window; this one changes which eighteen swatches are on screen and nothing
      * else -- press "light" while working in the dark theme and the window
      * stays dark, which is the whole point of it being a separate control. Worn
      * as the same filled pill, it read as a second theme switch that had failed
@@ -1045,6 +1096,174 @@
    * the working copy. Redrawing from Rust's answer rather than from what was
    * sent is what stops this page showing a colour the file does not hold.
    */
+  /*
+   * The shortcut editor.
+   *
+   * Small because the rule it enforces is not here: `shared/keys.js` owns what
+   * a binding may be, and it is the same file `host.js` matches keystrokes
+   * with. This page asks, shows and stores.
+   *
+   * What is edited is the user's *edits*, not the table: a row left alone is
+   * absent from the file, so a later build that picks a better default hands it
+   * to everyone who never opened this section. `resolve` is what turns the two
+   * into something to draw.
+   */
+  (function keyEditor() {
+    var rowsBox = document.getElementById('keys-rows');
+    var errorBox = document.getElementById('keys-error');
+    var resetButton = document.getElementById('keys-reset');
+    if (!rowsBox || !window.tshellKeys) return;
+
+    var api = window.tshellKeys;
+    var file = api.normalize(boot.keys);
+    var capturing = '';
+
+    document.getElementById('keys-title').textContent = text.keysTitle;
+    document.getElementById('keys-hint').textContent = text.keysHint;
+    resetButton.textContent = text.keysReset;
+
+    function label(id) {
+      return text['keys' + id.charAt(0).toUpperCase() + id.slice(1)] || id;
+    }
+
+    function complain(message) {
+      errorBox.textContent = message;
+      errorBox.classList.add('c-notice-error');
+      errorBox.hidden = !message;
+    }
+
+    function save() {
+      vscode.postMessage({ type: 'keysSave', keys: file });
+    }
+
+    /*
+     * Leave capture, whether or not anything was bound. Always paired with the
+     * listener below and with the bridge being stood back up: a page that
+     * returned from capture without clearing that flag would be a window whose
+     * shortcuts had quietly stopped working until it was reloaded.
+     */
+    function stopCapture() {
+      capturing = '';
+      window.tshellShortcutsPaused = false;
+      window.removeEventListener('keydown', onCapture, true);
+      draw();
+    }
+
+    function onCapture(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.repeat) return;
+
+      // Escape is the way out, so it is not a thing that can be bound here.
+      if (event.code === 'Escape') {
+        complain('');
+        stopCapture();
+        return;
+      }
+
+      var pressed = api.fromEvent(event);
+      // A modifier on its own -- the user is still on their way somewhere.
+      if (!pressed) return;
+
+      var why = api.usable(pressed);
+      if (why) {
+        complain(text[why].replace('{0}', api.label(pressed) || pressed));
+        return;
+      }
+
+      var resolved = api.resolve(file);
+      var clash = '';
+      Object.keys(resolved).forEach(function (other) {
+        if (other !== capturing && resolved[other] === pressed) clash = other;
+      });
+      if (clash) {
+        complain(text.keysTaken.replace('{0}', api.label(pressed)).replace('{1}', label(clash)));
+        return;
+      }
+
+      /*
+       * Back to the default is stored as nothing at all, which `normalize`
+       * already does -- so this assigns and lets it drop rather than testing
+       * for it here. Two places that know what a default is would be one too
+       * many.
+       */
+      file[capturing] = pressed;
+      file = api.normalize(file);
+      complain('');
+      stopCapture();
+      save();
+    }
+
+    function startCapture(id) {
+      if (capturing) stopCapture();
+      capturing = id;
+      complain('');
+      /*
+       * The bridge is holding a listener that would take this keystroke and
+       * act on it -- which, in a panel asking what the keystroke should do, is
+       * the one answer that is not allowed.
+       */
+      window.tshellShortcutsPaused = true;
+      window.addEventListener('keydown', onCapture, true);
+      draw();
+    }
+
+    function draw() {
+      var resolved = api.resolve(file);
+      rowsBox.replaceChildren();
+      api.actions.forEach(function (action) {
+        var row = document.createElement('div');
+        row.className = 'row';
+
+        var name = document.createElement('div');
+        name.className = 'label';
+        var title = document.createElement('span');
+        title.textContent = label(action.id);
+        var hint = document.createElement('span');
+        hint.className = 'hint';
+        hint.textContent = text.keysChange;
+        name.append(title, hint);
+
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'c-btn keys-binding';
+        var live = capturing === action.id;
+        button.classList.toggle('capturing', live);
+        button.textContent = live ? text.keysCapturing : api.label(resolved[action.id]);
+        button.onclick = function () {
+          if (capturing === action.id) stopCapture();
+          else startCapture(action.id);
+        };
+
+        row.append(name, button);
+        rowsBox.appendChild(row);
+      });
+    }
+
+    resetButton.onclick = function () {
+      if (capturing) stopCapture();
+      file = {};
+      complain('');
+      draw();
+      save();
+    };
+
+    /*
+     * Redrawn from what was stored, not from what was sent. A binding this
+     * build wrote and Rust would not keep is a binding the panel must stop
+     * showing -- otherwise the row says a key is bound and nothing ever fires.
+     */
+    window.addEventListener('message', function (event) {
+      var data = event.data || {};
+      if (data.type !== 'keysFile') return;
+      file = api.normalize(data.keys);
+      if (data.error) complain(String(data.error));
+      draw();
+    });
+
+    draw();
+  })();
+
   (function schemeEditor() {
     var api = window.tshellSchemes;
 

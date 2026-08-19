@@ -51,7 +51,7 @@ input {
   height: 28px;
   padding: 0 10px;
   color: var(--tx);
-  background: var(--bg-inset);
+  background: var(--bg-input);
   border: 1px solid var(--line-strong);
   border-radius: var(--r-sm);
   font: inherit;
@@ -454,7 +454,7 @@ button:focus-visible,
   height: 100%;
   width: 0;
   border-radius: inherit;
-  background: var(--ac);
+  background: var(--progress);
   transition: width .12s linear;
 }
 .bar-row.current .fill { opacity: .72; }
@@ -653,7 +653,7 @@ button:focus-visible,
 .dialog {
   width: min(560px, 100%);
   padding: 20px 22px 16px;
-  background: var(--bg-float);
+  background: var(--bg-dialog);
   border: 1px solid var(--line-strong);
   border-radius: var(--r-lg);
   box-shadow: var(--sh-dlg);
@@ -682,7 +682,7 @@ button:focus-visible,
   grid-template-columns: 70px minmax(0, 1fr);
   gap: 10px;
   padding: 7px 10px;
-  background: var(--bg-inset);
+  background: var(--bg-code);
   border-left: 2px solid var(--line-strong);
   border-radius: var(--r-sm);
 }

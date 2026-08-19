@@ -9,7 +9,6 @@
    * title bar now and the shell hides it there; what is left here is the
    * shortcut, which has to refuse on its own.
    */
-  let aiEnabled = bootstrap.aiEnabled !== false;
 
   /*
    * What this terminal paints with: the sixteen ANSI colours, whichever of the
@@ -194,19 +193,15 @@
   /* AI agent ---------------------------------------------------------------- */
 
   /*
-   * The shortcut is caught here as well as declared as a keybinding, because the
-   * terminal has the keyboard and would otherwise swallow it before VS Code saw
-   * it. Matched on `code` rather than `key`: Alt changes the character a key
-   * produces on plenty of layouts, and on macOS Option+Shift+P is not "P" at all.
+   * A hard-coded Alt+Shift+P used to be caught here, taking the key before
+   * xterm could hand it to the shell on the far end. The trick was right and it
+   * is now `shared/keys.js` plus one listener in `shared/host.js`: general,
+   * editable, and applied to every page rather than to this one alone.
+   *
+   * Its reasoning lives on there, because it is the reason the whole mechanism
+   * works -- `code` and not `key`, since Alt changes the character a key
+   * produces on plenty of layouts and on macOS Option+Shift+P is not "P" at all.
    */
-  document.addEventListener('keydown', (event) => {
-    if (!aiEnabled) return;
-    if (!event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey) return;
-    if (event.code !== 'KeyP') return;
-    event.preventDefault();
-    event.stopPropagation();
-    vscode.postMessage({ type: 'openAi' });
-  }, true);
 
   window.addEventListener('message', (event) => {
     const message = event.data;
@@ -214,7 +209,6 @@
       term.reset();
       term.write(message.output || '');
     }
-    if (message.type === 'aiEnabled') aiEnabled = message.enabled !== false;
     /*
      * An appearance change, live. Nothing is reconnected and nothing is redrawn
      * by us: assigning `options.theme` makes xterm repaint its whole buffer,

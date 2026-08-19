@@ -1,17 +1,22 @@
 /*
- * The window frame: a title strip, the server list on the left, a stack of
- * tabbed panes on the right, and a status line under all of it.
+ * The window frame: a title strip, the server list on the left, and a stack of
+ * tabbed panes on the right.
  *
  * This is the one piece of front end VS Code used to supply and we now have to
  * draw ourselves. It deliberately stays thin -- it owns layout and nothing else,
  * because everything with behaviour lives in the pages it hosts.
  *
- * Surfaces do the separating here, not lines. The title bar, the sidebar, the
- * tab strip and the status bar all sit on `--bg-elev`; the pane area and the
- * terminals in it sit on `--bg-base` below them; the active tab lifts to
- * `--bg-raise` above. Hairlines appear only where two things at the *same*
- * height meet and there is nothing else to tell them apart -- the sidebar and
- * the pane area, the columns either side of a splitter.
+ * Surfaces do the separating here, not lines, and since the panels became
+ * cards the ground does most of it. `--bg-elev` is the window's ground: the
+ * title bar, and the eight pixels of it left showing around and between the
+ * panels. Each panel -- the server list, and every column of tabbed panes with
+ * its own tab strip -- is a rounded card on `--bg-base`, and the tab in front
+ * lifts to `--bg-tab` above that.
+ *
+ * There are no hairlines between panels any more. A gap says "these are two
+ * things" better than a line does, and it says it without having to pick a
+ * weight that works on both grounds -- the old seam had to be `--line-strong`
+ * to be visible at all, and even then two terminals side by side ran together.
  */
 
 * { box-sizing: border-box; }
@@ -20,7 +25,7 @@ html, body {
   height: 100%;
   margin: 0;
   overflow: hidden;
-  background: var(--bg-base);
+  background: var(--bg-elev);
   color: var(--tx);
   font-family: var(--font);
   font-size: var(--fs);
@@ -181,30 +186,68 @@ body {
 
 .glyph-restore { display: none; }
 
+/*
+ * Full screen, which is not the same thing as maximised.
+ *
+ * A maximised window still wears the title bar, because it is still a window
+ * among windows -- there is something to drag, minimise and close. Full screen
+ * is the other request: the panels go to the edge of the screen and the 36px of
+ * chrome goes away with everything else. `display: none` rather than a height
+ * of zero, so the drag region and its three buttons are not merely invisible
+ * but absent -- a 0px strip that still swallows a click at the top of the
+ * screen is the kind of thing that is only ever found by accident.
+ *
+ * Getting back out is the shortcut, and nothing else. See `toggleFullscreen`.
+ */
+body.fullscreen .titlebar { display: none; }
+
 body.maximized .glyph-maximize { display: none; }
 body.maximized .glyph-restore { display: block; }
 
 /* -------------------------------------------------------------- workbench --- */
 
+/*
+ * The padding is the ground. Eight pixels of it around the panels and, by way
+ * of the splitters, eight between them -- so a card never touches the window's
+ * edge or the title bar.
+ */
 .workbench {
   flex: 1;
   min-height: 0;
   display: flex;
+  padding: 8px;
+  gap: 0;
 }
 
+/*
+ * `--bg-base` on the <aside> as well as inside the frame: for the half-frame
+ * between the card appearing and the page in it having painted, and for the
+ * rounded corners themselves, which the frame's own background does not reach.
+ */
 .sidebar {
   width: 280px;
   flex: none;
   min-width: 200px;
-  background: var(--bg-elev);
+  background: var(--bg-base);
+  border-radius: var(--r-lg);
   display: flex;
 }
 
+/*
+ * `clip-path` and not `overflow: hidden` on a wrapper, because convention 3
+ * forbids the wrapper -- and not `border-radius` alone, because an <iframe> is
+ * a replaced element and WebKit does not clip a replaced element's content to
+ * its radius. Chromium does, which is why this looked finished on Windows.
+ * `border-radius` stays for the element's own box; `clip-path` is what makes
+ * the page inside actually stop at the corner.
+ */
 .sidebar iframe {
   flex: 1;
   border: none;
   width: 100%;
   height: 100%;
+  border-radius: var(--r-lg);
+  clip-path: inset(0 round var(--r-lg));
 }
 
 /*
@@ -214,26 +257,39 @@ body.maximized .glyph-restore { display: block; }
 .sidebar[hidden], .splitter[hidden] { display: none; }
 
 /*
- * Four pixels of grab area, drawn as one pixel of line.
+ * The gap between two cards, and the handle for it: the same eight pixels do
+ * both jobs, so the grab area is exactly as wide as the thing it looks like.
  *
- * `--line-strong` rather than `--line`: this is the seam between two frames
- * that each fill their own box, and at 6% it was close enough to nothing that
- * two terminals side by side ran into each other. The accent still lands under
- * the pointer, so the line says where the boundary is and the highlight says it
- * can be moved.
+ * It draws nothing at rest -- the gap has already said where the boundary is,
+ * which is what the old hairline was for -- and a short accent bar down the
+ * middle under the pointer, which says the boundary can be moved. Inset from
+ * the ends so it reads as a handle rather than as a rule between two panels.
  */
-.splitter {
+.splitter, .col-splitter {
+  position: relative;
   flex: none;
-  width: 4px;
-  margin: 0 -2px 0 -1px;
+  width: 8px;
   cursor: col-resize;
   background: transparent;
-  border-left: 1px solid var(--line-strong);
   z-index: 2;
-  transition: border-color .12s ease;
 }
 
-.splitter:hover, .splitter.dragging { border-left-color: var(--ac); }
+.splitter::after, .col-splitter::after {
+  content: "";
+  position: absolute;
+  top: 22px;
+  bottom: 22px;
+  left: 3px;
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background-color .12s ease;
+}
+
+.splitter:hover::after,
+.splitter.dragging::after,
+.col-splitter:hover::after,
+.col-splitter.dragging::after { background: var(--ac); }
 
 /*
  * The pane area is one grid, two rows deep: tab bars along the top, pane
@@ -253,7 +309,7 @@ body.maximized .glyph-restore { display: block; }
   display: grid;
   grid-template-rows: auto 1fr;
   grid-template-columns: minmax(0, 1fr);
-  background: var(--bg-base);
+  background: transparent;
 }
 
 /* ------------------------------------------------------------------ tabs --- */
@@ -271,7 +327,8 @@ body.maximized .glyph-restore { display: block; }
   align-items: center;
   gap: 4px;
   padding: 0 7px;
-  background: var(--bg-elev);
+  background: var(--bg-base);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
   overflow-x: auto;
   overflow-y: hidden;
 }
@@ -343,7 +400,7 @@ body.maximized .glyph-restore { display: block; }
  * highlighted item in a list instead of a sheet in front of the others.
  */
 .tab.active {
-  background: var(--bg-raise);
+  background: var(--bg-tab);
   color: var(--tx);
   box-shadow: 0 0 0 1px var(--line-strong), var(--sh-tab);
 }
@@ -402,94 +459,32 @@ body.maximized .glyph-restore { display: block; }
  * because an iframe's automatic minimum size is 300px wide, which would stop a
  * `1fr` track from ever shrinking past it.
  */
+/*
+ * The bottom of the card. The tab strip above is the same surface and rounds
+ * the other two corners; between them there is no seam to hide, which is why
+ * neither one draws a line where they meet.
+ *
+ * See `.sidebar iframe` for why the radius is spelled twice.
+ */
 .panes > iframe {
   border: none;
   width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 0;
+  background: var(--bg-base);
+  border-radius: 0 0 var(--r-lg) var(--r-lg);
+  clip-path: inset(0 round 0 0 var(--r-lg) var(--r-lg));
 }
 
 .panes > iframe[hidden] { display: none; }
 
-/* The divider between two columns: a 4px track to grab, drawn as one pixel of
- * line, the same trick and the same weight as the sidebar splitter above. */
-.col-splitter {
-  cursor: col-resize;
-  background: transparent;
-  border-left: 1px solid var(--line-strong);
-  z-index: 2;
-  transition: border-color .12s ease;
-}
-
-.col-splitter:hover, .col-splitter.dragging { border-left-color: var(--ac); }
-
-/* ------------------------------------------------------------ status bar --- */
-
 /*
- * One line about the tab in front: whether it is connected, to what, in what
- * encoding, at what size. Every field comes off the shell's own `pane` record,
- * which already held all of it.
+ * The gap between two columns is an 8px grid track rather than a flex item,
+ * but it is the same gap and the same handle; the look of it is shared with
+ * `.splitter` above. `width` there does nothing here -- the track sets it --
+ * and is harmless, which is the price of the two being one rule.
  */
-/*
- * Separated by space, not by rules.
- *
- * The first version drew a hairline down the right of every field and cancelled
- * it on `:last-child`, which is wrong the moment a field is hidden -- and here
- * they are hidden constantly, because a chat tab has no connection state and
- * only a terminal has a size. `:last-child` still named the hidden one, so its
- * neighbour kept a divider with nothing after it.
- *
- * `gap` has no such failure mode: an element with `display: none` generates no
- * box, so no gap is reserved either side of it and the fields close up by
- * themselves. Fewer rules, and one whole class of "last visible item" bug that
- * cannot come back.
- */
-.statusbar {
-  flex: none;
-  height: 26px;
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  padding: 0 14px;
-  background: var(--bg-elev);
-  border-top: 1px solid var(--line);
-  color: var(--tx-dim);
-  font-size: var(--fs-xs);
-  user-select: none;
-  white-space: nowrap;
-  overflow: hidden;
-}
-
-.statusbar[hidden] { display: none; }
-
-.status-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  line-height: 1;
-  /* Digits that do not change width, so a terminal being resized does not
-   * shuffle everything to its right. */
-  font-variant-numeric: tabular-nums;
-}
-
-.status-item[hidden] { display: none; }
-
-/* The one field that may be too long for the bar -- a long user@host. It gives
- * up its width before anything else does. */
-#st-who {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: inline-block;
-  line-height: 26px;
-  font-family: var(--font-mono);
-}
-
-.status-state.is-ok { color: var(--ok); }
-.status-state.is-err { color: var(--err); }
-
-.status-grow { flex: 1; }
 
 /* ------------------------------------------------------- menus and modals --- */
 
@@ -511,7 +506,7 @@ body.maximized .glyph-restore { display: block; }
   z-index: 200;
   min-width: 172px;
   padding: 5px;
-  background: var(--bg-float);
+  background: var(--bg-menu);
   color: var(--tx);
   border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
@@ -573,7 +568,7 @@ body.maximized .glyph-restore { display: block; }
 .modal {
   width: min(420px, calc(100vw - 48px));
   padding: 20px;
-  background: var(--bg-float);
+  background: var(--bg-dialog);
   color: var(--tx);
   border: 1px solid var(--line-strong);
   border-radius: var(--r-lg);
@@ -600,7 +595,7 @@ body.maximized .glyph-restore { display: block; }
   height: 30px;
   margin-top: 14px;
   padding: 0 10px;
-  background: var(--bg-inset);
+  background: var(--bg-input);
   color: var(--tx);
   border: 1px solid var(--line-strong);
   border-radius: var(--r-sm);
@@ -673,7 +668,7 @@ body.maximized .glyph-restore { display: block; }
 .hostkey-facts {
   margin-top: 14px;
   padding: 12px;
-  background: var(--bg-inset);
+  background: var(--bg-code);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   display: grid;
@@ -782,7 +777,7 @@ body.maximized .glyph-restore { display: block; }
   height: 28px;
   max-width: 210px;
   padding: 0 11px;
-  background: var(--bg-raise);
+  background: var(--bg-tab);
   color: var(--tx);
   border: 1px solid var(--ac);
   border-radius: var(--r-md);
@@ -792,4 +787,151 @@ body.maximized .glyph-restore { display: block; }
   text-overflow: ellipsis;
   opacity: .95;
   box-shadow: var(--sh-pop);
+}
+
+/* ------------------------------------------------------- nothing open --- */
+
+/*
+ * The empty window.
+ *
+ * No card. The ground is the surface here -- `--bg-elev`, the same as the
+ * title bar and the gaps between panels -- because a card would say "a panel",
+ * and the whole content of this state is that there is no panel. What sits on
+ * the ground is text and three kinds of control, and nothing is drawn behind
+ * any of them.
+ *
+ * That choice sets the contrast baseline: everything secondary here is
+ * `--tx-dim` on `--bg-elev`, which is the pair the version number and the
+ * window buttons in the title bar already stand on, and the pair the light
+ * theme's `--tx-dim` was darkened a step for. Measured, not assumed.
+ */
+.nothing {
+  grid-row: 1 / -1;
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: auto;
+}
+
+.nothing[hidden] { display: none; }
+
+/*
+ * A column, left-aligned inside a block that is centred. Centred text would
+ * put the ragged edge on the left of the list of servers, which is the part
+ * the eye scans down.
+ */
+.nothing-inner {
+  width: 100%;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.nothing-head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+/* The same file the title bar uses, at twice its size. */
+.nothing-mark {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 7px;
+}
+
+.nothing-titles { min-width: 0; }
+
+.nothing-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--tx);
+  line-height: 1.35;
+}
+
+.nothing-hint {
+  font-size: var(--fs-sm);
+  color: var(--tx-dim);
+  line-height: 1.35;
+}
+
+.nothing-recent[hidden] { display: none; }
+
+.nothing-label {
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--tx-dim);
+  margin-bottom: 7px;
+  padding: 0 9px;
+}
+
+/*
+ * A row is two buttons side by side, not one button with another inside it --
+ * a button inside a button is not markup a browser will keep. The hover mark
+ * belongs to the row, so the pair reads as one target even while the keyboard
+ * can still reach each half.
+ */
+.nothing-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: var(--r-sm);
+}
+
+.nothing-row:hover { background: var(--hover); }
+
+.nothing-row-main {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  text-align: left;
+  padding: 7px 9px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.nothing-row-name {
+  font-size: var(--fs);
+  color: var(--tx);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nothing-row-where {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--tx-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+ * The transfer button appears on hover, and on focus so a keyboard can find
+ * what a pointer is shown. `visibility` rather than `display`, so the row does
+ * not change width when it lights up.
+ */
+.nothing-row-side {
+  flex: none;
+  margin-right: 5px;
+  visibility: hidden;
+}
+
+.nothing-row:hover .nothing-row-side,
+.nothing-row-side:focus-visible { visibility: visible; }
+
+.nothing-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }

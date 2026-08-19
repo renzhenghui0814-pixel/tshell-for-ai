@@ -197,7 +197,7 @@
   padding: 0 10px;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-sm);
-  background: var(--bg-inset);
+  background: var(--bg-input);
   color: var(--tx);
   font: inherit;
   font-size: var(--fs-sm);
@@ -326,7 +326,7 @@ select.c-field { cursor: pointer; }
  * surface a menu is, rather than the engine's guess at one. */
 .c-field option,
 .c-select option {
-  background: var(--bg-float);
+  background: var(--bg-menu);
   color: var(--tx);
 }
 
@@ -349,7 +349,7 @@ select.c-field { cursor: pointer; }
   padding: 5px;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
-  background: var(--bg-float);
+  background: var(--bg-menu);
   color: var(--tx);
   box-shadow: var(--sh-pop);
   font-size: var(--fs-sm);
@@ -500,7 +500,7 @@ select.c-field { cursor: pointer; }
   padding: 2px;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
-  background: var(--bg-inset);
+  background: var(--bg-input);
 }
 
 .c-seg-item {
@@ -613,7 +613,7 @@ select.c-field { cursor: pointer; }
   padding: 5px;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
-  background: var(--bg-float);
+  background: var(--bg-menu);
   color: var(--tx);
   box-shadow: var(--sh-pop);
   font-size: var(--fs-sm);
@@ -676,7 +676,7 @@ select.c-field { cursor: pointer; }
   padding: 20px;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-lg);
-  background: var(--bg-float);
+  background: var(--bg-dialog);
   color: var(--tx);
   box-shadow: var(--sh-dlg);
 }

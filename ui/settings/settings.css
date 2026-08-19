@@ -145,6 +145,35 @@ h2 {
 .row:has(> .field-text) { --ctrl: 20rem; }
 
 /*
+ * The button that reads as the binding it holds.
+ *
+ * Monospace and a fixed minimum width, so that `Ctrl+Shift+T` and `F11` line up
+ * down the column instead of each button being the width of its own answer --
+ * three controls of three different widths read as three different kinds of
+ * control.
+ *
+ * While it is capturing it wears the accent as a ring rather than as a fill.
+ * A filled button is the primary action of a dialog; this is a field waiting
+ * for input, and the ring is what every other field here wears while focused.
+ */
+.keys-binding {
+  min-width: var(--ctrl);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  justify-content: center;
+}
+
+.keys-binding.capturing {
+  color: var(--ac);
+  border-color: var(--ac);
+  box-shadow: 0 0 0 2px var(--ac-ring);
+  font-family: var(--font);
+}
+
+/* No rule under the last row: the section's own foot closes it. */
+.keys-foot { border-bottom: none; }
+
+/*
  * `.value` is excluded: it is a sentence stating where the secrets are kept,
  * not a control, and a run of text padded out to a control's width is a control
  * that does not do anything when you click it.
@@ -662,7 +691,7 @@ h2 {
   padding: 10px;
   display: grid;
   gap: 9px;
-  background: var(--bg-float);
+  background: var(--bg-dialog);
   border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
   box-shadow: var(--sh-pop);
@@ -760,7 +789,7 @@ h2 {
   padding: 3px 6px;
   border-radius: var(--r-sm);
   border: 1px solid var(--line-strong);
-  background: var(--bg-inset);
+  background: var(--bg-input);
   color: var(--tx);
   font-family: var(--font-mono);
   font-size: var(--fs-sm);

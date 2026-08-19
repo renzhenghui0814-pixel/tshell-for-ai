@@ -158,10 +158,11 @@ button:disabled { opacity: .38; cursor: default; }
 /*
  * The mark above the help text.
  *
- * `--brand` and not `--ai`: this is the application's own logo rather than a
- * label for the assistant, and the logo is the same orange in both themes --
- * see the note on the token. `--ai` would darken it under the light theme and
- * stop it matching the icon in the taskbar.
+ * `--brand`, which is the one token in theme.css with the same value in both
+ * halves: this is the application's own logo, not a label for the assistant,
+ * and the logo does not darken when the user picks the light theme -- see the
+ * note on the token. A role token would, and would stop it matching the icon
+ * in the taskbar.
  *
  * Sized in `em` off the panel's own text so it stays in proportion when the
  * window is small, and capped in px so it does not become a poster on a wide
@@ -285,8 +286,13 @@ button:disabled { opacity: .38; cursor: default; }
   /* Square off the corner nearest the rail, so the bubble points at its own
    * dot instead of floating free of it. */
   border-top-right-radius: var(--r-sm);
-  background: var(--ac);
-  color: var(--ac-tx);
+  /*
+   * Its own token, not the accent. The accent means "focused" everywhere else
+   * in the window, and a message the user sent an hour ago is not focused --
+   * it is just theirs. See `--chat-user` in theme.css.
+   */
+  background: var(--chat-user);
+  color: var(--chat-user-tx);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -661,7 +667,7 @@ button:disabled { opacity: .38; cursor: default; }
   border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
   overflow: hidden;
-  background: var(--bg-raise);
+  background: var(--bg-card);
 }
 
 .card-head {
@@ -698,7 +704,7 @@ button:disabled { opacity: .38; cursor: default; }
 .command {
   display: block;
   padding: 9px 11px;
-  background: var(--bg-inset);
+  background: var(--bg-code);
   border-top: 1px solid var(--hairline);
   font-family: var(--font-mono);
   font-size: var(--fs-mono);
@@ -728,7 +734,7 @@ button:disabled { opacity: .38; cursor: default; }
   max-height: 320px;
   overflow: auto;
   padding: 9px 11px;
-  background: var(--bg-inset);
+  background: var(--bg-code);
   color: var(--tx);
   border-top: 1px solid var(--hairline);
   font-family: var(--font-mono);
@@ -753,7 +759,7 @@ button:disabled { opacity: .38; cursor: default; }
 .composer-box {
   border: 1px solid var(--line-strong);
   border-radius: var(--r-lg);
-  background: var(--bg-inset);
+  background: var(--bg-input);
   /* Lifted onto the box, so the whole control lights up rather than the text area inside it. */
   transition: border-color .12s ease, box-shadow .12s ease;
 }
@@ -981,7 +987,7 @@ textarea::placeholder { color: var(--tx-dim); }
   padding: 14px 16px 12px;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-lg);
-  background: var(--bg-float);
+  background: var(--bg-dialog);
   box-shadow: var(--sh-dlg);
 }
 
@@ -1327,7 +1333,7 @@ textarea::placeholder { color: var(--tx-dim); }
   border-radius: var(--r-sm);
   border: 1px solid var(--ac);
   box-shadow: 0 0 0 2px var(--ac-ring);
-  background: var(--bg-inset);
+  background: var(--bg-input);
   color: var(--tx);
   font-family: inherit;
   font-size: inherit;
@@ -1368,7 +1374,7 @@ textarea::placeholder { color: var(--tx-dim); }
   padding: 0 10px;
   border-radius: var(--r-sm);
   border: 1px solid var(--line-strong);
-  background: var(--bg-inset);
+  background: var(--bg-input);
   color: var(--tx);
   font: inherit;
   font-size: var(--fs-sm);

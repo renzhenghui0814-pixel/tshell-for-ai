@@ -22,7 +22,7 @@ mod ssh;
 mod theme;
 mod transfer;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -141,6 +141,11 @@ struct PanelState {
     ai_enabled: bool,
     language: Language,
     show_hidden_files: bool,
+    /// The user's edits to the shortcuts. The defaults live in `keys.js`, so
+    /// what crosses here is only what differs from them.
+    keys: BTreeMap<String, String>,
+    /// Server ids, most recently opened first. What the empty window offers.
+    recent: Vec<String>,
     storage: Storage,
 }
 
@@ -211,6 +216,8 @@ fn panel_state(config: &AppConfig, store: &Store) -> PanelState {
         ai_enabled: config.settings.ai.enabled,
         language: config.settings.language,
         show_hidden_files: config.settings.show_hidden_files,
+        keys: config.settings.keys.clone(),
+        recent: config.recent.clone(),
         storage: storage(store),
     }
 }
@@ -457,6 +464,26 @@ fn move_group(
     if !config.move_group(&group_id, to_index)? {
         // Dropped where it already was. Saying so with the current state beats
         // rewriting the file to prove nothing happened.
+        return Ok(panel_state(&config, &store));
+    }
+    commit(&config, &store)
+}
+
+/// Record that a server was just opened.
+///
+/// Called after the pane exists, not before: the list is what the empty window
+/// offers to reopen, and a server that failed to open is not an offer. It
+/// answers with the panel state like every other write, so the window keeps one
+/// copy of the file rather than patching a second one.
+#[tauri::command]
+fn touch_recent(server_id: String, store: State<'_, Store>) -> Result<PanelState, String> {
+    let mut config = load()?;
+    let before = config.recent.clone();
+    config.touch_recent(&server_id);
+    if config.recent == before {
+        // Already at the front, or not a server at all. Either way there is
+        // nothing to write, and opening the same terminal twice in a row should
+        // not rewrite the config file.
         return Ok(panel_state(&config, &store));
     }
     commit(&config, &store)
@@ -957,6 +984,23 @@ fn set_language(language: Language, store: State<'_, Store>) -> Result<PanelStat
     commit(&config, &store)
 }
 
+/// Which keystrokes the window answers to.
+///
+/// Takes the whole map rather than one entry, because a shortcut table is only
+/// correct as a whole: rebinding one action has to be able to take a key away
+/// from another, and two calls with one binding each have a moment between them
+/// where both actions hold it.
+///
+/// Anything not shaped like a binding is dropped by `normalize` on the way in,
+/// and the reply carries what was actually stored -- so a page redrawing from
+/// it shows the file rather than what it hoped the file would say.
+#[tauri::command]
+fn set_keys(keys: BTreeMap<String, String>, store: State<'_, Store>) -> Result<PanelState, String> {
+    let mut config = load()?;
+    config.settings.keys = keys;
+    commit(&config, &store)
+}
+
 #[tauri::command]
 fn open_config() -> Result<(), String> {
     let path = config::config_path();
@@ -1048,9 +1092,11 @@ fn main() {
             delete_server,
             move_group,
             move_server,
+            touch_recent,
             open_config,
             host_key_answer,
             set_language,
+            set_keys,
             schemes_load,
             schemes_save,
             fonts_monospace,

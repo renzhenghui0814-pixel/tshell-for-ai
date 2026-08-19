@@ -13,9 +13,10 @@
  *
  *     node scripts/palette-check.mjs
  *
- * It checks four things:
+ * It checks five things:
  *
- *   1. The three lists of tokens are the same list.
+ *   1. The three lists of tokens are the same list, and both sides migrate a
+ *      token that has been split the same way.
  *   2. The palette that ships clears 4.5:1 everywhere words are drawn -- with
  *      the two exemptions theme.css writes down, and no others.
  *   3. The derivation produces usable colour for accents it has never seen,
@@ -95,6 +96,40 @@ for (const token of palette.tokens) {
   }
 }
 
+/*
+ * And one table of splits, in the same two files.
+ *
+ * A token that was split is read out of older files under its old name and
+ * given to both of its heirs. Both sides do it, because either may be the first
+ * to read a given file, and the two drifting apart means a palette that means
+ * one thing when Rust loads it and another when the page does.
+ */
+const rustSplits = (() => {
+  const source = read('src-tauri/src/theme.rs');
+  const table = source.match(/const SPLIT: \[\(&str, \[&str; 2\]\); \d+\] = \[([\s\S]*?)\];/);
+  if (!table) throw new Error('theme.rs has no SPLIT table');
+  return [...table[1].matchAll(/\("([^"]+)",\s*\["([^"]+)",\s*"([^"]+)"\]\)/g)]
+    .map((m) => m[1] + '=' + m[2] + ',' + m[3]);
+})();
+
+const jsSplits = Object.keys(palette.splits).map((was) => was + '=' + palette.splits[was].join(','));
+
+if (rustSplits.join(' ') !== jsSplits.join(' ')) {
+  fail('theme.rs and palette.js disagree about the splits:\n'
+    + '        rust: ' + rustSplits.join(' ') + '\n'
+    + '        js:   ' + jsSplits.join(' '));
+} else {
+  pass(jsSplits.length + ' split tokens migrate the same way on both sides');
+}
+
+/* An heir that is not a token would migrate an old file into a dead key. */
+for (const was of Object.keys(palette.splits)) {
+  if (jsList.includes(was)) fail(was + ' is both a live token and a split');
+  for (const heir of palette.splits[was]) {
+    if (!jsList.includes(heir)) fail(was + ' migrates to ' + heir + ', which is not a token');
+  }
+}
+
 // -- 2. the palette that ships ------------------------------------------------
 
 /*
@@ -103,13 +138,24 @@ for (const token of palette.tokens) {
  * disabled controls, which WCAG exempts, and putting words in it is a bug in
  * the caller rather than in the palette.
  */
+const SURFACES = [
+  '--bg-input', '--bg-code', '--bg-base', '--bg-elev',
+  '--bg-tab', '--bg-card', '--bg-dialog', '--bg-menu'
+];
+
+/*
+ * Both levels of readable text on every one of the eight, rather than on the
+ * four that happened to be listed when there were six surfaces. Splitting them
+ * is what made this necessary: an unlisted surface used to be one nobody could
+ * edit on its own, and now every one of them is a separate decision that can be
+ * taken to somewhere `--tx-dim` cannot be read.
+ */
 const PAIRS = [
-  ['--tx', '--bg-base'], ['--tx', '--bg-elev'], ['--tx', '--bg-inset'],
-  ['--tx', '--bg-raise'], ['--tx', '--bg-float'],
-  ['--tx-dim', '--bg-base'], ['--tx-dim', '--bg-elev'], ['--tx-dim', '--bg-float'],
+  ...SURFACES.map((ground) => ['--tx', ground]),
+  ...SURFACES.map((ground) => ['--tx-dim', ground]),
   ['--ac', '--bg-base'], ['--ok', '--bg-base'], ['--warn', '--bg-base'],
-  ['--err', '--bg-base'], ['--info', '--bg-base'], ['--ai', '--bg-base'],
-  ['--ac-tx', '--ac'], ['--err-tx', '--err']
+  ['--err', '--bg-base'], ['--info', '--bg-base'],
+  ['--ac-tx', '--ac'], ['--err-tx', '--err'], ['--chat-user-tx', '--chat-user']
 ];
 
 for (const mode of ['dark', 'light']) {

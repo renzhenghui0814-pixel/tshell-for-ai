@@ -53,7 +53,7 @@ src-tauri/          Rust: the whole backend, and the only thing that touches the
   tauri.conf.json   frameless window; frontendDist points at ../ui
 ui/                 the pages -- plain HTML/CSS/JS, no build step
   shell/            the window shell; the only IPC exit in the window
-  shared/           theme.css, palette.js, components.css, icons.js,
+  shared/           theme.css, palette.js, keys.js, components.css, icons.js,
                     schemes.js, host.js, dropdown.js
   servers/ terminal/ transfer/ chat/ settings/
   vendor/           xterm, the icon, and strings.json
@@ -87,13 +87,19 @@ ui/                 the pages -- plain HTML/CSS/JS, no build step
    A call becomes an action by putting the verb back into its arguments and
    handing the result to `parse::action_from_object` -- the same function the
    JSON track ends in, so the two cannot drift.
-9. **The palette is editable, but only fifteen tokens of it per theme.** The
-   other thirty are derived in `ui/shared/palette.js`, and derived only for a
-   token that was actually changed -- so a colour nobody edited keeps the value
-   that was measured by hand, and a later build can retune the shipped palette
-   for everyone who never opened the panel. `node scripts/palette-check.mjs`
-   holds `theme.rs`, `palette.js` and `theme.css` to one list of tokens and to
-   4.5:1.
+9. **The palette is editable, but only eighteen tokens of it per theme.** The
+   eighteen that remain are derived in `ui/shared/palette.js`, and derived only
+   for a token that was actually changed -- so a colour nobody edited keeps the
+   value that was measured by hand, and a later build can retune the shipped
+   palette for everyone who never opened the panel. Four of the eighteen were
+   one token each until a surface turned out to be doing two jobs: an input and
+   a code block, the tab in front and a card, a dialog and a menu. They ship at
+   equal values, which is the point -- the default is the agreement, and it
+   costs nothing until someone disagrees. A file written before a split is read
+   under its old name and given to both heirs, on both sides, or upgrading
+   would quietly discard a colour somebody chose. `node
+   scripts/palette-check.mjs` holds `theme.rs`, `palette.js` and `theme.css` to
+   one list of tokens, one table of splits, and 4.5:1.
 10. **The assistant's own connection moves bytes; it never runs commands.**
    Commands go through the user's terminal, which is the whole product. `link.rs`
    carries file content, and the commit stays a shell command so the move is
@@ -113,6 +119,29 @@ ui/                 the pages -- plain HTML/CSS/JS, no build step
    -- because Chromium draws a select's and a datalist's with two different
    pieces of code, agreeing on neither radius, row height, shadow nor highlight,
    and neither of them can be styled.
+13. **The window is a ground with cards on it.** `--bg-elev` is the ground --
+   the title bar and the eight pixels showing between the
+   panels -- and `--bg-base` is a panel's surface: the server list, and each
+   column of tabbed panes together with its tab strip. Nothing is flush and
+   there are no hairlines between panels; the gap does that job on both
+   grounds, which a line never did. The corners are `clip-path` as well as
+   `border-radius`, because an `<iframe>` is a replaced element and WebKit does
+   not clip a replaced element's content to its radius -- and convention 2
+   forbids the wrapper that would otherwise hide it.
+
+14. **A shortcut is caught in the page, not in the window.** Every frame's copy
+   of `shared/host.js` holds one capturing listener on `window`, which is the
+   earliest a listener can run and the only place early enough: a terminal has
+   the keyboard, and a key it is allowed to see is a key already on its way to
+   the shell at the far end. `shared/keys.js` is the single answer to what a
+   binding is, what may be one, and whether a keystroke matches -- shared
+   because `host.js` asks the last question on every keydown and the settings
+   panel asks the middle one whenever a user picks a combination, and two
+   answers would mean a panel that accepts what nothing fires. Bindings are
+   stored as `KeyboardEvent.code` (`Ctrl+Shift+KeyT`), because Alt changes the
+   character a key produces and a binding stored as a character stops working
+   when the layout changes. `node scripts/keys-check.mjs` holds the actions in
+   `keys.js` to their dispatch in `shell.js` and their names in `settings.js`.
 
 `ui/vendor/strings.json` is the one string table -- 341 entries, two languages.
 The pages read it because they have no host to ask, and Rust reads the same file

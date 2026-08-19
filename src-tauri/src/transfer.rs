@@ -1089,7 +1089,17 @@ async fn drive(
             }
         }
 
+        /*
+         * The count of files finished *before* this one, which is what every
+         * tick during it should say. It is deliberately a snapshot: `summary`
+         * is borrowed by the loop and the closure below outlives the statement
+         * that would update it.
+         *
+         * What used to be missing is the correction at the other end -- see the
+         * `Ok` arm below.
+         */
         let done_files = summary.completed;
+        let opening = seen;
         let mut report = |file: &File, moved: u64, seen: u64| {
             say(
                 out,
@@ -1117,7 +1127,46 @@ async fn drive(
         );
 
         match copy_file(ends, file, cancel, &mut seen, &mut report).await {
-            Ok(()) => summary.completed += 1,
+            Ok(()) => {
+                summary.completed += 1;
+                /*
+                 * A file landing is the one state change in this loop that
+                 * produced no event of its own.
+                 *
+                 * `done_files` above is read before the copy starts, so every
+                 * tick during a file reports the count as it was when the file
+                 * began -- right for those ticks, and one behind from the
+                 * instant the file lands. The correction used to arrive on the
+                 * *next* file's opening tick, which hid the bug in the middle
+                 * of a run and left it standing at the end: the last file never
+                 * had a next tick, so a five file transfer finished reading
+                 * `4/5`. With one file there is no next tick at all, and the
+                 * card sat at `0/1` through a download that had completed,
+                 * beside a byte count that had reached 100%.
+                 *
+                 * The byte figures were always right because `seen` is carried
+                 * through `copy_file` by reference and advances with the
+                 * blocks. Only the file count was a snapshot.
+                 *
+                 * `seen - opening` rather than `file.size`: it is what this
+                 * copy actually moved, and the two differ if the file changed
+                 * size between the scan and the copy. The bar should say what
+                 * happened, not what was planned.
+                 */
+                say(
+                    out,
+                    serde_json::json!({
+                        "kind": "progress",
+                        "doneFiles": summary.completed,
+                        "totalFiles": total_files,
+                        "doneBytes": seen,
+                        "totalBytes": plan.total_bytes,
+                        "name": file.name,
+                        "transferred": seen - opening,
+                        "total": file.size,
+                    }),
+                );
+            }
             // An empty reason is the cancel signal, not a failure with nothing
             // to say -- see `copy_file`, which is the only thing that sends one.
             Err(reason) if reason.is_empty() => {

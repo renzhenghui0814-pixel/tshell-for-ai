@@ -179,11 +179,12 @@
      * close up entirely -- so it stays filled, and the pair reads as one
      * outline plus one dot rather than two of the same thing.
      *
-     * Orange, and specifically the orange of the application icon beside it on
-     * the title bar. The assistant is the product's own headline feature and
-     * the two marks are three characters apart up there; they should read as
-     * one family. It is the one glyph in the set that does not take
-     * `currentColor` from whatever is around it -- see `--ai` in theme.css.
+     * It takes `currentColor` like every other glyph here, so it is whatever
+     * the thing around it is -- dim on a resting tab, `--ac` on the tab in
+     * front. There was a note here saying it was orange, the orange of the
+     * application icon, and pointing at an `--ai` token to prove it. No rule
+     * ever set that colour on it and the token has since been deleted; the
+     * sentence had outlived the intention by long enough to read as fact.
      */
     'ai':
       '<path d="M6.4 2.1Q7.05 6.05 11 6.7 7.05 7.35 6.4 11.3 5.75 7.35 1.8 6.7 5.75 6.05 6.4 2.1Z"/>' +

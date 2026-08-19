@@ -10,6 +10,7 @@
   <script src="../shared/scrollbars.js"></script>
   <script src="../shared/schemes.js"></script>
   <script src="../shared/palette.js"></script>
+  <script src="../shared/keys.js"></script>
   <script src="../shared/host.js"></script>
   <link rel="stylesheet" href="settings.css">
 </head>
@@ -198,6 +199,34 @@
           </div>
         </div>
       </details>
+    </section>
+
+    <!--
+      Shortcuts.
+
+      Three rows and no fold: the whole section is shorter than one of the
+      folds above, and a fold over three lines is a click that buys nothing.
+
+      Each row is a button that reads as the binding it holds. Pressing it puts
+      that row into capture -- the button says so, the bridge stands down (see
+      `tshellShortcutsPaused` in shared/host.js), and the next keystroke is the
+      answer. Escape leaves without changing anything, which is why Escape is
+      not itself bindable from here.
+
+      What may be bound is not this page's rule; it is `shared/keys.js`, which
+      is also what decides whether a keystroke matches. One rule, so the panel
+      cannot promise something the matching will not honour.
+    -->
+    <section class="group">
+      <h2 id="keys-title"></h2>
+      <div id="keys-rows"></div>
+      <!-- Up when a keystroke was refused, saying which rule refused it.
+           Cleared by the next capture, so it never outlives its own cause. -->
+      <div id="keys-error" class="c-notice notice" hidden></div>
+      <div class="row keys-foot">
+        <div class="label"><span id="keys-hint" class="hint"></span></div>
+        <button type="button" class="c-btn" id="keys-reset"></button>
+      </div>
     </section>
 
     <!--

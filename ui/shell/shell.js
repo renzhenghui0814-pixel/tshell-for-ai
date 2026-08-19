@@ -67,6 +67,18 @@
    * over a file we could not read.
    */
   var paletteFile = window.tshellPalette ? window.tshellPalette.empty() : null;
+
+  /*
+   * The user's edits to the shortcuts, and the table those resolve to.
+   *
+   * Two variables rather than one because they answer different questions.
+   * `keysFile` is what is on disk and what the settings page edits -- edits
+   * only, so a binding nobody changed keeps following the product. `shortcuts`
+   * is the defaults with those laid over, which is the only form worth matching
+   * a keystroke against. Filled in at boot from the panel state.
+   */
+  var keysFile = {};
+  var shortcuts = window.tshellKeys ? window.tshellKeys.resolve({}) : null;
   var paletteError = '';
 
   /*
@@ -138,9 +150,7 @@
       panel = loaded;
       aiEnabled = loaded.aiEnabled !== false;
       paintSidebar();
-      panes.forEach(function (pane) {
-        if (pane.kind === 'terminal') send(pane.id, { type: 'aiEnabled', enabled: aiEnabled });
-      });
+      paintNothing();
     }).catch(function (error) {
       console.warn('[shell] the settings changed but the panel would not reload:', error);
     });
@@ -160,7 +170,15 @@
   function frameUrl(page, paneId, bootstrap) {
     // The palette rides here rather than being broadcast after the load, so a
     // page never paints once in the shipped colours and once in the user's.
-    var frame = { paneId: paneId, bootstrap: bootstrap, theme: theme, palette: paletteFile };
+    var frame = {
+      paneId: paneId,
+      bootstrap: bootstrap,
+      theme: theme,
+      palette: paletteFile,
+      // Edits, not the resolved table: host.js resolves, so the defaults are
+      // spelled once, in keys.js, rather than copied into every fragment.
+      keys: keysFile
+    };
     return page + '#' + encodeURIComponent(JSON.stringify(frame));
   }
 
@@ -261,19 +279,27 @@
     columns.forEach(function (column) { column.weight *= scale; });
   }
 
-  /** Tracks are 1-based and every second one is a splitter. */
+  /**
+   * Tracks are 1-based and every second one is a splitter. The splitter tracks
+   * are the ground showing between two cards, so their width is the same eight
+   * pixels the workbench pads itself with -- see `.splitter` in shell.css.
+   */
   function trackOf(index) {
     return String(index * 2 + 1);
   }
 
   function paintTracks() {
+    // Columns coming and going is exactly when the window becomes empty or
+    // stops being, so the one place that writes the grid is the one place that
+    // has to say which of the two it is.
+    paintNothing();
     if (!columns.length) {
       panesEl.style.gridTemplateColumns = 'minmax(0, 1fr)';
       return;
     }
     var tracks = [];
     columns.forEach(function (column, i) {
-      if (i) tracks.push('4px');
+      if (i) tracks.push('8px');
       /*
        * minmax(0, ...) rather than a bare fr. An iframe's automatic minimum size
        * is 300px wide, and a track that honours it can never be dragged below
@@ -330,7 +356,6 @@
         pane.tab.classList.toggle('active', on);
       });
     });
-    syncActions();
   }
 
   // ----------------------------------------------------------------- panes ---
@@ -493,107 +518,6 @@
     var column = columnById(focusedColumn);
     var pane = column && column.active ? panes.get(column.active) : null;
     return pane && pane.kind === 'terminal' && pane.server ? pane : null;
-  }
-
-  /*
-   * Nothing to sync but the status bar, now that the title bar has no buttons
-   * of its own.
-   *
-   * It had two -- the assistant and the file transfer, for whichever terminal
-   * was in front -- and they were the only thing on that bar that acted on a
-   * tab rather than on the window. Both are reached from the tab's own context
-   * menu now, where the thing they act on is the thing that was right-clicked
-   * rather than whatever happened to be in front.
-   *
-   * The function stays rather than being folded into its one caller: what it
-   * means is "the front tab changed, repaint what depends on that", and the
-   * status bar is not going to be the last such thing.
-   */
-  function syncActions() {
-    paintStatus();
-  }
-
-  // ---------------------------------------------------------- status bar ---
-
-  /*
-   * One line under the window saying what the tab in front is talking to.
-   *
-   * Every field is read off the `pane` record this file already keeps -- the
-   * connection flags, `pane.server`, the size last reported by the page. Rust is
-   * not asked for anything and no page had to be changed to supply it, which is
-   * also why the bar lives out here rather than inside terminal.html: that page
-   * fits xterm to its container and bails out of a fit when the container
-   * measures zero, and hanging a 26px strip inside that box would have turned a
-   * status line into a question about the fit addon.
-   */
-  var statusBar = document.getElementById('statusbar');
-  var statusState = document.getElementById('st-state');
-  var statusDot = document.getElementById('st-dot');
-  var statusStateText = document.getElementById('st-state-text');
-  var statusWho = document.getElementById('st-who');
-  var statusEncoding = document.getElementById('st-encoding');
-  var statusSize = document.getElementById('st-size');
-
-  function frontPane() {
-    var column = columnById(focusedColumn);
-    if (!column || !column.active) return null;
-    return panes.get(column.active) || null;
-  }
-
-  /*
-   * `null` where this file does not actually track a connection, and the field
-   * is then hidden rather than guessed at. A chat tab has no connection of its
-   * own -- what it has is a run, which is a different thing and belongs to the
-   * page that owns it -- and settings has nothing at all. Showing a confident
-   * green dot for either would be the bar inventing news.
-   */
-  function connectionState(pane) {
-    if (pane.kind === 'terminal') {
-      if (pane.connected) return 'ok';
-      if (pane.connecting) return 'busy';
-      return 'off';
-    }
-    if (pane.kind === 'transfer') return pane.remoteReady ? 'ok' : 'busy';
-    return null;
-  }
-
-  var STATE_WORD = { ok: 'stConnected', busy: 'stConnecting', off: 'stOffline' };
-  var STATE_TONE = { ok: 'is-ok', busy: '', off: 'is-err' };
-
-  function encodingLabel(encoding) {
-    return encoding === 'gb18030' ? 'GB18030' : 'UTF-8';
-  }
-
-  function paintStatus() {
-    // `var` hoists the name but not the lookup, and syncActions is reachable
-    // from the layout pass. If anything ever paints before this file has run
-    // its own top level, do nothing rather than throw inside the layout.
-    if (!statusBar) return;
-    var pane = frontPane();
-    if (!pane) {
-      statusBar.hidden = true;
-      return;
-    }
-    statusBar.hidden = false;
-
-    var state = connectionState(pane);
-    statusState.hidden = !state;
-    if (state) {
-      statusDot.className = 'c-dot' + (state === 'ok' ? ' c-ok' : state === 'busy' ? ' c-busy' : '');
-      statusStateText.textContent = c(STATE_WORD[state]);
-      statusState.className = 'status-item status-state ' + STATE_TONE[state];
-    }
-
-    statusWho.hidden = !pane.server;
-    if (pane.server) statusWho.textContent = who(pane);
-
-    statusEncoding.hidden = !pane.server;
-    if (pane.server) statusEncoding.textContent = encodingLabel(pane.server.encoding);
-
-    // The size is the terminal's grid, so it means nothing on the other kinds.
-    var sized = pane.kind === 'terminal' && pane.cols && pane.rows;
-    statusSize.hidden = !sized;
-    if (sized) statusSize.textContent = pane.cols + ' × ' + pane.rows;
   }
 
   /*
@@ -1578,6 +1502,103 @@
   }
 
   /**
+   * Wear an edited shortcut table, and tell every frame about it.
+   *
+   * The window matches keystrokes in two places -- here, for when the focus is
+   * on the title bar or in a gap, and in each page through host.js, for when it
+   * is anywhere else. Both read the same resolved table, and this is what keeps
+   * them the same table.
+   */
+  function applyKeys(file) {
+    if (!window.tshellKeys) return;
+    keysFile = window.tshellKeys.normalize(file);
+    shortcuts = window.tshellKeys.resolve(keysFile);
+    broadcast({ type: 'keys', keys: keysFile });
+  }
+
+  /**
+   * Write it, and hand back what was written.
+   *
+   * The reply carries what Rust stored rather than what the page sent, for the
+   * reason `themeFile` does: a binding this build cannot parse is dropped on
+   * the way in, and a panel redrawing from its own copy would go on showing a
+   * shortcut that is not in the file and will never fire.
+   */
+  function saveKeys(paneId, file) {
+    applyKeys(file);
+    invoke('set_keys', { keys: keysFile })
+      .then(function (state) {
+        panel = state;
+        applyKeys(state.keys || {});
+        send(paneId, { type: 'keysFile', keys: keysFile, error: '' });
+      })
+      .catch(function (error) {
+        send(paneId, { type: 'keysFile', keys: keysFile, error: String(error) });
+      });
+  }
+
+  /*
+   * What a shortcut does.
+   *
+   * `pane` is the pane the keystroke came from when it came from one, and null
+   * when it was caught by the shell's own document. Both of the pane actions
+   * work on the terminal in front of the focused column rather than on the
+   * pane that reported -- which is the same terminal whenever the key was
+   * pressed inside one, and the only sensible answer when it was pressed on the
+   * title bar. Neither of them opens anything when there is no terminal: a
+   * shortcut that silently picks a different server than the one you are
+   * looking at is worse than a shortcut that does nothing.
+   */
+  function runShortcut(id) {
+    if (id === 'toggleFullscreen') {
+      toggleFullscreen();
+      return;
+    }
+
+    var pane = frontTerminal();
+    if (!pane) return;
+
+    if (id === 'openTransfer') {
+      // `beside` is the terminal, so the panel opens in the column to its
+      // right rather than on top of whatever the focused column was showing.
+      openTransfer(pane.server, pane.groupId, pane);
+      return;
+    }
+    if (id === 'openAssistant') {
+      /*
+       * The assistant switch is honoured here rather than in the bridge that
+       * caught the key. Turned off, the assistant is gone from the activity
+       * bar and from the terminal's own menu, and a shortcut that still opened
+       * it would be the one way in left after the user asked for none.
+       *
+       * The check used to live in terminal.js beside the hard-coded shortcut.
+       * It belongs here now: this is the only place a shortcut becomes an
+       * action, so it is the only place that has to know.
+       */
+      if (!aiEnabled) return;
+      // Through `openChat`, so the one-assistant-per-terminal rule holds for
+      // the keyboard exactly as it does for the three buttons.
+      openChat(pane);
+    }
+  }
+
+  /*
+   * The shell's own copy of the listener host.js installs in every page.
+   *
+   * Needed because the shell document is not a page: the title bar, the gaps
+   * between the cards and the splitters are all here, and a keystroke while the
+   * focus is on any of them never reaches a frame.
+   */
+  window.addEventListener('keydown', function (event) {
+    if (!shortcuts || !window.tshellKeys || event.repeat) return;
+    var id = window.tshellKeys.match(shortcuts, event);
+    if (!id) return;
+    event.preventDefault();
+    event.stopPropagation();
+    runShortcut(id);
+  }, true);
+
+  /**
    * Take an edited palette and wear it, without writing it.
    *
    * What a colour picker being dragged sends. The window and every frame in it
@@ -1694,6 +1715,9 @@
         // it, and the reason the file was refused if it was.
         palette: paletteFile,
         paletteError: paletteError,
+        // The same shape again: the user's edits, with keys.js supplying both
+        // the list of actions and what each one falls back to.
+        keys: keysFile,
         // Where the config and the secrets ended up. Read once at boot and not
         // changeable from anywhere, so the bootstrap is the whole of it.
         storage: panel.storage || {}
@@ -1748,7 +1772,6 @@
       bootstrap: {
         strings: pageStrings(),
         language: language,
-        aiEnabled: aiEnabled,
         appearance: appearance()
       }
     });
@@ -1765,6 +1788,7 @@
     pane.ptyRows = 0;
     pane.connected = false;
     pane.connecting = false;
+    touchRecent(server);
     return pane;
   }
 
@@ -1782,6 +1806,7 @@
       }
     });
     pane.groupId = groupId;
+    touchRecent(server);
     // Where each pane is looking. The page draws the path but does not own it:
     // refresh and "up" are answered from here, so this is the copy that counts.
     pane.paths = { local: '', remote: '' };
@@ -1859,8 +1884,7 @@
         if (opening) {
           pane.remoteReady = true;
           transferLog(pane, t('connected') + ': ' + who(pane));
-          paintStatus();
-        }
+            }
         pane.paths[side] = listing.path;
         if (side === 'local') {
           try {
@@ -2559,20 +2583,17 @@
        * resolves instead would be a race against that first flush.
        */
       send(pane.id, { type: 'connected', clear: true });
-      paintStatus();
       return;
     }
     if (payload.kind === 'closed') {
       pane.connected = false;
       note(pane, t('connectionClosedRetryEnter'));
-      paintStatus();
     }
   }
 
   function connect(pane) {
     if (pane.connecting || pane.connected) return;
     pane.connecting = true;
-    paintStatus();
 
     var channel = new tauri.Channel();
     channel.onmessage = function (payload) { onSessionEvent(pane, payload); };
@@ -2597,7 +2618,6 @@
       // top of the greeting that was just made room for.
       pane.connecting = false;
       pane.connected = true;
-      paintStatus();
       // Asked for from the server panel, where there was no terminal to hang
       // it on. Now there is one and it is up.
       if (pane.assistantWhenReady) {
@@ -2610,7 +2630,6 @@
       pane.connecting = false;
       pane.connected = false;
       note(pane, t('connectFailed') + ': ' + reason(error));
-      paintStatus();
     });
   }
 
@@ -2821,7 +2840,6 @@
       // pty at the size the window is already showing.
       pane.cols = cols;
       pane.rows = rows;
-      paintStatus();
 
       /*
        * Compared against what the pty was last *told*, not against what the page
@@ -2876,6 +2894,22 @@
       return;
     }
 
+    /*
+     * A shortcut, caught by the bridge in whichever frame had the keyboard.
+     * Answered here for the same reason `paneFocus` is: it is the host's
+     * business, it can arrive from any kind of pane including the sidebar, and
+     * what it means does not depend on what the sender was showing.
+     *
+     * The pane that reported is deliberately not passed on. `runShortcut` acts
+     * on the terminal in front of the focused column, and every page's bridge
+     * reports focus on the way to being typed into -- so by the time a
+     * keystroke arrives from a pane, that pane's column is the focused one.
+     */
+    if (message.type === 'shortcut') {
+      runShortcut(message.id);
+      return;
+    }
+
     if (data.paneId === 'servers') { fromServers(message); return; }
 
     var pane = panes.get(data.paneId);
@@ -2895,6 +2929,7 @@
       // The window's palette, split the same way: dragging paints, letting go writes.
       if (message.type === 'themeApply') { applyPalette(message.file); return; }
       if (message.type === 'themeSave') { savePalette(pane.id, message.file); return; }
+      if (message.type === 'keysSave') { saveKeys(pane.id, message.keys); return; }
       if (message.type === 'fontsRequest') { sendFonts(pane.id); return; }
       if (message.type === 'fontsAllRequest') { sendFontsAll(pane.id); return; }
       /*
@@ -2964,8 +2999,19 @@
     passwords: {},
     privateKeyPassphrases: {},
     aiEnabled: false,
+    recent: [],
     secrets: { backend: 'keychain', reason: null }
   };
+
+  /*
+   * Set when the config file would not load, and read by the empty window.
+   *
+   * Without it that window says "add a server on the left" over a panel that is
+   * saying the file could not be parsed -- two sentences about the same screen,
+   * one of which is wrong. The panel is the one that knows why, and it is the
+   * one holding the file the user has to fix, so this side says nothing.
+   */
+  var configBroken = false;
 
   function sidebarFrame() {
     var frame = sidebar.querySelector('iframe');
@@ -2997,6 +3043,9 @@
   function applyState(next) {
     panel = next;
     pushState();
+    // The empty window draws from the same copy: a server renamed or deleted
+    // while nothing is open has to change what is offered here too.
+    paintNothing();
   }
 
   /*
@@ -3012,6 +3061,123 @@
   /** Every mutating panel command answers with the state that followed it. */
   function panelCommand(command, args) {
     return invoke(command, args || {}).then(applyState).catch(panelError);
+  }
+
+  /*
+   * The window with nothing open in it.
+   *
+   * Drawn here rather than in a frame of its own: it holds no session, so
+   * rebuilding it costs nothing, and everything it shows is already in this
+   * scope. A frame would mean bootstrapping a page and a message round trip to
+   * say what `panel.recent` says here for free.
+   *
+   * Called from `paintTracks` (columns came or went) and from `applyState`
+   * (the file changed under it). Both are cheap and neither can be dropped:
+   * without the first the list stays behind a pane, without the second a
+   * server renamed while the window is empty keeps its old name on screen.
+   */
+  function paintNothing() {
+    var box = document.getElementById('nothing');
+    if (!box) return;
+
+    box.hidden = columns.length > 0;
+    if (box.hidden) return;
+
+    var servers = 0;
+    panel.groups.forEach(function (group) { servers += group.servers.length; });
+
+    document.getElementById('nothing-hint').textContent =
+      configBroken ? '' : (servers ? c('nothingHint') : c('nothingNoServers'));
+
+    var rows = document.getElementById('nothing-rows');
+    var recent = document.getElementById('nothing-recent');
+    rows.innerHTML = '';
+
+    /*
+     * An id whose server is gone draws nothing. `normalize` drops those on the
+     * way out of the file, so this is the window between a delete and the state
+     * that follows it -- short, but the alternative is a row with no name on it.
+     */
+    (panel.recent || []).forEach(function (id) {
+      var found = locateServer(id);
+      if (found) rows.appendChild(recentRow(found.server, found.groupId));
+    });
+
+    recent.hidden = !rows.children.length;
+    document.getElementById('nothing-recent-label').textContent = c('nothingRecent');
+  }
+
+  /** A server by id alone, with the group that holds it. */
+  function locateServer(serverId) {
+    for (var i = 0; i < panel.groups.length; i += 1) {
+      var group = panel.groups[i];
+      for (var j = 0; j < group.servers.length; j += 1) {
+        if (group.servers[j].id === serverId) {
+          return { server: group.servers[j], groupId: group.id };
+        }
+      }
+    }
+    return null;
+  }
+
+  /*
+   * One row: the server, and the file panel beside it.
+   *
+   * Two buttons rather than one button carrying another, which is markup no
+   * browser keeps. The larger one opens a terminal because that is what
+   * reopening a server nearly always means; transfer is a second target on the
+   * same row because `openTransfer` needs a machine, and this row is the only
+   * place on this screen where there is one.
+   */
+  function recentRow(server, groupId) {
+    var row = document.createElement('div');
+    row.className = 'nothing-row';
+
+    var main = document.createElement('button');
+    main.type = 'button';
+    main.className = 'nothing-row-main';
+    main.title = t('openTerminal');
+
+    var name = document.createElement('div');
+    name.className = 'nothing-row-name';
+    name.textContent = nameOf(server);
+
+    var where = document.createElement('div');
+    where.className = 'nothing-row-where';
+    where.textContent = server.username + '@' + server.host + ':' + server.port;
+
+    main.appendChild(name);
+    main.appendChild(where);
+    main.onclick = function () { openTerminal(server, groupId); };
+
+    var side = document.createElement('button');
+    side.type = 'button';
+    side.className = 'c-btn c-btn-icon nothing-row-side';
+    side.title = t('fileTransfer');
+    side.setAttribute('aria-label', t('fileTransfer'));
+    side.innerHTML = '<svg class="c-icon" viewBox="0 0 16 16" aria-hidden="true">'
+      + '<use href="#i-transfer"/></svg>';
+    side.onclick = function () { openTransfer(server, groupId); };
+
+    row.appendChild(main);
+    row.appendChild(side);
+    return row;
+  }
+
+  /*
+   * Record that a server was just opened, for the empty window to offer next
+   * time. After the pane exists, not before: a list of things that failed to
+   * open is not a list worth keeping.
+   */
+  function touchRecent(server) {
+    if (!server || !server.id) return;
+    invoke('touch_recent', { serverId: server.id })
+      .then(applyState)
+      .catch(function (error) {
+        // Nothing the user asked for failed -- the terminal is open. The next
+        // one to open writes the list again.
+        console.warn('[shell] the recent list would not save:', error);
+      });
   }
 
   function findGroup(groupId) {
@@ -3099,9 +3265,6 @@
       closeOthers: '关闭其它',
       closeAll: '关闭全部',
       ok: '确定',
-      stConnected: '已连接',
-      stConnecting: '连接中',
-      stOffline: '未连接',
       authFailed: '认证失败：服务器拒绝了这个用户名或密码。',
       hostKeyRejected: '已取消：这台机器的主机密钥没有被信任。',
       hostKeyNewTitle: '第一次连接这台机器',
@@ -3117,6 +3280,9 @@
       hostKeyType: '密钥类型',
       hostKeyFingerprint: '本次指纹',
       hostKeyPinned: '已记住的',
+      nothingHint: '从左侧选一台服务器开始',
+      nothingNoServers: '先在左侧添加一台服务器',
+      nothingRecent: '最近',
       hostKeyTrust: '信任并记住',
       hostKeyOnce: '仅这一次',
       hostKeyReject: '取消连接'
@@ -3135,9 +3301,6 @@
       closeOthers: 'Close Others',
       closeAll: 'Close All',
       ok: 'OK',
-      stConnected: 'Connected',
-      stConnecting: 'Connecting',
-      stOffline: 'Not connected',
       authFailed: 'Authentication failed: the server rejected this user or password.',
       hostKeyRejected: 'Cancelled: this machine’s host key was not trusted.',
       hostKeyNewTitle: 'First connection to this machine',
@@ -3156,6 +3319,9 @@
       hostKeyType: 'Key type',
       hostKeyFingerprint: 'Presented',
       hostKeyPinned: 'Remembered',
+      nothingHint: 'Pick a server on the left to start',
+      nothingNoServers: 'Add a server on the left to start',
+      nothingRecent: 'Recent',
       hostKeyTrust: 'Trust and remember',
       hostKeyOnce: 'Just this once',
       hostKeyReject: 'Cancel'
@@ -3209,6 +3375,40 @@
   })();
 
   /*
+   * Full screen, and the title bar going with it.
+   *
+   * Maximised and full screen are different things here in a way they are not
+   * in a decorated window: this one draws its own title bar, so a window that
+   * merely filled the screen would still be spending 36px on chrome and would
+   * not look like anything the word "full screen" promises. `body.fullscreen`
+   * takes the bar out, and shell.css does the rest.
+   *
+   * The state is read back from the window rather than assumed, for the reason
+   * `syncMaximized` is: the OS can take a window out of full screen without
+   * asking, and a flag this side kept would then be wrong with no way to notice.
+   *
+   * The only way back out is the shortcut, which is why it is the one action in
+   * the table that does not need a terminal: bound to nothing, or bound to a
+   * combination the panel refuses, there would be no way to restore the window
+   * except by quitting it. `keys.js` allows a function key to stand alone
+   * partly for this.
+   */
+  function toggleFullscreen() {
+    var api = window.__TAURI__ && window.__TAURI__.window;
+    if (!api) return;
+    var appWindow = api.getCurrentWindow();
+    appWindow.isFullscreen()
+      .then(function (on) {
+        return appWindow.setFullscreen(!on).then(function () {
+          document.body.classList.toggle('fullscreen', !on);
+        });
+      })
+      .catch(function (error) {
+        console.warn('[shell] could not change full screen:', error);
+      });
+  }
+
+  /*
    * The window is created hidden -- `visible` in tauri.conf.json -- so the first
    * thing on screen is this bar and its ground, not the webview's white one.
    * Painting the dark background from CSS cannot do that on its own: the window
@@ -3237,9 +3437,22 @@
 
   document.getElementById('settings').onclick = openSettings;
 
+  /*
+   * The empty window's two actions. Both are window-wide, which is why they are
+   * the only two down there: everything else worth doing from this screen needs
+   * a machine, and the rows above are where the machines are.
+   */
+  document.getElementById('nothing-settings').onclick = openSettings;
+  document.getElementById('nothing-config').onclick = function () {
+    invoke('open_config').catch(panelError);
+  };
+
   /** Every label on the bar, in whatever language boot settled on. */
   function paintChrome() {
     label(document.getElementById('settings'), c('settings'));
+    document.getElementById('nothing-settings-text').textContent = c('settings');
+    document.getElementById('nothing-config-text').textContent = t('openConfig');
+    paintNothing();
     label(document.getElementById('win-min'), c('minimize'));
     label(document.getElementById('win-close'), c('close'));
     paintWindowButtons();
@@ -3308,7 +3521,14 @@
     });
     window.addEventListener('mousemove', function (event) {
       if (!dragging) return;
-      var width = Math.min(Math.max(event.clientX, 180), window.innerWidth - 320);
+      /*
+       * Measured from where the card starts, not from the window's edge. The
+       * workbench pads the ground in by 8px, and reading `clientX` as a width
+       * would hand the sidebar that padding as well -- so it grew by 8px the
+       * moment the first drag began, however little the pointer had moved.
+       */
+      var origin = sidebar.getBoundingClientRect().left;
+      var width = Math.min(Math.max(event.clientX - origin, 180), window.innerWidth - 320);
       sidebar.style.width = width + 'px';
     });
     window.addEventListener('mouseup', function () {
@@ -3395,7 +3615,20 @@
     .then(function (loaded) {
       panel = loaded;
       aiEnabled = loaded.aiEnabled !== false;
+      /*
+       * Before `mountSidebar`, because mounting builds a fragment and the
+       * fragment carries the table. A frame handed an empty one would answer to
+       * nothing until the next broadcast, which for the sidebar is never.
+       */
+      if (window.tshellKeys) {
+        keysFile = window.tshellKeys.normalize(loaded.keys);
+        shortcuts = window.tshellKeys.resolve(keysFile);
+      }
       mountSidebar();
+      // Boot assigns `panel` directly rather than through `applyState`, so the
+      // empty window is told here. It was drawn once already, by `paintChrome`,
+      // against a panel that had nothing in it yet.
+      paintNothing();
     })
     .catch(function (error) {
       /*
@@ -3406,7 +3639,9 @@
        * nothing said about why.
        */
       console.error(error);
+      configBroken = true;
       mountSidebar(function () { panelError(error); });
+      paintNothing();
     })
     .then(revealWindow);
 })();

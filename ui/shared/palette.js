@@ -1,10 +1,10 @@
 /*
  * The window's palette, and what the user changed about it.
  *
- * `theme.css` is the palette that ships: two halves, each about forty-five
- * tokens, of which fifteen are decisions and the rest follow from them. The
- * settings page lets the fifteen be edited; this file is what turns those
- * fifteen into the other thirty and writes the result into a page.
+ * `theme.css` is the palette that ships: two halves, of which eighteen tokens
+ * are decisions and eighteen more follow from them. The settings page lets the
+ * eighteen decisions be edited; this file is what turns them into the eighteen
+ * that follow and writes the result into a page.
  *
  * Three rules hold the whole design up.
  *
@@ -33,29 +33,59 @@
   'use strict';
 
   /*
-   * The fifteen, in the order the settings page lists them, with the CSS name
+   * The eighteen, in the order the settings page lists them, with the CSS name
    * each one carries. `theme.rs` holds the same list and drops anything not in
    * it -- two copies, because one is the file format's guarantee and the other
    * is this file's, and neither can be the other's authority. They are checked
    * against each other by `scripts/palette-check.mjs`.
+   *
+   * `group` is which block of the settings page a token is drawn in, and the
+   * three blocks are not the three kinds of colour. The accent, the user's
+   * message and the progress bar sit with the surfaces because what they have
+   * in common with them is the question being asked: this is a fill, what
+   * colour is it. The block is titled for fills, not for grounds.
    */
   var TOKENS = [
-    { key: 'bgInset', css: '--bg-inset', group: 'surface' },
+    { key: 'bgInput', css: '--bg-input', group: 'surface' },
+    { key: 'bgCode', css: '--bg-code', group: 'surface' },
     { key: 'bgBase', css: '--bg-base', group: 'surface' },
     { key: 'bgElev', css: '--bg-elev', group: 'surface' },
-    { key: 'bgRaise', css: '--bg-raise', group: 'surface' },
-    { key: 'bgRaiseHi', css: '--bg-raise-hi', group: 'surface' },
-    { key: 'bgFloat', css: '--bg-float', group: 'surface' },
+    { key: 'bgTab', css: '--bg-tab', group: 'surface' },
+    { key: 'bgCard', css: '--bg-card', group: 'surface' },
+    { key: 'bgDialog', css: '--bg-dialog', group: 'surface' },
+    { key: 'bgMenu', css: '--bg-menu', group: 'surface' },
+    { key: 'ac', css: '--ac', group: 'surface' },
+    { key: 'chatUser', css: '--chat-user', group: 'surface' },
+    { key: 'progress', css: '--progress', group: 'surface' },
     { key: 'tx', css: '--tx', group: 'text' },
     { key: 'txDim', css: '--tx-dim', group: 'text' },
     { key: 'txFaint', css: '--tx-faint', group: 'text' },
-    { key: 'ac', css: '--ac', group: 'accent' },
     { key: 'ok', css: '--ok', group: 'meaning' },
     { key: 'warn', css: '--warn', group: 'meaning' },
     { key: 'err', css: '--err', group: 'meaning' },
-    { key: 'info', css: '--info', group: 'meaning' },
-    { key: 'ai', css: '--ai', group: 'meaning' }
+    { key: 'info', css: '--info', group: 'meaning' }
   ];
+
+  /*
+   * What an older file called a token that has since been split, and the
+   * tokens it now feeds.
+   *
+   * A key this build does not know is dropped -- that is the closed set doing
+   * its job -- but dropping `bgInset` from a file written last week would
+   * throw away a colour the user picked, silently, on upgrade. So the old name
+   * is read once and handed to both halves of the split, which is exactly what
+   * it used to mean: the two ship at the same value, and someone who moved the
+   * old one wanted both of them moved.
+   *
+   * `theme.rs` does the same on its side. Neither can be the other's
+   * authority -- the file may be read by Rust before this ever runs -- and
+   * `palette-check.mjs` holds the two tables to each other.
+   */
+  var SPLIT = {
+    bgInset: ['bgInput', 'bgCode'],
+    bgRaise: ['bgTab', 'bgCard'],
+    bgFloat: ['bgDialog', 'bgMenu']
+  };
 
   var CSS_OF = {};
   TOKENS.forEach(function (token) { CSS_OF[token.key] = token.css; });
@@ -84,6 +114,14 @@
     { css: '--err-hover', from: ['err'], fn: function (b, dark) { return shift(b.err, dark ? 8 : -8); } },
     { css: '--err-soft', from: ['err'], fn: function (b, dark) { return alpha(b.err, dark ? 0.15 : 0.12); } },
     { css: '--err-tx', from: ['err'], fn: function (b) { return ink(b.err); } },
+
+    /*
+     * The bubble is a fill with words on it, so the ink on it follows the same
+     * rule as the ink on the accent and on the error red: white if white
+     * clears 4.5:1, a near-black of the same hue if it does not. Derived and
+     * not offered, because it is not a decision -- it is the answer to one.
+     */
+    { css: '--chat-user-tx', from: ['chatUser'], fn: function (b) { return ink(b.chatUser); } },
 
     /*
      * The furniture: lines, hovers, the scrollbar. Made of the text colour
@@ -212,13 +250,13 @@
   /*
    * What the stylesheet says, read out of the stylesheet.
    *
-   * The settings page needs a value for every one of the fifteen even before
+   * The settings page needs a value for every one of the eighteen even before
    * anything is edited -- a colour input has to open on something -- and the
    * half being edited is not always the half being displayed, so
    * `getComputedStyle` cannot answer for both. The rules are same-origin, so
    * their declarations can simply be read.
    *
-   * Copying the thirty values into this file instead would have been three
+   * Copying the shipped values into this file instead would have been three
    * lines shorter and would have made theme.css stop being where the palette
    * lives, which is the entire point of theme.css.
    */
@@ -227,7 +265,7 @@
   function readShipped(doc) {
     /*
      * `css` holds the derived names as written; the rest of the map is the
-     * fifteen, keyed the way the file and the settings page key them. One
+     * eighteen, keyed the way the file and the settings page key them. One
      * object because they are read out of the same two rules in one pass.
      */
     var out = { dark: { css: {} }, light: { css: {} } };
@@ -256,7 +294,7 @@
         });
         /*
          * The derived names as the stylesheet spells them, kept beside the
-         * fifteen. `resolved` shows these rather than recomputing them, which
+         * eighteen. `resolved` shows these rather than recomputing them, which
          * is rule TWO seen from the preview's side: the shipped `--ac-tx` was
          * measured, and drawing an approximation of it next to the real window
          * would make the preview quietly wrong about the case where nothing
@@ -330,6 +368,19 @@
     ['dark', 'light'].forEach(function (half) {
       var source = file[half];
       if (!source || typeof source !== 'object') return;
+      /*
+       * The split names first, so a file carrying both an old key and a new
+       * one keeps the new one. That file exists: saving once on this build
+       * writes the new names, and an older build reading it back would have
+       * left the old ones in place.
+       */
+      Object.keys(SPLIT).forEach(function (was) {
+        var value = source[was];
+        if (!rgb(value)) return;
+        SPLIT[was].forEach(function (now) {
+          out[half][now] = String(value).trim().toUpperCase();
+        });
+      });
       TOKENS.forEach(function (token) {
         var value = source[token.key];
         if (rgb(value)) out[half][token.key] = String(value).trim().toUpperCase();
@@ -466,6 +517,7 @@
     styleId: STYLE_ID,
     cssName: function (key) { return CSS_OF[key]; },
     empty: emptyFile,
+    splits: SPLIT,
     normalize: normalize,
     defaults: defaults,
     seed: seed,
