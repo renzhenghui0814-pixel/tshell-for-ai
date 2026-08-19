@@ -66,6 +66,30 @@
 
   applyTheme(frame.theme);
 
+  /*
+   * The user's edits to the palette, applied before anything is drawn.
+   *
+   * They ride the fragment for the same reason the bootstrap does: a page reads
+   * its fragment synchronously, and a page that had to wait for a message would
+   * paint once in the shipped palette and once in the user's. Both halves are
+   * written at once, so the theme switch above needs nothing from here.
+   *
+   * `palette.js` has to be loaded before this file for a page to wear them. A
+   * page that does not load it is not broken -- it wears the palette that
+   * ships, which is a complete one.
+   */
+  function applyPalette(file) {
+    if (!window.tshellPalette) return;
+    try {
+      window.tshellPalette.apply(document, file);
+    } catch (error) {
+      // A palette is decoration. Nothing here is worth failing a page load over.
+      console.error('tshell: could not apply the palette', error);
+    }
+  }
+
+  applyPalette(frame.palette);
+
   var stateKey = 'tshell:state:' + frame.paneId;
 
   var api = {
@@ -115,6 +139,58 @@
   window.addEventListener('focus', reportFocus);
 
   /*
+   * Shortcuts.
+   *
+   * Here because this is the only file every page loads, and because the page
+   * that most needs the key taken off it is the terminal -- which has the
+   * keyboard, and would otherwise hand `Ctrl+Shift+T` to the shell on the far
+   * end before this window ever saw it. terminal.js used to carry one
+   * hard-coded shortcut for exactly that reason; this is that trick, made
+   * general and made editable.
+   *
+   * On `window` and capturing, which is the earliest a listener can run: the
+   * capture path is window, then document, then down to the target, so nothing
+   * a page does to its own document can get in front of this. `stopPropagation`
+   * then keeps the event from continuing down that path at all, so xterm never
+   * sees it and nothing is sent over SSH.
+   *
+   * `repeat` is ignored. Holding the combination down should open one panel,
+   * not one per key repeat, and the shell has no idea the two are related.
+   *
+   * A page that did not load keys.js simply has no shortcuts, the same way a
+   * page that did not load palette.js wears the palette that ships. Neither is
+   * an error worth failing a load over.
+   */
+  var shortcuts = window.tshellKeys ? window.tshellKeys.resolve(frame.keys) : null;
+
+  /*
+   * A way to stand down, for the one page that needs to *read* a keystroke
+   * rather than have it taken away.
+   *
+   * The settings panel asks the user to press the combination they want, and
+   * the combination they are most likely to press is one that is already bound
+   * -- they are, after all, rebinding it. Without this, pressing Ctrl+Shift+T
+   * over the "open file transfer" field would open a file transfer, which is a
+   * panel that answers "what would you like this key to do" by doing it.
+   *
+   * A flag rather than "the settings page registers an earlier listener",
+   * because it cannot: this file runs in <head>, so its listener is always
+   * first on the capture path. Which is the right default -- being first is the
+   * whole point of it -- and leaves the exception to be asked for out loud.
+   */
+  window.tshellShortcutsPaused = false;
+
+  window.addEventListener('keydown', function (event) {
+    if (window.tshellShortcutsPaused) return;
+    if (!shortcuts || !window.tshellKeys || event.repeat) return;
+    var id = window.tshellKeys.match(shortcuts, event);
+    if (!id) return;
+    event.preventDefault();
+    event.stopPropagation();
+    api.postMessage({ type: 'shortcut', id: id });
+  }, true);
+
+  /*
    * Unwrap what the shell sends and re-raise it as the bare `message` event the
    * pages already listen for. The synthetic event carries no `__tshell` key, so
    * the listener below ignores it and there is no loop.
@@ -127,6 +203,20 @@
     // on, so no page needs a case for a message it never had under VS Code.
     if (data.payload && data.payload.type === 'theme') {
       applyTheme(data.payload.theme);
+      return;
+    }
+
+    // Same reasoning: which colours the window is made of is the host's
+    // business, and no page ever had a case for it.
+    if (data.payload && data.payload.type === 'palette') {
+      applyPalette(data.payload.palette);
+      return;
+    }
+
+    // And the same again for which keystrokes the window answers to. A page
+    // never asked to be told, and there is nothing for it to do about it.
+    if (data.payload && data.payload.type === 'keys') {
+      shortcuts = window.tshellKeys ? window.tshellKeys.resolve(data.payload.keys) : null;
       return;
     }
 

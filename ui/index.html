@@ -6,6 +6,8 @@
   <title>tshell</title>
   <link rel="stylesheet" href="shared/theme.css">
   <script src="shared/schemes.js"></script>
+  <script src="shared/palette.js"></script>
+  <script src="shared/keys.js"></script>
   <link rel="stylesheet" href="shared/components.css">
   <script src="shared/scrollbars.js"></script>
   <link rel="stylesheet" href="shell/shell.css">
@@ -56,21 +58,6 @@
     <span class="spacer"></span>
 
     <!--
-      The two actions that belong to whichever terminal is in front. They used to
-      float over the terminal itself; centred here they stay in one place as tabs
-      change, and they are dimmed rather than hidden when the front tab is not a
-      terminal, so the bar does not shift about.
-    -->
-    <div class="titlebar-center">
-      <button type="button" id="act-ai" class="chrome-button accent-ai" disabled>
-        <svg class="glyph" viewBox="0 0 16 16" aria-hidden="true"><use href="#i-ai"/></svg>
-      </button>
-      <button type="button" id="act-transfer" class="chrome-button accent-transfer" disabled>
-        <svg class="glyph" viewBox="0 0 16 16" aria-hidden="true"><use href="#i-transfer"/></svg>
-      </button>
-    </div>
-
-    <!--
       Kept out of the shared icon set on purpose. These three are system
       furniture rather than product iconography: 1px lines, square ends, drawn
       at the metrics Windows uses, in a 46x32 hit area. The rest of the window's
@@ -106,31 +93,52 @@
 
       shell.js fills this in; there is nothing to write here.
     -->
-    <section class="panes" id="panes"></section>
+    <section class="panes" id="panes">
+      <!--
+        What the window says when nothing is open.
+
+        It sits on the ground rather than on a card. A card would be a panel,
+        and there is no panel here -- the whole point of this state is that the
+        window is empty. Drawing a surface to hold the words would be drawing
+        the one thing that is not there.
+
+        It lives inside `.panes` because that is the area it fills, and it is a
+        plain element rather than an iframe: it holds no session and no state,
+        so rebuilding it costs nothing, and it reads the server list the shell
+        already has. Convention 2 is about iframes -- rehoming one drops its SSH
+        connection -- and this is not one.
+
+        shell.js fills in the text and the rows.
+      -->
+      <div class="nothing" id="nothing" hidden>
+        <div class="nothing-inner">
+          <div class="nothing-head">
+            <img class="nothing-mark" src="vendor/icon.png" alt="">
+            <div class="nothing-titles">
+              <div class="nothing-name">tshell</div>
+              <div class="nothing-hint" id="nothing-hint"></div>
+            </div>
+          </div>
+
+          <div class="nothing-recent" id="nothing-recent" hidden>
+            <div class="nothing-label" id="nothing-recent-label"></div>
+            <div id="nothing-rows"></div>
+          </div>
+
+          <div class="nothing-actions">
+            <button type="button" class="c-btn" id="nothing-settings">
+              <svg class="c-icon" viewBox="0 0 16 16" aria-hidden="true"><use href="#i-gear"/></svg>
+              <span id="nothing-settings-text"></span>
+            </button>
+            <button type="button" class="c-btn" id="nothing-config">
+              <svg class="c-icon" viewBox="0 0 16 16" aria-hidden="true"><use href="#i-file"/></svg>
+              <span id="nothing-config-text"></span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
   </main>
-
-  <!--
-    What the front tab is connected to, and how.
-
-    It reads its fields off the shell's own `pane` object -- state, server,
-    encoding, the size the pty was last told -- so nothing had to be asked of
-    Rust and nothing had to be added to the pages. In particular it is *not*
-    inside terminal.html: the terminal fits xterm to its container, with a
-    deliberate bail-out for containers measuring zero, and putting a 24px strip
-    inside that box would have made this a question about the fit addon.
-
-    Hidden until there is a tab to describe, so an empty window is an empty
-    window rather than an empty window with a bar under it.
-  -->
-  <footer class="statusbar" id="statusbar" hidden>
-    <span class="status-item status-state" id="st-state">
-      <i class="c-dot" id="st-dot"></i><span id="st-state-text"></span>
-    </span>
-    <span class="status-item" id="st-who"></span>
-    <span class="status-item" id="st-encoding"></span>
-    <span class="status-grow"></span>
-    <span class="status-item" id="st-size"></span>
-  </footer>
 
   <script src="shell/shell.js"></script>
 </body>

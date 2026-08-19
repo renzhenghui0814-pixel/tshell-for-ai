@@ -42,6 +42,115 @@
    */
   var ICONS = {
 
+    /*
+     * -- file kinds -----------------------------------------------------------
+     *
+     * THE FOURTH OPT-OUT, and the largest. These are solid, and the rule at the
+     * top of this file says outlines.
+     *
+     * The rule is about a glyph read on its own -- a toolbar button, a menu row
+     * -- where 1.4px of outline round a lot of white is what keeps a 15px shape
+     * from being a smudge. These are not read on their own. They are read forty
+     * at a time down the left edge of a file list, at a glance, mostly in
+     * peripheral vision, and what the eye is doing there is not identifying a
+     * drawing but sorting a column into kinds. A solid shape in a distinct hue
+     * does that at a smaller size than an outline can, which is why every file
+     * manager that has ever shipped draws them this way.
+     *
+     * The counters still carry the meaning, which is why almost all of these
+     * are `fill-rule="evenodd"`: the marks are knocked *out* of the solid, so
+     * what identifies a JSON file from six feet away is the two gaps across the
+     * cylinder rather than any edge of it.
+     *
+     * Before this, every file in the list was the same outlined page and only
+     * its colour changed -- so the icon column said "file, file, file, file" in
+     * eight hues, and the shape, which is the channel the eye reads first, was
+     * carrying nothing at all.
+     *
+     * The colours are not here. They are `.ic-*` in transfer.css, on the
+     * syntax-highlighting set, because they are exactly that job: a handful of
+     * hues whose only requirement is to stay apart from each other.
+     */
+
+    /* A folder. The one shape in the set nobody has to be taught. */
+    'file-dir':
+      '<path fill="currentColor" stroke="none" d="M2.4 4.3a1.2 1.2 0 0 1 1.2-1.2h3.1' +
+      'l1.7 1.8h4.4a1.2 1.2 0 0 1 1.2 1.2v6.6a1.2 1.2 0 0 1-1.2 1.2H3.6' +
+      'a1.2 1.2 0 0 1-1.2-1.2z"/>',
+
+    /* Nothing known about it. A page, and no mark -- the absence is the
+     * statement, and it is the one every unrecognised extension gets. */
+    'file-plain':
+      '<path fill="currentColor" stroke="none" d="M4.5 1.8h4.3l3.8 3.8v7.5a1.1 1.1 0 0 1-1.1 1.1H4.5a1.1 1.1 0 0 1-1.1-1.1V2.9a1.1 1.1 0 0 1 1.1-1.1z"/>',
+
+    /* Something written to be read: text, markdown, a log, a PDF. Three lines
+     * knocked out of the page, the last one short, which is what a paragraph
+     * looks like from far enough away to not be reading it. */
+    'file-doc':
+      '<path fill="currentColor" stroke="none" fill-rule="evenodd" d="M4.5 1.8h4.3l3.8 3.8v7.5a1.1 1.1 0 0 1-1.1 1.1H4.5a1.1 1.1 0 0 1-1.1-1.1V2.9a1.1 1.1 0 0 1 1.1-1.1z' +
+      'M5.5 7.0h5.0v1.1H5.5zM5.5 9.3h5.0v1.1H5.5zM5.5 11.6h3.2v1.1H5.5z"/>',
+
+    /* Source. Two chevrons, which is what a programmer's eye has been trained
+     * on for thirty years; no page behind them, because the page is the part
+     * that is the same for everything and the chevrons are the part that is
+     * not. */
+    'file-code':
+      '<path fill="currentColor" stroke="none" d="M6.3 3.7 7.4 4.8 4.2 8l3.2 3.2' +
+      '-1.1 1.1L2.0 8zM9.7 3.7 8.6 4.8 11.8 8l-3.2 3.2 1.1 1.1L14.0 8z"/>',
+
+    /* Markup: HTML, CSS, XML, SVG. The same chevrons with a slash between them,
+     * which is the mark the whole web uses for itself. Deliberately close to
+     * `file-code` -- these two kinds ARE close, and pretending otherwise by
+     * giving markup an unrelated shape would be inventing a distinction the
+     * files do not have. The hue is the second thing telling them apart. */
+    'file-markup':
+      '<path fill="currentColor" stroke="none" d="M5.0 4.3 5.95 5.25 3.4 8l2.55 2.75' +
+      '-0.95 0.95L1.9 8zM11.0 4.3 10.05 5.25 12.6 8l-2.55 2.75 0.95 0.95L14.1 8z' +
+      'M8.55 3.5h1.25L7.45 12.5H6.2z"/>',
+
+    /* Structured data: JSON, YAML, CSV, SQL, a DBF. A stack of discs -- the
+     * drum every database has been drawn as since the tape era, and the only
+     * shape here that says "rows" rather than "words". */
+    'file-data':
+      '<path fill="currentColor" stroke="none" fill-rule="evenodd" d="M8 2.3' +
+      'c2.54 0 4.6.85 4.6 1.9v7.6c0 1.05-2.06 1.9-4.6 1.9s-4.6-.85-4.6-1.9V4.2' +
+      'c0-1.05 2.06-1.9 4.6-1.9zM3.4 6.0h9.2v0.9H3.4zM3.4 8.9h9.2v0.9H3.4z"/>',
+
+    /* An archive. A crate: the seam of the lid across it and a catch below,
+     * both knocked out. Not a zip pull -- half of what lands in here is a
+     * tarball, and nothing in a tarball has ever had a zip on it. */
+    'file-archive':
+      '<path fill="currentColor" stroke="none" fill-rule="evenodd" d="M3.9 3.6h8.2' +
+      'a1.3 1.3 0 0 1 1.3 1.3v7.8a1.3 1.3 0 0 1-1.3 1.3H3.9a1.3 1.3 0 0 1-1.3-1.3' +
+      'V4.9a1.3 1.3 0 0 1 1.3-1.3zM2.6 6.9h10.8v1.0H2.6zM7.0 8.6h2.0v2.2H7.0z"/>',
+
+    /* Compiled: a .so, a .dll, an .exe, an .o. A chip, pins and all. It is the
+     * one kind in the list that is not for a person to read, and a shape with
+     * legs on it says machine before any of the others do. */
+    'file-binary':
+      '<path fill="currentColor" stroke="none" fill-rule="evenodd" d="M5.6 4.4h4.8' +
+      'a1.2 1.2 0 0 1 1.2 1.2v4.8a1.2 1.2 0 0 1-1.2 1.2H5.6a1.2 1.2 0 0 1-1.2-1.2' +
+      'V5.6a1.2 1.2 0 0 1 1.2-1.2zM6.4 6.4h3.2v3.2H6.4z' +
+      'M6.1 2.2h1.0v2.2h-1.0zM8.9 2.2h1.0v2.2h-1.0z' +
+      'M6.1 11.6h1.0v2.2h-1.0zM8.9 11.6h1.0v2.2h-1.0z' +
+      'M2.2 6.1h2.2v1.0H2.2zM2.2 8.9h2.2v1.0H2.2z' +
+      'M11.6 6.1h2.2v1.0h-2.2zM11.6 8.9h2.2v1.0h-2.2z"/>',
+
+    /* A picture. The frame stays solid and the picture is the hole in it: a sun
+     * and a ridge, which is the one composition that survives being 8px wide. */
+    'file-image':
+      '<path fill="currentColor" stroke="none" fill-rule="evenodd" d="M4.7 3.2h6.6' +
+      'a1.3 1.3 0 0 1 1.3 1.3v7.0a1.3 1.3 0 0 1-1.3 1.3H4.7a1.3 1.3 0 0 1-1.3-1.3' +
+      'V4.5a1.3 1.3 0 0 1 1.3-1.3zM6.2 4.6a1.0 1.0 0 1 1 0 2.0 1.0 1.0 0 0 1 0-2.0z' +
+      'M4.4 11.4 7.3 7.6l1.9 2.4 1.2-1.3 1.7 2.7z"/>',
+
+    /* A symlink. The page it would have been, with the arrow cut through it --
+     * what is on the far end is unknown from here, so the icon says "elsewhere"
+     * and nothing about what is there. */
+    'file-link':
+      '<path fill="currentColor" stroke="none" fill-rule="evenodd" d="M4.5 1.8h4.3l3.8 3.8v7.5a1.1 1.1 0 0 1-1.1 1.1H4.5a1.1 1.1 0 0 1-1.1-1.1V2.9a1.1 1.1 0 0 1 1.1-1.1z' +
+      'M5.4 8.1h3.0V6.3l2.8 2.5-2.8 2.5V9.5H5.4z"/>',
+
     /* -- chrome ------------------------------------------------------------ */
 
     /* A pane with a prompt in it. The chevron is the shape people read as
@@ -70,11 +179,12 @@
      * close up entirely -- so it stays filled, and the pair reads as one
      * outline plus one dot rather than two of the same thing.
      *
-     * Orange, and specifically the orange of the application icon beside it on
-     * the title bar. The assistant is the product's own headline feature and
-     * the two marks are three characters apart up there; they should read as
-     * one family. It is the one glyph in the set that does not take
-     * `currentColor` from whatever is around it -- see `--ai` in theme.css.
+     * It takes `currentColor` like every other glyph here, so it is whatever
+     * the thing around it is -- dim on a resting tab, `--ac` on the tab in
+     * front. There was a note here saying it was orange, the orange of the
+     * application icon, and pointing at an `--ai` token to prove it. No rule
+     * ever set that colour on it and the token has since been deleted; the
+     * sentence had outlived the intention by long enough to read as fact.
      */
     'ai':
       '<path d="M6.4 2.1Q7.05 6.05 11 6.7 7.05 7.35 6.4 11.3 5.75 7.35 1.8 6.7 5.75 6.05 6.4 2.1Z"/>' +
@@ -240,15 +350,29 @@
     'skill':
       '<path d="M10.4 2.35a3.5 3.5 0 0 0-2.5 5.3l-5.2 5.2a1.45 1.45 0 0 0 2.05 2.05l5.2-5.2a3.5 3.5 0 0 0 4.25-4.45l-1.85 1.85-1.7-.45-.45-1.7 1.85-1.85a3.5 3.5 0 0 0-1.65-.75z"/>',
 
-    /* Three equal rings, overlapping. The only thing in the assistant's row
-     * that is about seeing rather than doing: the model's own thinking, shown
-     * or not shown. What makes it legible at 14px is the holes, not the
-     * silhouette -- a brain and a solid cloud both stood here and both read as
-     * a lump. */
+    /*
+     * A thought balloon: one bubble and two trailing beneath it.
+     *
+     * It was three equal circles overlapping, on the argument that the holes
+     * carry it. They do not -- three circles of the same size meeting at the
+     * same depth is a Venn diagram, and at 15px the six internal arcs close up
+     * into a grey knot with a scalloped edge. Nothing in it says thinking; the
+     * meaning was being carried entirely by which button it sat on.
+     *
+     * The balloon says it instead, and it says it with the one thing this set
+     * is built on: a large empty counter. A brain and a filled cloud were both
+     * tried here before and both read as a lump, which is the same failure --
+     * all silhouette, no hole. This has a single unbroken outline round a lot
+     * of nothing, and the two dots descending to the corner are what make the
+     * shape a thought rather than a speech bubble or a full stop.
+     *
+     * An ellipse and not a rounded rectangle: `terminal` is already a 2.2-radius
+     * box, and at this size the two would be the same icon.
+     */
     'think':
-      '<circle cx="5.2" cy="9.6" r="3.2"/>' +
-      '<circle cx="10.8" cy="9.6" r="3.2"/>' +
-      '<circle cx="8" cy="6.2" r="3.2"/>',
+      '<ellipse cx="9.1" cy="6.2" rx="4.8" ry="3.7"/>' +
+      '<circle cx="4.8" cy="11.6" r="1.15"/>' +
+      '<circle cx="2.5" cy="13.4" r="0.5"/>',
 
     /*
      * The three modes, as three different shapes rather than one shape in three
@@ -337,58 +461,101 @@
   /*
    * The product's own mark, in blocks.
    *
-   * media/tshell.svg draws the nautilus whorl as one filled path with a tapered
-   * stroke -- 1.85 turns of r = e^(0.30 theta), thickening from 3% of the outer
-   * radius at the centre to 34% at the mouth. This is that same curve sampled
-   * onto a 17x15 grid: a cell is set if the stroke covers more than a third of
-   * it. Nothing here was placed by hand, which is why the bitmap below can be
-   * read as a picture in the source and still be the logo.
+   * A square orange tile with the nautilus laid into it in white -- which is the
+   * application icon, built out of parts. The icon is a rounded orange square
+   * with a white whorl on it, and the mark that stood here before was only the
+   * whorl: orange line art on the panel background, with no tile and no white,
+   * so the one thing that makes the icon recognisable at 16px was the one thing
+   * missing from it.
    *
-   * Blocks, and not the curve itself, because this is the empty state of the
-   * assistant panel and it is the only place in the window where the mark is
-   * decoration rather than identity. Drawn smooth at 100px next to a paragraph
-   * of help text it reads as a watermark someone forgot to remove; drawn as
-   * something assembled out of parts, it reads as a thing waiting to be built,
+   * THE CURVE
+   *
+   * A logarithmic spiral of 1.4 turns, anticlockwise from a mouth at 38 degrees,
+   * the radius falling by 8.5 over its length, stroked from 46% of the outer
+   * radius at the mouth down to a hairline at the eye on a taper of t^2.1. Those
+   * six numbers are the drawing; the bitmap below is what they sample to on a
+   * 19x19 grid, fitted to the tile by its own bounding box rather than placed.
+   * Nothing here was put where it is by hand, which is why it can be read as a
+   * picture in the source and still be the logo.
+   *
+   * The radius falls by 8.5 and not by 4 because of what the second winding has
+   * to be. Shrink too slowly and it comes out six cells tall and one cell wide,
+   * which at this resolution is a straight line and a right angle rather than a
+   * curl; fast enough, and it closes into a small ring with a single cell of
+   * ground at its centre, which is an eye.
+   *
+   * WHY IT IS SAMPLED IN TWO PASSES
+   *
+   * A grid cannot draw a stroke thinner than one cell, and the thin end is the
+   * entire point of a tapered mark. Sampling by area alone drops the tail below
+   * the threshold and breaks it into loose cells -- not a hairline, a dotted
+   * line. So every cell the curve passes through is set outright, which floors
+   * the stroke at one block, and area is what adds the second, third and fourth
+   * block where the stroke really is that wide. The result reads four blocks
+   * thick at the mouth and one at the eye, which is the whole of "thick to thin"
+   * at a resolution this coarse.
+   *
+   * WHY BLOCKS AT ALL
+   *
+   * This is the empty state of the assistant panel, the only place in the window
+   * where the mark is decoration rather than identity. Drawn smooth at 100px
+   * beside a paragraph of help text it reads as a watermark someone forgot to
+   * remove; assembled out of parts, it reads as a thing waiting to be built,
    * which is what an empty conversation is.
    *
    * The blocks stay square with a 0.6-unit gutter at every size. That gutter is
    * the whole effect -- close it and this is just a low-resolution logo.
    */
   var MARK = [
-    '.......####......',
-    '.....#########...',
-    '...#############.',
-    '..###############',
-    '.#####......#####',
-    '.####.........##.',
-    '####.............',
-    '####.............',
-    '###...###........',
-    '###..#####.......',
-    '####..####.......',
-    '.####..###.......',
-    '..########.......',
-    '..#######........',
-    '....###..........'
+    '...................',
+    '...................',
+    '........#####......',
+    '.....###########...',
+    '....#############..',
+    '...###############.',
+    '..#####.....######.',
+    '..####.......####..',
+    '.####..........#...',
+    '.###...............',
+    '.###...###.........',
+    '.###..##.##........',
+    '.###..#...#........',
+    '..###.....#........',
+    '..####...##........',
+    '...#######.........',
+    '.....####..........',
+    '...................',
+    '...................'
   ];
 
+  /*
+   * Every cell is drawn, not only the shell.
+   *
+   * `--brand` for the ground and white for the whorl, both written as inline
+   * styles rather than left to `currentColor`: there are two colours here and
+   * only one of them can be inherited. `--brand` is the token the palette panel
+   * deliberately does not expose -- it is not a role, it is this logo -- so it
+   * is the same orange in both themes, and white on it is the same white the
+   * application icon uses.
+   */
   window.tshellMark = function (className) {
     var CELL = 4, BLOCK = 3.4, INSET = (CELL - BLOCK) / 2, RADIUS = 0.9;
+    var size = MARK.length * CELL;
     var svg = document.createElementNS(NS, 'svg');
     svg.setAttribute('class', className || 'mark');
-    svg.setAttribute('viewBox', '0 0 ' + MARK[0].length * CELL + ' ' + MARK.length * CELL);
-    svg.setAttribute('fill', 'currentColor');
+    svg.setAttribute('viewBox', '0 0 ' + MARK[0].length * CELL + ' ' + size);
     svg.setAttribute('aria-hidden', 'true');
     svg.setAttribute('focusable', 'false');
     for (var y = 0; y < MARK.length; y++) {
       for (var x = 0; x < MARK[y].length; x++) {
-        if (MARK[y].charAt(x) !== '#') continue;
+        var shell = MARK[y].charAt(x) === '#';
         var block = document.createElementNS(NS, 'rect');
         block.setAttribute('x', x * CELL + INSET);
         block.setAttribute('y', y * CELL + INSET);
         block.setAttribute('width', BLOCK);
         block.setAttribute('height', BLOCK);
         block.setAttribute('rx', RADIUS);
+        block.setAttribute('style', 'fill:' + (shell ? '#fff' : 'var(--brand)'));
         svg.appendChild(block);
       }
     }

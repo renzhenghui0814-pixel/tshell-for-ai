@@ -9,7 +9,6 @@
    * title bar now and the shell hides it there; what is left here is the
    * shortcut, which has to refuse on its own.
    */
-  let aiEnabled = bootstrap.aiEnabled !== false;
 
   /*
    * What this terminal paints with: the sixteen ANSI colours, whichever of the
@@ -79,6 +78,10 @@
        * whatever is behind the cursor rather than whatever the window is: a
        * scheme with its own background would otherwise punch a window-coloured
        * hole through the character the cursor is sitting on.
+       *
+       * The cursor is a bar now and nothing reads this, but the value is the
+       * answer to a question the style asks, not one the theme does: put the
+       * block back and the hole comes with it.
        */
       cursorAccent: background,
       selectionBackground: colors.selection || token('--term-select'),
@@ -119,6 +122,16 @@
 
   const term = new Terminal({
     cursorBlink: true,
+    /*
+     * A bar, not the default block. `cursorWidth` is only read for this style
+     * -- a block's width is the cell's -- and it is floored to a whole number
+     * of CSS pixels, so 2 is the one step between a hairline and the cell. It
+     * arrives as an inset box-shadow on the DOM renderer's cursor element,
+     * which is the renderer in use: only addon-fit is vendored alongside
+     * xterm, so there is no canvas or WebGL renderer to disagree about it.
+     */
+    cursorStyle: 'bar',
+    cursorWidth: 2,
     convertEol: true,
     fontFamily: fontFamily(),
     fontSize: appearance.fontSize || 13,
@@ -194,19 +207,15 @@
   /* AI agent ---------------------------------------------------------------- */
 
   /*
-   * The shortcut is caught here as well as declared as a keybinding, because the
-   * terminal has the keyboard and would otherwise swallow it before VS Code saw
-   * it. Matched on `code` rather than `key`: Alt changes the character a key
-   * produces on plenty of layouts, and on macOS Option+Shift+P is not "P" at all.
+   * A hard-coded Alt+Shift+P used to be caught here, taking the key before
+   * xterm could hand it to the shell on the far end. The trick was right and it
+   * is now `shared/keys.js` plus one listener in `shared/host.js`: general,
+   * editable, and applied to every page rather than to this one alone.
+   *
+   * Its reasoning lives on there, because it is the reason the whole mechanism
+   * works -- `code` and not `key`, since Alt changes the character a key
+   * produces on plenty of layouts and on macOS Option+Shift+P is not "P" at all.
    */
-  document.addEventListener('keydown', (event) => {
-    if (!aiEnabled) return;
-    if (!event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey) return;
-    if (event.code !== 'KeyP') return;
-    event.preventDefault();
-    event.stopPropagation();
-    vscode.postMessage({ type: 'openAi' });
-  }, true);
 
   window.addEventListener('message', (event) => {
     const message = event.data;
@@ -214,7 +223,6 @@
       term.reset();
       term.write(message.output || '');
     }
-    if (message.type === 'aiEnabled') aiEnabled = message.enabled !== false;
     /*
      * An appearance change, live. Nothing is reconnected and nothing is redrawn
      * by us: assigning `options.theme` makes xterm repaint its whole buffer,

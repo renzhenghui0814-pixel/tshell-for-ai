@@ -20,6 +20,7 @@
 //!    stop and say so; it is not a reason to replace the user's servers with an
 //!    empty file, which is what the old loader did.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,9 @@ use crate::atomic;
 pub const VERSION: u32 = 1;
 
 const DEFAULT_GROUP_ID: &str = "default";
+
+/// How many servers the empty window offers to reopen.
+pub const RECENT_MAX: usize = 5;
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Language {
@@ -153,6 +157,24 @@ pub struct Settings {
     /// find one.
     #[serde(default)]
     pub ai: crate::ai::settings::AiSettings,
+    /*
+     * Keyboard shortcuts, as the user's edits to them: action id to binding.
+     *
+     * Edits, not the table. A binding nobody changed is absent, so a later
+     * build that picks a better default hands it to everyone who never opened
+     * the panel -- the same rule the palette follows, for the same reason.
+     *
+     * What this file checks is the *shape* of a binding, and nothing else.
+     * Whether a given combination is a good idea to bind -- that a bare letter
+     * belongs to the shell on the far end, that the whole of `Ctrl` plus a
+     * letter belongs to readline -- is one rule in `ui/shared/keys.js`, which
+     * is both where it is enforced when the user picks one and where it is
+     * enforced again before anything is matched against it. Written here too it
+     * would be a second copy, and the direction two copies drift in is a
+     * shortcut that this side stores and that side refuses to fire.
+     */
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub keys: BTreeMap<String, String>,
     /// Everything else under `settings`, carried through untouched.
     ///
     /// The one thing this must not do is drop what it does not recognise: a user
@@ -168,9 +190,39 @@ impl Default for Settings {
             language: Language::default(),
             show_hidden_files: false,
             ai: crate::ai::settings::AiSettings::default(),
+            keys: BTreeMap::new(),
             rest: Map::new(),
         }
     }
+}
+
+/*
+ * Whether a string is shaped like a binding: modifiers then a key, joined by
+ * `+`, with the key half spelled as a `KeyboardEvent.code` -- `Ctrl+Shift+KeyT`,
+ * `F11`, `Alt+Shift+Digit1`.
+ *
+ * A gate, not a policy. Anything that gets past it is a string the front end can
+ * parse; whether it is a combination worth having is `keys.js`'s question. What
+ * this stops is the other kind of damage: a hand-edited file putting arbitrary
+ * text where a binding goes, which would otherwise be handed to a page and
+ * compared against every keystroke forever.
+ */
+fn is_binding(text: &str) -> bool {
+    if text.is_empty() || text.len() > 64 {
+        return false;
+    }
+    let mut parts = text.split('+').collect::<Vec<_>>();
+    let Some(code) = parts.pop() else { return false };
+    if parts.len() > 4 {
+        return false;
+    }
+    let head_is_letter = code.chars().next().is_some_and(|c| c.is_ascii_alphabetic());
+    if !head_is_letter || !code.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return false;
+    }
+    parts
+        .iter()
+        .all(|part| matches!(*part, "Ctrl" | "Alt" | "Meta" | "Shift"))
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -182,6 +234,14 @@ pub struct AppConfig {
     pub settings: Settings,
     #[serde(default)]
     pub groups: Vec<Group>,
+    /// The last few servers opened, most recent first.
+    ///
+    /// Ids only. The position is the time -- a stamp beside it would be a
+    /// second field saying the same thing, and two fields saying one thing can
+    /// disagree. Left out of the file entirely while it is empty, so a config
+    /// belonging to someone who has never opened a server is untouched by this.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent: Vec<String>,
 }
 
 impl AppConfig {
@@ -193,9 +253,28 @@ impl AppConfig {
                 ..Settings::default()
             },
             groups: Vec::new(),
+            recent: Vec::new(),
         };
         config.normalize();
         config
+    }
+
+    /// Put a server at the front of `recent`, having just been opened.
+    ///
+    /// An id no group holds is ignored rather than stored: the front of the
+    /// list is where the eye goes first, and a pane that never opened has no
+    /// claim on it.
+    pub fn touch_recent(&mut self, id: &str) {
+        let known = self
+            .groups
+            .iter()
+            .any(|group| group.servers.iter().any(|server| server.id == id));
+        if !known {
+            return;
+        }
+        self.recent.retain(|each| each != id);
+        self.recent.insert(0, id.to_string());
+        self.recent.truncate(RECENT_MAX);
     }
 
     /// Bring a parsed file up to what the rest of the code is allowed to assume.
@@ -207,6 +286,7 @@ impl AppConfig {
     pub fn normalize(&mut self) {
         self.version = VERSION;
         self.settings.ai.normalize();
+        self.settings.keys.retain(|_, binding| is_binding(binding));
 
         for group in &mut self.groups {
             if group.id.trim().is_empty() {
@@ -244,6 +324,18 @@ impl AppConfig {
                 }
             }
         }
+
+        /*
+         * `recent` holds ids and nothing else, so an entry pointing at a
+         * deleted server is an entry with nothing to draw. It is dropped here,
+         * where the whole file is in hand, rather than left for each reader to
+         * remember. Repeats go the same way: a hand-edited file is not the
+         * authority on its own shape.
+         */
+        self.recent.retain(|id| self.groups.iter().any(|g| g.servers.iter().any(|s| &s.id == id)));
+        let mut seen = std::collections::HashSet::new();
+        self.recent.retain(|id| seen.insert(id.clone()));
+        self.recent.truncate(RECENT_MAX);
 
         // The tree draws groups, so there has to be one to drop a server into.
         if self.groups.is_empty() {
@@ -448,6 +540,40 @@ mod tests {
 
     fn parse_ok(raw: &str) -> AppConfig {
         parse(raw).expect("should parse")
+    }
+
+    /*
+     * The shape gate on a binding, and what it deliberately does not do.
+     *
+     * `KeyA` gets through here: it is shaped like a binding, and whether a bare
+     * letter is a sane thing to bind is `keys.js`'s question, asked both when
+     * the user picks one and again before anything is matched. What must not
+     * get through is text that is not a binding at all, because that is what
+     * ends up compared against every keystroke in every page.
+     */
+    #[test]
+    fn a_binding_is_checked_for_shape_and_not_for_sense() {
+        for good in ["Ctrl+Shift+KeyT", "F11", "Alt+Shift+Digit1", "KeyA", "Meta+Space"] {
+            assert!(is_binding(good), "{good} should be a binding");
+        }
+        for bad in ["", "Ctrl+", "+KeyT", "Hyper+KeyT", "Ctrl+Shift+1Key", "Ctrl Shift T"] {
+            assert!(!is_binding(bad), "{bad:?} should not be a binding");
+        }
+        // Long enough to be someone's essay rather than someone's keystroke.
+        assert!(!is_binding(&"A".repeat(65)));
+    }
+
+    /// A binding that is not one is dropped on the way in, the same as a colour
+    /// that is not a colour. The rest of the map is not disturbed by it.
+    #[test]
+    fn an_unreadable_binding_is_dropped() {
+        let raw = r#"{"version":1,"settings":{"keys":{"openTransfer":"Ctrl+Shift+KeyT","openAssistant":"nonsense here"}},"groups":[]}"#;
+        let config = parse_ok(raw);
+        assert_eq!(
+            config.settings.keys.get("openTransfer").map(String::as_str),
+            Some("Ctrl+Shift+KeyT")
+        );
+        assert!(!config.settings.keys.contains_key("openAssistant"));
     }
 
     /// The point of the version field. A file from a later build is refused, not
@@ -712,5 +838,87 @@ mod tests {
         assert!(config.move_group("nope", 0).is_err());
         assert_eq!(server_ids(&config, "g1"), ["a", "b"]);
         assert_eq!(server_ids(&config, "g2"), ["c", "d"]);
+    }
+
+    // ------------------------------------------------------------ recent ---
+
+    /// Enough servers that the cap on `recent` has something to cut.
+    fn seven_servers() -> AppConfig {
+        let servers: Vec<String> = (1..=7)
+            .map(|n| format!(r#"{{"id":"s{n}","host":"h{n}","username":"u"}}"#))
+            .collect();
+        parse_ok(&format!(
+            r#"{{"version":1,"groups":[{{"id":"g","name":"G","servers":[{}]}}]}}"#,
+            servers.join(",")
+        ))
+    }
+
+    /// The list is an order, not a set of stamps: touching a server that is
+    /// already in it moves it to the front rather than adding a second copy.
+    /// That is the whole reason no timestamp is stored -- the position is the
+    /// time, and a second field saying the same thing is a second field that
+    /// can disagree.
+    #[test]
+    fn touching_a_server_moves_it_to_the_front() {
+        let mut config = tree();
+        config.touch_recent("a");
+        config.touch_recent("b");
+        config.touch_recent("a");
+        assert_eq!(config.recent, ["a", "b"]);
+    }
+
+    /// Five is what the empty window has room for, so the sixth pushes the
+    /// oldest out here rather than leaving the drawing side to decide how much
+    /// of a list it was given to ignore.
+    #[test]
+    fn recent_keeps_only_the_last_five() {
+        let mut config = seven_servers();
+        for id in ["s1", "s2", "s3", "s4", "s5", "s6", "s7"] {
+            config.touch_recent(id);
+        }
+        assert_eq!(config.recent, ["s7", "s6", "s5", "s4", "s3"]);
+    }
+
+    /// The cap holds on the way in as well as on the way through: a file with
+    /// forty entries in it is trimmed when it is read, not when it is drawn.
+    #[test]
+    fn normalize_trims_a_long_recent_list() {
+        let mut config = seven_servers();
+        config.recent = (1..=7).map(|n| format!("s{n}")).collect();
+        config.normalize();
+        assert_eq!(config.recent, ["s1", "s2", "s3", "s4", "s5"]);
+    }
+
+    /// A server that was deleted leaves an id behind, and the id is the only
+    /// thing stored -- there is no name in the list to draw. Dropping it here,
+    /// where the whole file is in hand, is cheaper than every reader having to
+    /// remember that a `recent` entry may point at nothing.
+    #[test]
+    fn normalize_drops_recent_ids_no_group_holds() {
+        let mut config = tree();
+        config.recent = vec!["a".into(), "gone".into(), "c".into()];
+        config.normalize();
+        assert_eq!(config.recent, ["a", "c"]);
+    }
+
+    /// A hand-edited file can repeat an id; the file is not the authority on
+    /// its own shape.
+    #[test]
+    fn normalize_removes_a_repeated_recent_id() {
+        let mut config = tree();
+        config.recent = vec!["a".into(), "b".into(), "a".into()];
+        config.normalize();
+        assert_eq!(config.recent, ["a", "b"]);
+    }
+
+    /// Touching an id no group holds does nothing. The front of the list is
+    /// where the eye goes first, and a pane that failed to open has no claim
+    /// on it.
+    #[test]
+    fn touching_an_unknown_server_changes_nothing() {
+        let mut config = tree();
+        config.touch_recent("a");
+        config.touch_recent("nope");
+        assert_eq!(config.recent, ["a"]);
     }
 }

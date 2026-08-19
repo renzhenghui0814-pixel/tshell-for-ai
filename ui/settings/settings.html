@@ -6,8 +6,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="../shared/theme.css">
   <link rel="stylesheet" href="../shared/components.css">
+  <script src="../shared/dropdown.js"></script>
   <script src="../shared/scrollbars.js"></script>
   <script src="../shared/schemes.js"></script>
+  <script src="../shared/palette.js"></script>
+  <script src="../shared/keys.js"></script>
   <script src="../shared/host.js"></script>
   <link rel="stylesheet" href="settings.css">
 </head>
@@ -33,66 +36,196 @@
       </div>
 
       <!--
+        The window's own palette, and the type it is set in.
+
+        Behind a fold, like the schemes below, and for the same reason: fifteen
+        colours per half plus a preview, a contrast report and two font fields
+        is not a row, it is a page, and two of them stacked in the middle of
+        this one pushed everything after them off the bottom of the screen.
+        Shut, the row wears the fifteen along its right-hand end -- the other
+        thirty follow from them in shared/palette.js, so what a strip shows is
+        every decision the palette makes and none of its consequences.
+
+        Which half is being edited is its own control, deliberately not the
+        theme switch above. Editing the half you are not looking at is a real
+        thing to want (a light theme is usually built while working in a dark
+        one), and a switch that changed both would make it impossible.
+      -->
+      <details class="fold palette-row" id="palette-fold">
+        <summary class="fold-head">
+          <div class="label">
+            <span id="palette-label"></span>
+            <span id="palette-hint" class="hint"></span>
+          </div>
+        </summary>
+
+        <div class="fold-body">
+
+          <!-- Shown only when the theme file is on disk but would not parse.
+               While it is up nothing here is saved: the window wears the palette
+               that ships, and the file is left exactly as it is. -->
+          <div id="palette-error" class="c-notice notice" hidden></div>
+
+          <div class="palette-bar">
+            <div class="c-tabs" id="palette-half" role="tablist"></div>
+            <button type="button" class="c-btn" id="palette-reset"></button>
+          </div>
+
+          <!-- Up while the half being edited is not the half on screen. Every
+               edit still applies and still saves; it just cannot be seen. -->
+          <div class="palette-note" id="palette-blind" hidden></div>
+
+          <div class="swatch-section">
+            <div class="swatch-section-title" id="palette-surface-title"></div>
+            <div class="swatches palette-swatches" id="palette-surface"></div>
+          </div>
+
+          <div class="swatch-section">
+            <div class="swatch-section-title" id="palette-ink-title"></div>
+            <div class="swatches palette-swatches" id="palette-ink"></div>
+          </div>
+
+          <div class="swatch-section">
+            <div class="swatch-section-title" id="palette-meaning-title"></div>
+            <div class="swatches palette-swatches" id="palette-meaning"></div>
+          </div>
+
+          <!-- What the fifteen add up to, in the half being edited: a surface, two
+               levels of text on it, and the three fills that carry a label. It is
+               drawn from the derived set rather than from the live page, so it is
+               also the preview for the half that is not on screen. -->
+          <div class="palette-preview" id="palette-preview" aria-hidden="true"></div>
+
+          <!-- Measured, not judged. A palette panel with no contrast in it is a
+               panel for making the window unreadable one colour at a time.
+               `--tx-faint` is exempt and stays exempt: it is icon strokes and
+               hairlines, never words. -->
+          <div class="palette-contrast" id="palette-contrast" hidden></div>
+
+          <div class="palette-fields">
+            <label class="field">
+              <span class="c-label" id="palette-font-label"></span>
+              <span class="c-select">
+                <input class="c-field" type="text" id="palette-font" list="palette-fonts"
+                       spellcheck="false" autocomplete="off">
+              </span>
+              <datalist id="palette-fonts"></datalist>
+            </label>
+            <label class="field">
+              <span class="c-label" id="palette-mono-label"></span>
+              <span class="c-select">
+                <input class="c-field" type="text" id="palette-mono" list="palette-monos"
+                       spellcheck="false" autocomplete="off">
+              </span>
+              <datalist id="palette-monos"></datalist>
+            </label>
+          </div>
+        </div>
+      </details>
+
+      <!--
         The terminal's appearance, as schemes.
 
-        Stacked rather than a control on the right like the two above: the
-        choice is the smallest part of it. The rest is what the choice stands
-        for -- a preview, a font, and twenty colours -- and none of that fits
-        opposite a label. Everything here takes effect on every open terminal as
-        it is edited, so what is below the picker is a preview of something
-        already true.
+        The choice is the smallest part of it: the rest is what the choice
+        stands for -- a preview, a font, and twenty colours -- and none of that
+        fits opposite a label, so the row opens instead. Shut, it carries the
+        scheme's name and its sixteen ANSI slots, which between them answer both
+        of the questions a closed row would otherwise swallow. Everything here
+        takes effect on every open terminal as it is edited, so what is below
+        the picker is a preview of something already true.
       -->
-      <div class="row stacked scheme-row">
-        <div class="label">
-          <span id="scheme-label"></span>
-          <span id="scheme-hint" class="hint"></span>
+      <details class="fold scheme-row" id="scheme-fold">
+        <summary class="fold-head">
+          <div class="label">
+            <span id="scheme-label"></span>
+            <span id="scheme-hint" class="hint"></span>
+          </div>
+          <!-- Which scheme is in force, and what it looks like. Both are gone
+               the moment this row is shut, and "terminal appearance" on its own
+               answers neither question. -->
+          <span class="fold-value" id="scheme-current"></span>
+        </summary>
+
+        <div class="fold-body">
+
+          <!-- Shown only when the schemes file is on disk but would not parse.
+               While it is up, nothing here is saved: the built-in schemes still
+               paint, and the file is left exactly as it is. -->
+          <div id="scheme-error" class="c-notice notice" hidden></div>
+
+          <div class="scheme-bar">
+            <span class="c-select scheme-pick">
+              <select class="c-field" id="scheme-pick"></select>
+            </span>
+            <button type="button" class="c-btn" id="scheme-new"></button>
+            <button type="button" class="c-btn" id="scheme-copy"></button>
+            <button type="button" class="c-btn" id="scheme-reset"></button>
+            <button type="button" class="c-btn c-btn-quiet-danger" id="scheme-delete"></button>
+          </div>
+
+          <div class="scheme-fields">
+            <label class="field">
+              <span class="c-label" id="scheme-name-label"></span>
+              <input class="c-field" type="text" id="scheme-name" spellcheck="false" autocomplete="off">
+            </label>
+            <label class="field">
+              <span class="c-label" id="scheme-font-label"></span>
+              <!-- A list, not a closed dropdown: the suggestions are what this
+                   machine has, and a font stack with fallbacks in it is still a
+                   legitimate thing to type. -->
+              <span class="c-select">
+                <input class="c-field" type="text" id="scheme-font" list="scheme-fonts"
+                       spellcheck="false" autocomplete="off">
+              </span>
+              <datalist id="scheme-fonts"></datalist>
+            </label>
+            <label class="field field-narrow">
+              <span class="c-label" id="scheme-size-label"></span>
+              <input class="c-field" type="number" id="scheme-size" min="6" max="48" step="0.5">
+            </label>
+          </div>
+
+          <!-- What the sixteen actually look like next to each other, on this
+               scheme's own background and in this scheme's own font. A row of
+               swatches answers "which red is it"; only this answers "can I read
+               a build log in it". -->
+          <div class="scheme-preview" id="scheme-preview" aria-hidden="true"></div>
+
+          <div class="swatches" id="scheme-ansi"></div>
+
+          <div class="swatch-section">
+            <div class="swatch-section-title" id="scheme-extra-title"></div>
+            <div class="swatches swatches-wide" id="scheme-extra"></div>
+          </div>
         </div>
+      </details>
+    </section>
 
-        <!-- Shown only when the schemes file is on disk but would not parse.
-             While it is up, nothing here is saved: the built-in schemes still
-             paint, and the file is left exactly as it is. -->
-        <div id="scheme-error" class="notice" hidden></div>
+    <!--
+      Shortcuts.
 
-        <div class="scheme-bar">
-          <select class="c-field scheme-pick" id="scheme-pick"></select>
-          <button type="button" class="c-btn" id="scheme-new"></button>
-          <button type="button" class="c-btn" id="scheme-copy"></button>
-          <button type="button" class="c-btn" id="scheme-reset"></button>
-          <button type="button" class="c-btn" id="scheme-delete"></button>
-        </div>
+      Three rows and no fold: the whole section is shorter than one of the
+      folds above, and a fold over three lines is a click that buys nothing.
 
-        <div class="scheme-fields">
-          <label class="field">
-            <span class="field-name" id="scheme-name-label"></span>
-            <input class="c-field" type="text" id="scheme-name" spellcheck="false" autocomplete="off">
-          </label>
-          <label class="field">
-            <span class="field-name" id="scheme-font-label"></span>
-            <!-- A list, not a closed dropdown: the suggestions are what this
-                 machine has, and a font stack with fallbacks in it is still a
-                 legitimate thing to type. -->
-            <input class="c-field" type="text" id="scheme-font" list="scheme-fonts"
-                   spellcheck="false" autocomplete="off">
-            <datalist id="scheme-fonts"></datalist>
-          </label>
-          <label class="field field-narrow">
-            <span class="field-name" id="scheme-size-label"></span>
-            <input class="c-field" type="number" id="scheme-size" min="6" max="48" step="0.5">
-          </label>
-        </div>
+      Each row is a button that reads as the binding it holds. Pressing it puts
+      that row into capture -- the button says so, the bridge stands down (see
+      `tshellShortcutsPaused` in shared/host.js), and the next keystroke is the
+      answer. Escape leaves without changing anything, which is why Escape is
+      not itself bindable from here.
 
-        <!-- What the sixteen actually look like next to each other, on this
-             scheme's own background and in this scheme's own font. A row of
-             swatches answers "which red is it"; only this answers "can I read
-             a build log in it". -->
-        <div class="scheme-preview" id="scheme-preview" aria-hidden="true"></div>
-
-        <div class="swatches" id="scheme-ansi"></div>
-
-        <div class="swatch-section">
-          <div class="swatch-section-title" id="scheme-extra-title"></div>
-          <div class="swatches swatches-wide" id="scheme-extra"></div>
-        </div>
+      What may be bound is not this page's rule; it is `shared/keys.js`, which
+      is also what decides whether a keystroke matches. One rule, so the panel
+      cannot promise something the matching will not honour.
+    -->
+    <section class="group">
+      <h2 id="keys-title"></h2>
+      <div id="keys-rows"></div>
+      <!-- Up when a keystroke was refused, saying which rule refused it.
+           Cleared by the next capture, so it never outlives its own cause. -->
+      <div id="keys-error" class="c-notice notice" hidden></div>
+      <div class="row keys-foot">
+        <div class="label"><span id="keys-hint" class="hint"></span></div>
+        <button type="button" class="c-btn" id="keys-reset"></button>
       </div>
     </section>
 
@@ -285,7 +418,7 @@
         </div>
         <span id="secrets-value" class="value"></span>
       </div>
-      <div id="secrets-warning" class="notice" hidden></div>
+      <div id="secrets-warning" class="c-notice notice" hidden></div>
       <div class="row stacked">
         <div class="label">
           <span id="config-label"></span>

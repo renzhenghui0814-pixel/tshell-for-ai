@@ -62,6 +62,12 @@ fn order(entries: &mut [Entry]) {
 /// timestamp arrives with the transfer step, and adds them then.
 pub struct Stat {
     pub size: u64,
+    /// Seconds since the epoch, or zero when the side cannot report one.
+    ///
+    /// Zero is not a time, and the editor reads it that way: a server whose
+    /// `stat` has no mtime falls back to comparing sizes rather than treating
+    /// every save as a conflict.
+    pub modified: u64,
 }
 
 pub struct Local;
@@ -109,7 +115,27 @@ impl Local {
 
     fn stat(&self, path: &str) -> Result<Stat, String> {
         let meta = std::fs::metadata(path).map_err(|error| error.to_string())?;
-        Ok(Stat { size: meta.len() })
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|when| when.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|since| since.as_secs())
+            .unwrap_or(0);
+        Ok(Stat { size: meta.len(), modified })
+    }
+
+    /*
+     * The whole file, replaced in one step.
+     *
+     * `atomic` rather than a plain write for the reason that module exists: an
+     * interrupted overwrite leaves whatever prefix made it out, and for a config
+     * file that is every server the user had. The remote side cannot do this and
+     * says so at its own definition -- the two are deliberately not the same,
+     * because pretending they were would mean claiming a guarantee SFTP v3
+     * cannot give.
+     */
+    fn write_bytes(&self, path: &str, bytes: &[u8]) -> Result<(), String> {
+        crate::atomic::write_bytes(Path::new(path), bytes).map_err(|error| error.to_string())
     }
 
     /// A window of a file, for the preview panel. Short reads at the end of the
@@ -252,7 +278,40 @@ impl Remote {
             .map_err(|error| error.to_string())?;
         Ok(Stat {
             size: meta.size.unwrap_or(0),
+            modified: meta.mtime.unwrap_or(0) as u64,
         })
+    }
+
+    /*
+     * The whole file, truncated and rewritten in place.
+     *
+     * Not atomic, and it cannot be. SFTP v3's `rename` fails when the target
+     * exists, so the local trick -- write beside it, rename over it -- would
+     * have to become "write, delete the original, rename", which opens a window
+     * where the file does not exist at all. A crash there loses the file
+     * outright; a crash here truncates it, which is worse than nothing happening
+     * and better than nothing being there. OpenSSH's overwriting rename is an
+     * extension that not every server has and that russh-sftp does not expose.
+     *
+     * This is what every editor that writes over SFTP does, for the same reason.
+     */
+    async fn write_bytes(&self, path: &str, bytes: &[u8]) -> Result<(), String> {
+        use tokio::io::AsyncWriteExt;
+        use russh_sftp::protocol::OpenFlags;
+
+        let mut file = self
+            .sftp
+            .open_with_flags(
+                path.to_string(),
+                OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        file.write_all(bytes).await.map_err(|error| error.to_string())?;
+        // Explicit, not left to the drop: a drop cannot report a failure, and a
+        // short write nobody noticed is a truncated file reported as saved.
+        file.flush().await.map_err(|error| error.to_string())?;
+        Ok(())
     }
 
     /*
@@ -631,6 +690,25 @@ pub async fn read_bytes(
             .remote(pane, target)
             .await?
             .read_bytes(path, offset, max)
+            .await
+    }
+}
+
+pub async fn write_bytes(
+    transfers: &Transfers,
+    pane: &str,
+    side: &str,
+    target: &ssh::Target,
+    path: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
+    if side == "local" {
+        Local.write_bytes(path, bytes)
+    } else {
+        transfers
+            .remote(pane, target)
+            .await?
+            .write_bytes(path, bytes)
             .await
     }
 }
@@ -1089,7 +1167,17 @@ async fn drive(
             }
         }
 
+        /*
+         * The count of files finished *before* this one, which is what every
+         * tick during it should say. It is deliberately a snapshot: `summary`
+         * is borrowed by the loop and the closure below outlives the statement
+         * that would update it.
+         *
+         * What used to be missing is the correction at the other end -- see the
+         * `Ok` arm below.
+         */
         let done_files = summary.completed;
+        let opening = seen;
         let mut report = |file: &File, moved: u64, seen: u64| {
             say(
                 out,
@@ -1117,7 +1205,46 @@ async fn drive(
         );
 
         match copy_file(ends, file, cancel, &mut seen, &mut report).await {
-            Ok(()) => summary.completed += 1,
+            Ok(()) => {
+                summary.completed += 1;
+                /*
+                 * A file landing is the one state change in this loop that
+                 * produced no event of its own.
+                 *
+                 * `done_files` above is read before the copy starts, so every
+                 * tick during a file reports the count as it was when the file
+                 * began -- right for those ticks, and one behind from the
+                 * instant the file lands. The correction used to arrive on the
+                 * *next* file's opening tick, which hid the bug in the middle
+                 * of a run and left it standing at the end: the last file never
+                 * had a next tick, so a five file transfer finished reading
+                 * `4/5`. With one file there is no next tick at all, and the
+                 * card sat at `0/1` through a download that had completed,
+                 * beside a byte count that had reached 100%.
+                 *
+                 * The byte figures were always right because `seen` is carried
+                 * through `copy_file` by reference and advances with the
+                 * blocks. Only the file count was a snapshot.
+                 *
+                 * `seen - opening` rather than `file.size`: it is what this
+                 * copy actually moved, and the two differ if the file changed
+                 * size between the scan and the copy. The bar should say what
+                 * happened, not what was planned.
+                 */
+                say(
+                    out,
+                    serde_json::json!({
+                        "kind": "progress",
+                        "doneFiles": summary.completed,
+                        "totalFiles": total_files,
+                        "doneBytes": seen,
+                        "totalBytes": plan.total_bytes,
+                        "name": file.name,
+                        "transferred": seen - opening,
+                        "total": file.size,
+                    }),
+                );
+            }
             // An empty reason is the cancel signal, not a failure with nothing
             // to say -- see `copy_file`, which is the only thing that sends one.
             Err(reason) if reason.is_empty() => {

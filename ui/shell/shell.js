@@ -21,6 +21,17 @@
         return Promise.reject(new Error('not running under Tauri: ' + command));
       };
 
+  /*
+   * The one thing that arrives without having been asked for.
+   *
+   * Every other exchange in this file starts with a page's message and ends with
+   * a command's result. The host key question cannot: it is raised from inside a
+   * connection, and the connection may belong to no command at all -- a transfer
+   * job that lost its link and is dialling again. So it comes the other way, as
+   * an event, and `host_key_answer` carries the reply back. See askHostKey.
+   */
+  var tauriEvent = window.__TAURI__ && window.__TAURI__.event;
+
   var strings = {};
   var language = 'zh-CN';
   var theme = 'dark';
@@ -41,6 +52,34 @@
    */
   var schemesError = '';
   var fontList = null;
+  var fontListAll = null;
+
+  /*
+   * The window's own palette -- the user's edits to `shared/theme.css`.
+   *
+   * The same division as the schemes, and for the same reason: this frame is
+   * the one that knows the whole of it, so it holds the file, applies it here,
+   * and hands it to every page it opens. `palette.js` turns the fifteen tokens
+   * a half may carry into the thirty that follow from them.
+   *
+   * `paletteError` means the file is on disk and would not parse. The window
+   * opens anyway wearing the palette that ships -- and nothing is written back
+   * over a file we could not read.
+   */
+  var paletteFile = window.tshellPalette ? window.tshellPalette.empty() : null;
+
+  /*
+   * The user's edits to the shortcuts, and the table those resolve to.
+   *
+   * Two variables rather than one because they answer different questions.
+   * `keysFile` is what is on disk and what the settings page edits -- edits
+   * only, so a binding nobody changed keeps following the product. `shortcuts`
+   * is the defaults with those laid over, which is the only form worth matching
+   * a keystroke against. Filled in at boot from the panel state.
+   */
+  var keysFile = {};
+  var shortcuts = window.tshellKeys ? window.tshellKeys.resolve({}) : null;
+  var paletteError = '';
 
   /*
    * Panes are flat and columns are ordered. A pane knows which column it belongs
@@ -90,8 +129,6 @@
 
   var panesEl = document.getElementById('panes');
   var sidebar = document.getElementById('sidebar');
-  var actionAi = document.getElementById('act-ai');
-  var actionTransfer = document.getElementById('act-transfer');
 
   /*
    * Switched off means gone, here as it was under VS Code -- the assistant's
@@ -112,11 +149,8 @@
     return invoke('load_state').then(function (loaded) {
       panel = loaded;
       aiEnabled = loaded.aiEnabled !== false;
-      actionAi.hidden = !aiEnabled;
       paintSidebar();
-      panes.forEach(function (pane) {
-        if (pane.kind === 'terminal') send(pane.id, { type: 'aiEnabled', enabled: aiEnabled });
-      });
+      paintNothing();
     }).catch(function (error) {
       console.warn('[shell] the settings changed but the panel would not reload:', error);
     });
@@ -134,7 +168,17 @@
    * reading it synchronously the way they did under VS Code. See shared/host.js.
    */
   function frameUrl(page, paneId, bootstrap) {
-    var frame = { paneId: paneId, bootstrap: bootstrap, theme: theme };
+    // The palette rides here rather than being broadcast after the load, so a
+    // page never paints once in the shipped colours and once in the user's.
+    var frame = {
+      paneId: paneId,
+      bootstrap: bootstrap,
+      theme: theme,
+      palette: paletteFile,
+      // Edits, not the resolved table: host.js resolves, so the defaults are
+      // spelled once, in keys.js, rather than copied into every fragment.
+      keys: keysFile
+    };
     return page + '#' + encodeURIComponent(JSON.stringify(frame));
   }
 
@@ -235,19 +279,27 @@
     columns.forEach(function (column) { column.weight *= scale; });
   }
 
-  /** Tracks are 1-based and every second one is a splitter. */
+  /**
+   * Tracks are 1-based and every second one is a splitter. The splitter tracks
+   * are the ground showing between two cards, so their width is the same eight
+   * pixels the workbench pads itself with -- see `.splitter` in shell.css.
+   */
   function trackOf(index) {
     return String(index * 2 + 1);
   }
 
   function paintTracks() {
+    // Columns coming and going is exactly when the window becomes empty or
+    // stops being, so the one place that writes the grid is the one place that
+    // has to say which of the two it is.
+    paintNothing();
     if (!columns.length) {
       panesEl.style.gridTemplateColumns = 'minmax(0, 1fr)';
       return;
     }
     var tracks = [];
     columns.forEach(function (column, i) {
-      if (i) tracks.push('4px');
+      if (i) tracks.push('8px');
       /*
        * minmax(0, ...) rather than a bare fr. An iframe's automatic minimum size
        * is 300px wide, and a track that honours it can never be dragged below
@@ -304,7 +356,6 @@
         pane.tab.classList.toggle('active', on);
       });
     });
-    syncActions();
   }
 
   // ----------------------------------------------------------------- panes ---
@@ -358,7 +409,8 @@
     terminal: 'terminal',
     transfer: 'transfer',
     chat: 'ai',
-    settings: 'gear'
+    settings: 'gear',
+    editor: 'file'
   };
 
   function makeTab(pane) {
@@ -408,12 +460,52 @@
     return tab;
   }
 
+  /*
+   * Which tab was in front, most recent first, across the whole window.
+   *
+   * Window-wide rather than one list per column, because a tab can change
+   * column: dragging one moves its `grid-column` and nothing else, so a list
+   * owned by a column would have to be maintained on every move. One list, read
+   * with a filter, cannot go stale that way.
+   */
+  var recent = [];
+
+  function remember(paneId) {
+    var at = recent.indexOf(paneId);
+    if (at >= 0) recent.splice(at, 1);
+    recent.unshift(paneId);
+  }
+
+  /*
+   * Which tab a column falls back to when the one in front leaves it.
+   *
+   * Where you were, not what is next to where you were. Position says nothing
+   * about where you came from: open a file panel, look at one file, come back
+   * to the panel, look at a second, close the second -- by position that lands
+   * on the first file, a tab finished with two steps ago and never asked for
+   * again. What you were doing is the panel.
+   *
+   * Filtered to this column, because a column shows one of its own tabs and the
+   * most recent tab in the window may well be in the one beside it.
+   *
+   * Both ways a tab can leave a column -- closed, or dragged into another one --
+   * ask this. They used to answer it separately and identically, which is a
+   * pair that stays identical only until one of them is changed.
+   */
+  function nextActive(column, at) {
+    var seen = recent.filter(function (id) { return column.order.indexOf(id) >= 0; })[0];
+    // Nothing left here has been in front yet. Position is the only answer
+    // available, and it is the one this used to give always.
+    return seen || column.order[Math.min(at, column.order.length - 1)] || null;
+  }
+
   function activate(paneId) {
     var pane = panes.get(paneId);
     var column = pane ? columnById(pane.columnId) : null;
     if (!column) return;
     column.active = paneId;
     focusedColumn = column.id;
+    remember(paneId);
     paintPanes();
     revealTab(pane);
   }
@@ -469,96 +561,6 @@
     return pane && pane.kind === 'terminal' && pane.server ? pane : null;
   }
 
-  function syncActions() {
-    var on = !!frontTerminal();
-    actionAi.disabled = !on;
-    actionTransfer.disabled = !on;
-    paintStatus();
-  }
-
-  // ---------------------------------------------------------- status bar ---
-
-  /*
-   * One line under the window saying what the tab in front is talking to.
-   *
-   * Every field is read off the `pane` record this file already keeps -- the
-   * connection flags, `pane.server`, the size last reported by the page. Rust is
-   * not asked for anything and no page had to be changed to supply it, which is
-   * also why the bar lives out here rather than inside terminal.html: that page
-   * fits xterm to its container and bails out of a fit when the container
-   * measures zero, and hanging a 26px strip inside that box would have turned a
-   * status line into a question about the fit addon.
-   */
-  var statusBar = document.getElementById('statusbar');
-  var statusState = document.getElementById('st-state');
-  var statusDot = document.getElementById('st-dot');
-  var statusStateText = document.getElementById('st-state-text');
-  var statusWho = document.getElementById('st-who');
-  var statusEncoding = document.getElementById('st-encoding');
-  var statusSize = document.getElementById('st-size');
-
-  function frontPane() {
-    var column = columnById(focusedColumn);
-    if (!column || !column.active) return null;
-    return panes.get(column.active) || null;
-  }
-
-  /*
-   * `null` where this file does not actually track a connection, and the field
-   * is then hidden rather than guessed at. A chat tab has no connection of its
-   * own -- what it has is a run, which is a different thing and belongs to the
-   * page that owns it -- and settings has nothing at all. Showing a confident
-   * green dot for either would be the bar inventing news.
-   */
-  function connectionState(pane) {
-    if (pane.kind === 'terminal') {
-      if (pane.connected) return 'ok';
-      if (pane.connecting) return 'busy';
-      return 'off';
-    }
-    if (pane.kind === 'transfer') return pane.remoteReady ? 'ok' : 'busy';
-    return null;
-  }
-
-  var STATE_WORD = { ok: 'stConnected', busy: 'stConnecting', off: 'stOffline' };
-  var STATE_TONE = { ok: 'is-ok', busy: '', off: 'is-err' };
-
-  function encodingLabel(encoding) {
-    return encoding === 'gb18030' ? 'GB18030' : 'UTF-8';
-  }
-
-  function paintStatus() {
-    // `var` hoists the name but not the lookup, and syncActions is reachable
-    // from the layout pass. If anything ever paints before this file has run
-    // its own top level, do nothing rather than throw inside the layout.
-    if (!statusBar) return;
-    var pane = frontPane();
-    if (!pane) {
-      statusBar.hidden = true;
-      return;
-    }
-    statusBar.hidden = false;
-
-    var state = connectionState(pane);
-    statusState.hidden = !state;
-    if (state) {
-      statusDot.className = 'c-dot' + (state === 'ok' ? ' c-ok' : state === 'busy' ? ' c-busy' : '');
-      statusStateText.textContent = c(STATE_WORD[state]);
-      statusState.className = 'status-item status-state ' + STATE_TONE[state];
-    }
-
-    statusWho.hidden = !pane.server;
-    if (pane.server) statusWho.textContent = who(pane);
-
-    statusEncoding.hidden = !pane.server;
-    if (pane.server) statusEncoding.textContent = encodingLabel(pane.server.encoding);
-
-    // The size is the terminal's grid, so it means nothing on the other kinds.
-    var sized = pane.kind === 'terminal' && pane.cols && pane.rows;
-    statusSize.hidden = !sized;
-    if (sized) statusSize.textContent = pane.cols + ' × ' + pane.rows;
-  }
-
   /*
    * Hand every session back to Rust, and resolve once it has taken them.
    *
@@ -604,6 +606,24 @@
     var column = pane ? columnById(pane.columnId) : null;
     if (!column) return;
 
+    /*
+     * Unsaved work is the one thing in this window that closing a tab can
+     * destroy and nothing can bring back. Asked here rather than in the page,
+     * because this is where closing happens and because the shell owns the only
+     * dialog the window has -- and asked per tab, so "close all" over three
+     * edited files is three questions rather than one that speaks for all of
+     * them.
+     */
+    if (pane.dirty) {
+      confirm(c('editorUnsavedTitle'), c('editorUnsavedBody', pane.title), c('editorDiscard'))
+        .then(function (yes) {
+          if (!yes) return;
+          pane.dirty = false;
+          closePane(paneId);
+        });
+      return;
+    }
+
     // The connection belongs to the tab, not to the window. Closing one without
     // the other leaves a shell running on the far side with nobody reading it.
     if (pane.kind === 'terminal') invoke('terminal_close', { pane: paneId });
@@ -612,6 +632,17 @@
       invoke('transfer_close', { pane: paneId });
     }
     if (pane.kind === 'chat') invoke('ai_close', { pane: paneId });
+    /*
+     * An editor on a remote file dialled its own SFTP session, under its own
+     * pane id, and it is the only thing holding it.
+     *
+     * Its own rather than the file panel's: an editor outlives the tab it was
+     * opened from, and a connection closed out from under a save is a truncated
+     * file. The cost is one dial when a remote file is opened for editing.
+     */
+    if (pane.kind === 'editor' && pane.side !== 'local') {
+      invoke('transfer_close', { pane: paneId });
+    }
 
     pane.iframe.remove();
     pane.tab.remove();
@@ -619,25 +650,40 @@
 
     var at = column.order.indexOf(paneId);
     column.order.splice(at, 1);
-    if (column.active === paneId) {
-      // The neighbour on the right, or the one on the left if there was none.
-      column.active = column.order[Math.min(at, column.order.length - 1)] || null;
-    }
+    var forgotten = recent.indexOf(paneId);
+    if (forgotten >= 0) recent.splice(forgotten, 1);
+
+    if (column.active === paneId) column.active = nextActive(column, at);
     if (!column.order.length) dropColumn(column);
     paintLayout();
   }
 
   /*
-   * Every tab in the window but this one, across every column.
+   * Every other tab in THIS column, and every tab in the window.
    *
-   * The ids are taken before anything is closed. `closePane` deletes from
-   * `panes` and can drop a whole column with the last tab in it, so iterating
-   * the live map would be walking a collection while it is being emptied.
+   * "Others" is scoped to the column and "all" is not, which is the whole
+   * distinction between the two entries: a split window is two pieces of work
+   * side by side, and tidying up the left-hand one has no business taking the
+   * right-hand one with it. Before, "close others" reached across every column
+   * -- so the entry that sounded like housekeeping was the most destructive
+   * thing in the menu, and it was arrived at by right-clicking a tab rather
+   * than by asking for it.
+   *
+   * The ids are taken before anything is closed, in both. `closePane` deletes
+   * from `panes`, splices `column.order`, and drops a whole column when the
+   * last tab in it goes -- so iterating either live collection would be walking
+   * it while it is being emptied.
    */
-  function closeOthers(keepId) {
-    var doomed = [];
-    panes.forEach(function (pane) { if (pane.id !== keepId) doomed.push(pane.id); });
-    doomed.forEach(closePane);
+  function closeOthers(pane) {
+    var column = columnById(pane.columnId);
+    if (!column) return;
+    column.order.slice().forEach(function (id) {
+      if (id !== pane.id) closePane(id);
+    });
+  }
+
+  function closeAll() {
+    Array.from(panes.keys()).forEach(closePane);
   }
 
   /*
@@ -661,9 +707,7 @@
     column.tabbar.insertBefore(pane.tab, after ? panes.get(after).tab : null);
 
     if (from !== column) {
-      if (from.active === paneId) {
-        from.active = from.order[Math.min(at, from.order.length - 1)] || null;
-      }
+      if (from.active === paneId) from.active = nextActive(from, at);
       if (!from.order.length) dropColumn(from);
     }
     paintLayout();
@@ -1060,30 +1104,73 @@
     }));
 
     /*
-     * Only a terminal has a session. A settings tab has nothing to copy and a
-     * transfer tab is opened from the terminal it belongs to, so the two entries
-     * are absent rather than greyed: a menu that is mostly disabled reads as
-     * something being broken.
+     * Everything that needs a session, and only a terminal has one. A settings
+     * tab has nothing to transfer, nothing to assist and nothing to copy, so
+     * these are absent rather than greyed: a menu that is mostly disabled reads
+     * as something being broken.
+     *
+     * Two groups, because the four are not the same kind of thing. The first
+     * pair opens a second pane beside this one and is where the product's two
+     * headline features are reached from; the second pair is about this session
+     * itself. Both are below the split entries and above the closing ones, so
+     * neither end of the menu moved to make room for them -- the first thing in
+     * it and the last thing in it are where they have always been.
+     *
+     * The labels are `fileTransfer` and `agentTitle`, which are the strings the
+     * activity bar's two buttons already wear. Naming the same destination twice
+     * is how two names for one thing get into a product.
      */
     if (pane.kind === 'terminal' && pane.server) {
+      menu.appendChild(separator());
+      /*
+       * Both go through the same functions the activity bar and the terminal's
+       * own buttons call, which matters more for the assistant than it looks:
+       * `openChat` is the single place that knows a terminal may only have one,
+       * and it answers a second request by going to the first rather than by
+       * opening another. Calling `ai_open` from here instead would take the
+       * observer slot away from the assistant already running in this terminal
+       * and leave it typing into a shell it can no longer hear.
+       */
+      menu.appendChild(menuItem(t('fileTransfer'), true, function () {
+        openTransfer(pane.server, pane.groupId, pane);
+      }));
+      /*
+       * Absent and not greyed when the assistant is switched off, which is what
+       * that setting says it does -- "the terminal and the server panel stop
+       * showing a way in". The activity bar's button hides on the same flag; an
+       * entry here that greys out instead would be the one place in the window
+       * still advertising it.
+       */
+      if (aiEnabled) {
+        menu.appendChild(menuItem(t('agentTitle'), true, function () { openChat(pane); }));
+      }
+
       menu.appendChild(separator());
       menu.appendChild(menuItem(t('copySession'), true, function () { copySession(pane); }));
       menu.appendChild(menuItem(t('renameSession'), true, function () { renameSession(pane); }));
     }
 
     /*
-     * Closing, last, because it is the one entry here that throws work away.
+     * Closing, last, because these are the entries that throw work away. Three
+     * of them, widening a step at a time: this tab, the rest of this column,
+     * the whole window.
      *
-     * "Close others" is greyed rather than absent when this is the only tab:
-     * absent would move "close this one" up under the pointer between one
-     * right-click and the next, and a menu whose entries change position is a
-     * menu you have to read every time.
+     * Named for what each one closes rather than left to be told apart by
+     * "close" and "close others" -- with a third in the group, "close" on its
+     * own stops saying which.
+     *
+     * The last two are greyed rather than absent when they would do no more
+     * than the entry above them: absent would move "close" up under the pointer
+     * between one right-click and the next, and a menu whose entries change
+     * position is a menu you have to read every time.
      */
+    var column = columnById(pane.columnId);
     menu.appendChild(separator());
     menu.appendChild(menuItem(c('closeTab'), true, function () { closePane(pane.id); }));
-    menu.appendChild(menuItem(c('closeOthers'), panes.size > 1, function () {
-      closeOthers(pane.id);
+    menu.appendChild(menuItem(c('closeOthers'), !!column && column.order.length > 1, function () {
+      closeOthers(pane);
     }));
+    menu.appendChild(menuItem(c('closeAll'), panes.size > 1, closeAll));
 
     document.body.appendChild(menu);
 
@@ -1222,6 +1309,171 @@
     });
   }
 
+  // ------------------------------------------------------------- host keys ---
+
+  /*
+   * The one question Rust asks that no page asked first.
+   *
+   * Everything else in this file is a page's message being forwarded; this
+   * arrives from the other direction, as a Tauri event, because the connection
+   * that raises it may have been started by any of a dozen commands or by a
+   * transfer job reconnecting on its own. `hosts.rs` holds the id and waits; all
+   * that has to come back is which button was pressed.
+   *
+   * Three answers, not two. "Just this once" is what makes the dialog honest on
+   * a machine the user is not sure about: without it the only way to get on is
+   * to pin a key they have not verified, which is how a pinning scheme ends up
+   * pinning whatever it was shown first.
+   */
+  var hostKeyQueue = [];
+  var hostKeyShowing = false;
+
+  function askHostKey(question) {
+    if (!question || question.id === undefined) return;
+    hostKeyQueue.push(question);
+    if (!hostKeyShowing) nextHostKey();
+  }
+
+  /*
+   * One at a time. Rust already sees to it that two connections to the same
+   * machine ask once between them, but three tabs opened at three new machines
+   * are three separate questions, and stacking their sheets would leave the user
+   * answering the top one about the bottom one's fingerprint.
+   */
+  function nextHostKey() {
+    var question = hostKeyQueue.shift();
+    if (!question) {
+      hostKeyShowing = false;
+      return;
+    }
+    hostKeyShowing = true;
+    hostKeyDialog(question).then(function (choice) {
+      invoke('host_key_answer', { id: question.id, choice: choice })
+        .catch(function (error) {
+          // The connection is waiting on this and will time out into a refusal,
+          // which is the same answer arriving late. Worth a line, not a dialog.
+          console.warn('[shell] the host key answer would not send:', error);
+        });
+      nextHostKey();
+    });
+  }
+
+  function hostKeyDialog(question) {
+    return new Promise(function (resolve) {
+      var changed = question.status === 'changed';
+
+      var backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+
+      var box = document.createElement('div');
+      box.className = 'modal hostkey' + (changed ? ' changed' : '');
+
+      var heading = document.createElement('div');
+      heading.className = 'modal-title';
+      heading.textContent = c(changed ? 'hostKeyChangedTitle' : 'hostKeyNewTitle');
+
+      var message = document.createElement('div');
+      message.className = 'modal-message';
+      message.textContent = c(changed ? 'hostKeyChangedBody' : 'hostKeyNewBody');
+      box.append(heading, message);
+
+      var facts = document.createElement('div');
+      facts.className = 'hostkey-facts';
+
+      // The fingerprint is the only thing on this sheet the user is meant to
+      // compare against something else, so it is the only thing set in mono and
+      // the only thing they are allowed to select and copy.
+      function fact(key, value, mono) {
+        if (!value) return;
+        var row = document.createElement('div');
+        row.className = 'hostkey-row';
+        var name = document.createElement('span');
+        name.className = 'hostkey-key';
+        name.textContent = c(key);
+        var text = document.createElement('span');
+        text.className = 'hostkey-value' + (mono ? ' mono' : '');
+        text.textContent = value;
+        row.append(name, text);
+        facts.appendChild(row);
+      }
+
+      fact('hostKeyMachine', question.label);
+      fact('hostKeyAddress', question.endpoint);
+      fact('hostKeyType', question.algorithm);
+      fact('hostKeyFingerprint', question.fingerprint, true);
+      if (changed && question.known && question.known.length) {
+        fact('hostKeyPinned', question.known.join('\n'), true);
+      }
+      box.appendChild(facts);
+
+      // Present only when the pinned-key file could not be read. Without it the
+      // user is asked about a machine they have used for months with no
+      // explanation, which reads as the alarm rather than as the file being
+      // broken.
+      if (question.notice) {
+        var notice = document.createElement('div');
+        notice.className = 'hostkey-notice';
+        notice.textContent = question.notice;
+        box.appendChild(notice);
+      }
+
+      function button(key, className) {
+        var element = document.createElement('button');
+        element.type = 'button';
+        element.className = 'modal-button' + (className ? ' ' + className : '');
+        element.textContent = c(key);
+        return element;
+      }
+
+      var reject = button('hostKeyReject');
+      var once = button('hostKeyOnce');
+      var trust = button('hostKeyTrust', 'primary' + (changed ? ' danger' : ''));
+
+      var actions = document.createElement('div');
+      actions.className = 'modal-actions';
+      actions.append(reject, once, trust);
+      box.appendChild(actions);
+      backdrop.appendChild(box);
+      document.body.appendChild(backdrop);
+
+      function close(choice) {
+        document.removeEventListener('keydown', onKey, true);
+        backdrop.remove();
+        resolve(choice);
+      }
+
+      /*
+       * Escape refuses, and nothing else answers by accident.
+       *
+       * The other sheets in this file take Enter as their accept and a click on
+       * the backdrop as their cancel. Neither applies here: this is the one
+       * dialog where the wrong answer is not undoable by pressing the button
+       * again, so it takes a button. A stray click lands on the dimmed
+       * background and does nothing at all.
+       */
+      function onKey(event) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          close('reject');
+        }
+      }
+
+      reject.onclick = function () { close('reject'); };
+      once.onclick = function () { close('once'); };
+      trust.onclick = function () { close('trust'); };
+      document.addEventListener('keydown', onKey, true);
+
+      /*
+       * Where the focus starts is the whole difference between the two cases. A
+       * first connection is ordinary and its expected answer is to pin the key,
+       * so Enter does that. A key that changed under a machine we already knew
+       * is the one moment this feature exists for, and Enter there must not be
+       * the way through it.
+       */
+      (changed ? reject : trust).focus();
+    });
+  }
+
   function send(paneId, message) {
     var pane = panes.get(paneId);
     if (!pane || !pane.iframe.contentWindow) return;
@@ -1317,11 +1569,163 @@
       });
   }
 
+  /**
+   * Wear an edited shortcut table, and tell every frame about it.
+   *
+   * The window matches keystrokes in two places -- here, for when the focus is
+   * on the title bar or in a gap, and in each page through host.js, for when it
+   * is anywhere else. Both read the same resolved table, and this is what keeps
+   * them the same table.
+   */
+  function applyKeys(file) {
+    if (!window.tshellKeys) return;
+    keysFile = window.tshellKeys.normalize(file);
+    shortcuts = window.tshellKeys.resolve(keysFile);
+    broadcast({ type: 'keys', keys: keysFile });
+  }
+
+  /**
+   * Write it, and hand back what was written.
+   *
+   * The reply carries what Rust stored rather than what the page sent, for the
+   * reason `themeFile` does: a binding this build cannot parse is dropped on
+   * the way in, and a panel redrawing from its own copy would go on showing a
+   * shortcut that is not in the file and will never fire.
+   */
+  function saveKeys(paneId, file) {
+    applyKeys(file);
+    invoke('set_keys', { keys: keysFile })
+      .then(function (state) {
+        panel = state;
+        applyKeys(state.keys || {});
+        send(paneId, { type: 'keysFile', keys: keysFile, error: '' });
+      })
+      .catch(function (error) {
+        send(paneId, { type: 'keysFile', keys: keysFile, error: String(error) });
+      });
+  }
+
   /*
-   * The monospaced fonts this machine has, which only Rust can enumerate -- the
-   * web platform has no way to ask. Fetched once, when a settings page first
-   * wants them, because the first call reads a table out of every font file on
-   * the machine and most sessions never open settings at all.
+   * What a shortcut does.
+   *
+   * `pane` is the pane the keystroke came from when it came from one, and null
+   * when it was caught by the shell's own document. Both of the pane actions
+   * work on the terminal in front of the focused column rather than on the
+   * pane that reported -- which is the same terminal whenever the key was
+   * pressed inside one, and the only sensible answer when it was pressed on the
+   * title bar. Neither of them opens anything when there is no terminal: a
+   * shortcut that silently picks a different server than the one you are
+   * looking at is worse than a shortcut that does nothing.
+   */
+  function runShortcut(id) {
+    if (id === 'toggleFullscreen') {
+      toggleFullscreen();
+      return;
+    }
+
+    var pane = frontTerminal();
+    if (!pane) return;
+
+    if (id === 'openTransfer') {
+      // `beside` is the terminal, so the panel opens in the column to its
+      // right rather than on top of whatever the focused column was showing.
+      openTransfer(pane.server, pane.groupId, pane);
+      return;
+    }
+    if (id === 'openAssistant') {
+      /*
+       * The assistant switch is honoured here rather than in the bridge that
+       * caught the key. Turned off, the assistant is gone from the activity
+       * bar and from the terminal's own menu, and a shortcut that still opened
+       * it would be the one way in left after the user asked for none.
+       *
+       * The check used to live in terminal.js beside the hard-coded shortcut.
+       * It belongs here now: this is the only place a shortcut becomes an
+       * action, so it is the only place that has to know.
+       */
+      if (!aiEnabled) return;
+      // Through `openChat`, so the one-assistant-per-terminal rule holds for
+      // the keyboard exactly as it does for the three buttons.
+      openChat(pane);
+    }
+  }
+
+  /*
+   * The shell's own copy of the listener host.js installs in every page.
+   *
+   * Needed because the shell document is not a page: the title bar, the gaps
+   * between the cards and the splitters are all here, and a keystroke while the
+   * focus is on any of them never reaches a frame.
+   */
+  window.addEventListener('keydown', function (event) {
+    if (!shortcuts || !window.tshellKeys || event.repeat) return;
+    var id = window.tshellKeys.match(shortcuts, event);
+    if (!id) return;
+    event.preventDefault();
+    event.stopPropagation();
+    runShortcut(id);
+  }, true);
+
+  /**
+   * Take an edited palette and wear it, without writing it.
+   *
+   * What a colour picker being dragged sends. The window and every frame in it
+   * repaint on each frame of the drag; the disk is not touched until it ends.
+   * The same split as the schemes above, and worth having for the same reason:
+   * the answer to "what will this look like" is the thing itself.
+   */
+  function applyPalette(file) {
+    if (!window.tshellPalette) return;
+    paletteFile = window.tshellPalette.normalize(file);
+    window.tshellPalette.apply(document, paletteFile);
+    broadcast({ type: 'palette', palette: paletteFile });
+    /*
+     * A scheme that names no cursor or selection colour of its own reads those
+     * two out of the palette, so recolouring the accent has just changed what
+     * every terminal should be drawing them in.
+     */
+    broadcastAppearance();
+  }
+
+  /**
+   * Take an edited palette, write it, and hand back what was written.
+   *
+   * The reply carries the *normalized* file, not the one that was sent: Rust
+   * decides that `6e7cf7` is `#6E7CF7`, and a settings page redrawing from
+   * anything else would be showing a value the file does not hold.
+   *
+   * `themeFile` and not `theme`, which is already the name of the light/dark
+   * switch host.js intercepts. A reply wearing that name would never reach the
+   * page at all -- it would be read as a theme change with no theme in it.
+   */
+  function savePalette(paneId, file) {
+    applyPalette(file);
+    if (paletteError) {
+      // Refusing to read it and then writing over it anyway is how a stray
+      // comma costs somebody the palette they built.
+      send(paneId, { type: 'themeFile', file: paletteFile, error: paletteError });
+      return;
+    }
+    invoke('theme_save', { file: file })
+      .then(function (written) {
+        applyPalette(written);
+        send(paneId, { type: 'themeFile', file: paletteFile, error: '' });
+      })
+      .catch(function (error) {
+        send(paneId, { type: 'themeFile', file: paletteFile, error: String(error) });
+      });
+  }
+
+  /*
+   * The fonts this machine has, which only Rust can enumerate -- the web
+   * platform has no way to ask. Fetched once, when a settings page first wants
+   * them, because the first call reads a table out of every font file on the
+   * machine and most sessions never open settings at all.
+   *
+   * Two lists, one scan on the other side: the monospaced ones for the terminal
+   * and for code, all of them for the window's own text. Asked for separately
+   * so that a page that only wants the terminal's list does not pay for the
+   * other -- after the first call neither costs anything.
    */
   function sendFonts(paneId) {
     if (fontList) {
@@ -1342,6 +1746,23 @@
       });
   }
 
+  function sendFontsAll(paneId) {
+    if (fontListAll) {
+      send(paneId, { type: 'fontsAll', fonts: fontListAll });
+      return;
+    }
+    invoke('fonts_all')
+      .then(function (fonts) {
+        fontListAll = fonts || [];
+        send(paneId, { type: 'fontsAll', fonts: fontListAll });
+      })
+      .catch(function (error) {
+        console.warn('[shell] the installed fonts could not be listed:', error);
+        fontListAll = [];
+        send(paneId, { type: 'fontsAll', fonts: fontListAll });
+      });
+  }
+
   /** One settings tab at a time; asking again brings the open one forward. */
   function openSettings() {
     var open = null;
@@ -1358,6 +1779,13 @@
         // one that edits it, and it needs the parts rather than the result.
         schemes: window.tshellSchemes.file(),
         schemesError: schemesError,
+        // The same, one layer up: the window's palette as the user's edits to
+        // it, and the reason the file was refused if it was.
+        palette: paletteFile,
+        paletteError: paletteError,
+        // The same shape again: the user's edits, with keys.js supplying both
+        // the list of actions and what each one falls back to.
+        keys: keysFile,
         // Where the config and the secrets ended up. Read once at boot and not
         // changeable from anywhere, so the bootstrap is the whole of it.
         storage: panel.storage || {}
@@ -1412,7 +1840,6 @@
       bootstrap: {
         strings: pageStrings(),
         language: language,
-        aiEnabled: aiEnabled,
         appearance: appearance()
       }
     });
@@ -1429,7 +1856,214 @@
     pane.ptyRows = 0;
     pane.connected = false;
     pane.connecting = false;
+    touchRecent(server);
     return pane;
+  }
+
+  /*
+   * A file, in a tab of its own.
+   *
+   * One pane per file, like `openChat` is one panel per terminal, and for a
+   * related reason: two editors on one file are two buffers that will disagree,
+   * and whichever is saved second silently discards the other. Opening a file
+   * that is already open brings its tab forward instead.
+   *
+   * The identity of a file is its side, its path and -- on the remote side --
+   * the machine. `/etc/hosts` on two servers is two files, and the path alone
+   * cannot tell them apart.
+   */
+  function openEditor(options) {
+    var side = options.side || 'local';
+    var path = options.path || '';
+    if (!path) return null;
+    var serverId = options.server ? options.server.id : '';
+
+    var open = null;
+    panes.forEach(function (pane) {
+      if (pane.kind !== 'editor' || pane.path !== path || pane.side !== side) return;
+      if (side !== 'local' && (!pane.server || pane.server.id !== serverId)) return;
+      open = pane;
+    });
+    if (open) {
+      activate(open.id);
+      return open;
+    }
+
+    var pane = openPane('editor', {
+      page: 'editor/editor.html',
+      title: baseName(path),
+      server: options.server || null,
+      column: options.column,
+      bootstrap: {
+        strings: pageStrings(),
+        language: language,
+        side: side,
+        path: path,
+        encoding: options.encoding || '',
+        // A transcript is evidence. It opens read-only however small it is,
+        // because a record you can edit is a record that answers nothing.
+        readOnly: !!options.readOnly
+      }
+    });
+    pane.groupId = options.groupId || null;
+    pane.side = side;
+    pane.path = path;
+    pane.encoding = options.encoding || '';
+    pane.dirty = false;
+    return pane;
+  }
+
+  /*
+   * Open one of tshell's own files, wherever Rust says it lives.
+   *
+   * The page never learns a path until Rust has resolved one, and the six
+   * buttons that reach this all name a purpose rather than a location -- which
+   * is the only way `memoryServer` can mean a different file depending on which
+   * panel asked. A local file needs no server and no encoding beyond UTF-8:
+   * every file tshell writes, it writes itself.
+   */
+  function openLocalFile(command, args, column) {
+    return invoke(command, args)
+      .then(function (path) {
+        openEditor({ side: 'local', path: path, encoding: 'utf8', column: column });
+      })
+      .catch(panelError);
+  }
+
+  /*
+   * The four fields every editor call carries, in the shape both the text
+   * commands and the preview commands already take. One builder, because a
+   * read that went to a different file than the save is the worst bug this
+   * pane could have.
+   */
+  function editorArgs(pane, extra) {
+    var args = {
+      pane: pane.id,
+      side: pane.side,
+      groupId: pane.groupId || '',
+      serverId: pane.server ? pane.server.id : '',
+      path: pane.path,
+      encoding: pane.encoding || ''
+    };
+    Object.keys(extra || {}).forEach(function (key) { args[key] = extra[key]; });
+    return args;
+  }
+
+  /*
+   * Save, and ask before writing over someone else.
+   *
+   * The question is asked here rather than in the page because this is where the
+   * window's only dialog lives, and because answering it is a second call with
+   * the same arguments -- which the page would otherwise have to hold on to
+   * across a modal it did not draw.
+   */
+  function saveEditor(pane, content, base, force) {
+    invoke('text_save', editorArgs(pane, { content: content, base: base, force: !!force }))
+      .then(function (reply) {
+        if (reply.conflict) {
+          confirm(c('editorConflictTitle'), c('editorConflictBody'), c('editorOverwrite'))
+            .then(function (yes) {
+              if (!yes) {
+                send(pane.id, { type: 'editorSaved', cancelled: true });
+                return;
+              }
+              saveEditor(pane, content, reply.stamp, true);
+            });
+          return;
+        }
+        send(pane.id, { type: 'editorSaved', stamp: reply.stamp, content: content });
+      })
+      .catch(function (error) {
+        send(pane.id, { type: 'editorSaved', error: reason(error) });
+      });
+  }
+
+  function reopenEditor(pane, encoding) {
+    var go = function () {
+      pane.encoding = encoding;
+      pane.dirty = false;
+      pane.tab.classList.remove('unsaved');
+      send(pane.id, { type: 'editorEncoding', encoding: encoding });
+      invoke('text_open', editorArgs(pane, {}))
+        .then(function (file) { send(pane.id, { type: 'editorFile', file: file }); })
+        .catch(function (error) {
+          send(pane.id, { type: 'editorError', reason: reason(error) });
+        });
+    };
+
+    if (!pane.dirty) { go(); return; }
+    confirm(c('editorDiscardTitle'), c('editorDiscardBody'), c('editorReread'))
+      .then(function (yes) {
+        // Refused, so nothing moves -- and the page is told, because its select
+        // is already showing the encoding that is not going to be used.
+        if (!yes) { send(pane.id, { type: 'editorEncoding', encoding: pane.encoding }); return; }
+        go();
+      });
+  }
+
+  function fromEditor(pane, message) {
+    var id = pane.id;
+    switch (message.type) {
+      case 'editorOpen':
+        invoke('text_open', editorArgs(pane, {}))
+          .then(function (file) { send(id, { type: 'editorFile', file: file }); })
+          .catch(function (error) {
+            send(id, { type: 'editorError', reason: reason(error) });
+          });
+        return;
+
+      /*
+       * A file too large to edit is read through the preview commands, which
+       * have streamed files of any size since the file panel had a preview.
+       * Writing a second chunked reader for the same job is how two readers end
+       * up disagreeing about where a file ends.
+       */
+      case 'editorMore':
+        invoke('preview_text', editorArgs(pane, { offset: message.offset || 0 }))
+          .then(function (chunk) { send(id, { type: 'editorMore', chunk: chunk }); })
+          .catch(function (error) {
+            send(id, { type: 'editorError', reason: reason(error) });
+          });
+        return;
+
+      /*
+       * A page of records, for a DBF. The same command the file panel read them
+       * with, unchanged -- the table moved, the reader did not.
+       */
+      case 'editorTable':
+        invoke('preview_dbf', editorArgs(pane, { recordOffset: message.recordOffset || 0 }))
+          .then(function (chunk) { send(id, { type: 'editorTable', chunk: chunk }); })
+          .catch(function (error) {
+            send(id, { type: 'editorError', reason: reason(error) });
+          });
+        return;
+
+      /*
+       * Read the same file again in a different encoding.
+       *
+       * The question about unsaved work is asked here because this is where the
+       * window's dialog lives, and it is asked before the encoding is recorded:
+       * answering "keep what I have" has to leave the pane exactly as it was,
+       * including which encoding the next save will write.
+       */
+      case 'editorReopen':
+        reopenEditor(pane, message.encoding || 'utf8');
+        return;
+
+      case 'editorSave':
+        saveEditor(pane, message.content || '', message.base || { size: 0, modified: 0 }, false);
+        return;
+
+      /*
+       * The tab carries the mark, because the tab is what is visible when the
+       * pane is not. `closePane` reads the same flag before it asks.
+       */
+      case 'editorDirty':
+        pane.dirty = !!message.dirty;
+        pane.tab.classList.toggle('unsaved', pane.dirty);
+        return;
+    }
+    console.info('[shell] editor pane, not wired yet:', message.type, message);
   }
 
   function openTransfer(server, groupId, beside) {
@@ -1446,6 +2080,7 @@
       }
     });
     pane.groupId = groupId;
+    touchRecent(server);
     // Where each pane is looking. The page draws the path but does not own it:
     // refresh and "up" are answered from here, so this is the copy that counts.
     pane.paths = { local: '', remote: '' };
@@ -1495,7 +2130,11 @@
   }
 
   function transferFailed(pane, error) {
-    transferLog(pane, t(String((error && error.message) || error)));
+    // `reason` rather than `t` alone: a transfer that reconnects mid-job can
+    // fail on a host key the user declines, and that answer is worded in this
+    // frame's table. Everything else falls through to the shared one exactly as
+    // it did.
+    transferLog(pane, reason(error));
   }
 
   function browse(pane, side, path) {
@@ -1519,8 +2158,7 @@
         if (opening) {
           pane.remoteReady = true;
           transferLog(pane, t('connected') + ': ' + who(pane));
-          paintStatus();
-        }
+            }
         pane.paths[side] = listing.path;
         if (side === 'local') {
           try {
@@ -1552,59 +2190,28 @@
   }
 
   /*
-   * Which reader answers is decided by Rust, from the extension, so that the
-   * highlighter the panel picks and the parser that produced the data are never
-   * working from different ideas about what the file is.
+   * Opening a file from the panel: every kind of it, in a tab of its own.
+   *
+   * There is no reader here any more and no branch on what the file is. The
+   * editor pane asks Rust what it is holding and decides between text and a
+   * table on the other side of one message -- which is the only place that can
+   * decide it, because it is the only place that has to draw both.
    */
   function openPreview(pane, side, path, encoding) {
     if (!path) return;
 
-    invoke('preview_language', { path: path }).then(function (language) {
-      if (language === 'dbf') {
-        return invoke('preview_dbf', transferArgs(pane, side, {
-          path: path,
-          encoding: encoding,
-          recordOffset: 0
-        })).then(function (chunk) {
-          send(pane.id, {
-            type: 'dbfPreview',
-            side: side,
-            path: path,
-            name: baseName(path),
-            language: 'dbf',
-            encoding: encoding,
-            fields: chunk.fields,
-            rows: chunk.rows,
-            recordCount: chunk.recordCount,
-            nextRecord: chunk.nextRecord,
-            done: chunk.done
-          });
-          transferLog(pane, t('previewing') + ': ' + path);
-        });
-      }
-
-      return invoke('preview_text', transferArgs(pane, side, {
-        path: path,
-        encoding: encoding,
-        offset: 0
-      })).then(function (chunk) {
-        send(pane.id, {
-          type: 'textPreview',
-          side: side,
-          path: path,
-          name: baseName(path),
-          language: language,
-          encoding: encoding,
-          content: chunk.content,
-          unsupported: chunk.binary,
-          message: chunk.binary ? t('unsupportedBinaryPreview') : '',
-          done: chunk.done,
-          nextOffset: chunk.nextOffset,
-          totalSize: chunk.size
-        });
-        transferLog(pane, t(chunk.binary ? 'unsupportedBinaryPreview' : 'previewing') + ': ' + path);
-      });
-    }).catch(function (error) { transferFailed(pane, error); });
+    openEditor({
+      side: side,
+      path: path,
+      encoding: encoding,
+      server: pane.server,
+      groupId: pane.groupId,
+      // The column the panel is in, not the one beside it. Opening a file used
+      // to be an overlay inside this pane; putting it in a new column would
+      // split the window every time someone looked at one.
+      column: columnById(pane.columnId)
+    });
+    transferLog(pane, t('previewing') + ': ' + path);
   }
 
   /*
@@ -1824,43 +2431,6 @@
         openPreview(pane, side, message.path || '', message.encoding || '');
         return;
 
-      case 'loadTextChunk':
-        invoke('preview_text', transferArgs(pane, side, {
-          path: message.path,
-          encoding: message.encoding || '',
-          offset: message.offset || 0
-        })).then(function (chunk) {
-          send(pane.id, {
-            type: 'textChunk',
-            side: side,
-            path: message.path,
-            encoding: message.encoding,
-            content: chunk.content,
-            done: chunk.done,
-            nextOffset: chunk.nextOffset,
-            totalSize: chunk.size
-          });
-        }).catch(function (error) { transferFailed(pane, error); });
-        return;
-
-      case 'loadDbfChunk':
-        invoke('preview_dbf', transferArgs(pane, side, {
-          path: message.path,
-          encoding: message.encoding || '',
-          recordOffset: message.recordOffset || 0
-        })).then(function (chunk) {
-          send(pane.id, {
-            type: 'dbfChunk',
-            side: side,
-            path: message.path,
-            encoding: message.encoding,
-            rows: chunk.rows,
-            nextRecord: chunk.nextRecord,
-            done: chunk.done
-          });
-        }).catch(function (error) { transferFailed(pane, error); });
-        return;
-
       case 'clearLog':
         return;
     }
@@ -1883,6 +2453,35 @@
   function openChat(terminalPane) {
     var server = terminalPane.server;
     if (!server) return;
+
+    /*
+     * One assistant per terminal, and the second attempt goes to the first one.
+     *
+     * Not a preference -- the two cannot share a shell. Rust keeps ONE observer
+     * per terminal (`Sessions::agents`), and every byte the shell produces goes
+     * through it on the way to the tab; that is what lets a command's own output
+     * be told from the prompt around it. A second assistant took that slot, and
+     * the first was left typing into a terminal whose output it never saw again:
+     * its markers were drawn to the user verbatim, and its command waited for an
+     * end marker that could no longer reach it, until the timeout.
+     *
+     * Even with the slot shared, two assistants acting at once would be two
+     * streams of keystrokes interleaved into one interactive shell, which is not
+     * recoverable. So the answer is not to open a second one -- and since all
+     * three ways in (the activity bar, the terminal's own button, and the server
+     * panel's row menu) come through here, this is the only place that has to
+     * know.
+     */
+    var already = null;
+    panes.forEach(function (pane) {
+      if (pane.kind === 'chat' && pane.terminal === terminalPane.id) already = pane;
+    });
+    if (already) {
+      activate(already.id);
+      focusPane(already.id);
+      return;
+    }
+
     var paneId = 'chat-' + paneEpoch + '-' + (paneSeq += 1);
     var channel = new tauri.Channel();
 
@@ -2024,10 +2623,10 @@
         });
         return;
       case 'openMemory':
-        invoke('ai_reveal', {
+        openLocalFile('ai_file_path', {
           what: message.scope === 'global' ? 'memoryGlobal' : 'memoryServer',
           pane: id
-        });
+        }, columnById(pane.columnId));
         return;
 
       case 'trustList':
@@ -2043,7 +2642,48 @@
         });
         return;
       case 'openTrust':
-        invoke('ai_reveal', { what: 'trust', pane: id });
+        openLocalFile('ai_file_path', { what: 'trust', pane: id }, columnById(pane.columnId));
+        return;
+
+      /*
+       * The transcripts of this machine, and one of them opened to read.
+       *
+       * Read-only whatever its size: a record of what was sent to a model is
+       * evidence, and evidence you can edit answers nothing. It is also the one
+       * file in this window that is still being written while it is open, which
+       * is a second reason not to offer to write it from here as well.
+       */
+      case 'logList':
+        invoke('ai_log_list', { pane: id })
+          .then(function (files) { send(id, { type: 'logList', files: files }); })
+          .catch(function (error) {
+            send(id, { type: 'logList', files: [], error: reason(error) });
+          });
+        return;
+
+      /*
+       * Deleting redraws from the store rather than from what the panel had.
+       * A file the store refused to delete -- or one another panel removed a
+       * moment ago -- would otherwise leave a row on screen that points at
+       * nothing.
+       */
+      case 'deleteLog':
+        invoke('ai_log_delete', { path: message.path || '' })
+          .then(function () { return invoke('ai_log_list', { pane: id }); })
+          .then(function (files) { send(id, { type: 'logList', files: files }); })
+          .catch(function (error) {
+            send(id, { type: 'logList', files: [], error: reason(error) });
+          });
+        return;
+
+      case 'openLog':
+        openEditor({
+          side: 'local',
+          path: message.path || '',
+          encoding: 'utf8',
+          readOnly: true,
+          column: columnById(pane.columnId)
+        });
         return;
 
       case 'skillList':
@@ -2190,20 +2830,17 @@
        * resolves instead would be a race against that first flush.
        */
       send(pane.id, { type: 'connected', clear: true });
-      paintStatus();
       return;
     }
     if (payload.kind === 'closed') {
       pane.connected = false;
       note(pane, t('connectionClosedRetryEnter'));
-      paintStatus();
     }
   }
 
   function connect(pane) {
     if (pane.connecting || pane.connected) return;
     pane.connecting = true;
-    paintStatus();
 
     var channel = new tauri.Channel();
     channel.onmessage = function (payload) { onSessionEvent(pane, payload); };
@@ -2228,7 +2865,6 @@
       // top of the greeting that was just made room for.
       pane.connecting = false;
       pane.connected = true;
-      paintStatus();
       // Asked for from the server panel, where there was no terminal to hang
       // it on. Now there is one and it is up.
       if (pane.assistantWhenReady) {
@@ -2241,7 +2877,6 @@
       pane.connecting = false;
       pane.connected = false;
       note(pane, t('connectFailed') + ': ' + reason(error));
-      paintStatus();
     });
   }
 
@@ -2392,14 +3027,7 @@
         return;
 
       case 'openConfig':
-        invoke('open_config').catch(panelError);
-        return;
-
-      case 'openMemory':
-        // What the assistant remembers arrives with stage 4. The row menu hides
-        // this entry until then -- `aiEnabled` is false -- so reaching it means
-        // something is out of step, and saying so beats doing nothing.
-        console.info('[shell] assistant memory arrives with stage 4:', message.serverId);
+        openLocalFile('config_file_path', {});
         return;
     }
 
@@ -2459,7 +3087,6 @@
       // pty at the size the window is already showing.
       pane.cols = cols;
       pane.rows = rows;
-      paintStatus();
 
       /*
        * Compared against what the pty was last *told*, not against what the page
@@ -2514,6 +3141,22 @@
       return;
     }
 
+    /*
+     * A shortcut, caught by the bridge in whichever frame had the keyboard.
+     * Answered here for the same reason `paneFocus` is: it is the host's
+     * business, it can arrive from any kind of pane including the sidebar, and
+     * what it means does not depend on what the sender was showing.
+     *
+     * The pane that reported is deliberately not passed on. `runShortcut` acts
+     * on the terminal in front of the focused column, and every page's bridge
+     * reports focus on the way to being typed into -- so by the time a
+     * keystroke arrives from a pane, that pane's column is the focused one.
+     */
+    if (message.type === 'shortcut') {
+      runShortcut(message.id);
+      return;
+    }
+
     if (data.paneId === 'servers') { fromServers(message); return; }
 
     var pane = panes.get(data.paneId);
@@ -2521,6 +3164,7 @@
     if (pane.kind === 'terminal') { fromTerminal(pane, message); return; }
     if (pane.kind === 'transfer') { fromTransfer(pane, message); return; }
     if (pane.kind === 'chat') { fromChat(pane, message); return; }
+    if (pane.kind === 'editor') { fromEditor(pane, message); return; }
     if (pane.kind === 'settings') {
       if (message.type === 'setTheme') { applyTheme(message.theme); return; }
       /*
@@ -2530,7 +3174,12 @@
        */
       if (message.type === 'schemesApply') { applySchemes(message.file); return; }
       if (message.type === 'schemesSave') { saveSchemes(pane.id, message.file); return; }
+      // The window's palette, split the same way: dragging paints, letting go writes.
+      if (message.type === 'themeApply') { applyPalette(message.file); return; }
+      if (message.type === 'themeSave') { savePalette(pane.id, message.file); return; }
+      if (message.type === 'keysSave') { saveKeys(pane.id, message.keys); return; }
       if (message.type === 'fontsRequest') { sendFonts(pane.id); return; }
+      if (message.type === 'fontsAllRequest') { sendFontsAll(pane.id); return; }
       /*
        * A question the page wants asked, in the page's own words.
        *
@@ -2598,8 +3247,19 @@
     passwords: {},
     privateKeyPassphrases: {},
     aiEnabled: false,
+    recent: [],
     secrets: { backend: 'keychain', reason: null }
   };
+
+  /*
+   * Set when the config file would not load, and read by the empty window.
+   *
+   * Without it that window says "add a server on the left" over a panel that is
+   * saying the file could not be parsed -- two sentences about the same screen,
+   * one of which is wrong. The panel is the one that knows why, and it is the
+   * one holding the file the user has to fix, so this side says nothing.
+   */
+  var configBroken = false;
 
   function sidebarFrame() {
     var frame = sidebar.querySelector('iframe');
@@ -2631,6 +3291,9 @@
   function applyState(next) {
     panel = next;
     pushState();
+    // The empty window draws from the same copy: a server renamed or deleted
+    // while nothing is open has to change what is offered here too.
+    paintNothing();
   }
 
   /*
@@ -2646,6 +3309,123 @@
   /** Every mutating panel command answers with the state that followed it. */
   function panelCommand(command, args) {
     return invoke(command, args || {}).then(applyState).catch(panelError);
+  }
+
+  /*
+   * The window with nothing open in it.
+   *
+   * Drawn here rather than in a frame of its own: it holds no session, so
+   * rebuilding it costs nothing, and everything it shows is already in this
+   * scope. A frame would mean bootstrapping a page and a message round trip to
+   * say what `panel.recent` says here for free.
+   *
+   * Called from `paintTracks` (columns came or went) and from `applyState`
+   * (the file changed under it). Both are cheap and neither can be dropped:
+   * without the first the list stays behind a pane, without the second a
+   * server renamed while the window is empty keeps its old name on screen.
+   */
+  function paintNothing() {
+    var box = document.getElementById('nothing');
+    if (!box) return;
+
+    box.hidden = columns.length > 0;
+    if (box.hidden) return;
+
+    var servers = 0;
+    panel.groups.forEach(function (group) { servers += group.servers.length; });
+
+    document.getElementById('nothing-hint').textContent =
+      configBroken ? '' : (servers ? c('nothingHint') : c('nothingNoServers'));
+
+    var rows = document.getElementById('nothing-rows');
+    var recent = document.getElementById('nothing-recent');
+    rows.innerHTML = '';
+
+    /*
+     * An id whose server is gone draws nothing. `normalize` drops those on the
+     * way out of the file, so this is the window between a delete and the state
+     * that follows it -- short, but the alternative is a row with no name on it.
+     */
+    (panel.recent || []).forEach(function (id) {
+      var found = locateServer(id);
+      if (found) rows.appendChild(recentRow(found.server, found.groupId));
+    });
+
+    recent.hidden = !rows.children.length;
+    document.getElementById('nothing-recent-label').textContent = c('nothingRecent');
+  }
+
+  /** A server by id alone, with the group that holds it. */
+  function locateServer(serverId) {
+    for (var i = 0; i < panel.groups.length; i += 1) {
+      var group = panel.groups[i];
+      for (var j = 0; j < group.servers.length; j += 1) {
+        if (group.servers[j].id === serverId) {
+          return { server: group.servers[j], groupId: group.id };
+        }
+      }
+    }
+    return null;
+  }
+
+  /*
+   * One row: the server, and the file panel beside it.
+   *
+   * Two buttons rather than one button carrying another, which is markup no
+   * browser keeps. The larger one opens a terminal because that is what
+   * reopening a server nearly always means; transfer is a second target on the
+   * same row because `openTransfer` needs a machine, and this row is the only
+   * place on this screen where there is one.
+   */
+  function recentRow(server, groupId) {
+    var row = document.createElement('div');
+    row.className = 'nothing-row';
+
+    var main = document.createElement('button');
+    main.type = 'button';
+    main.className = 'nothing-row-main';
+    main.title = t('openTerminal');
+
+    var name = document.createElement('div');
+    name.className = 'nothing-row-name';
+    name.textContent = nameOf(server);
+
+    var where = document.createElement('div');
+    where.className = 'nothing-row-where';
+    where.textContent = server.username + '@' + server.host + ':' + server.port;
+
+    main.appendChild(name);
+    main.appendChild(where);
+    main.onclick = function () { openTerminal(server, groupId); };
+
+    var side = document.createElement('button');
+    side.type = 'button';
+    side.className = 'c-btn c-btn-icon nothing-row-side';
+    side.title = t('fileTransfer');
+    side.setAttribute('aria-label', t('fileTransfer'));
+    side.innerHTML = '<svg class="c-icon" viewBox="0 0 16 16" aria-hidden="true">'
+      + '<use href="#i-transfer"/></svg>';
+    side.onclick = function () { openTransfer(server, groupId); };
+
+    row.appendChild(main);
+    row.appendChild(side);
+    return row;
+  }
+
+  /*
+   * Record that a server was just opened, for the empty window to offer next
+   * time. After the pane exists, not before: a list of things that failed to
+   * open is not a list worth keeping.
+   */
+  function touchRecent(server) {
+    if (!server || !server.id) return;
+    invoke('touch_recent', { serverId: server.id })
+      .then(applyState)
+      .catch(function (error) {
+        // Nothing the user asked for failed -- the terminal is open. The next
+        // one to open writes the list again.
+        console.warn('[shell] the recent list would not save:', error);
+      });
   }
 
   function findGroup(groupId) {
@@ -2729,13 +3509,41 @@
       close: '关闭',
       splitLeft: '向左拆分',
       splitRight: '向右拆分',
-      closeTab: '关闭',
-      closeOthers: '关闭其它标签页',
+      closeTab: '关闭当前',
+      closeOthers: '关闭其它',
+      closeAll: '关闭全部',
       ok: '确定',
-      stConnected: '已连接',
-      stConnecting: '连接中',
-      stOffline: '未连接',
-      authFailed: '认证失败：服务器拒绝了这个用户名或密码。'
+      authFailed: '认证失败：服务器拒绝了这个用户名或密码。',
+      hostKeyRejected: '已取消：这台机器的主机密钥没有被信任。',
+      hostKeyNewTitle: '第一次连接这台机器',
+      hostKeyNewBody: 'tshell 还没有见过这台机器的主机密钥。信任之前，请把下面的指纹和服务器上 '
+        + '`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` 打印的那一行对一遍——'
+        + '这是唯一能分辨"第一次连上真机器"和"第一次连上冒充它的人"的办法。',
+      hostKeyChangedTitle: '主机密钥变了',
+      hostKeyChangedBody: '这台机器上次用的不是这把密钥。重装系统、换了机器、迁移了 IP 都会这样；'
+        + '有人在中间冒充它也会这样，而且那种情况下你之后输入的每一个字符他都能看到。'
+        + '在弄清楚是哪一种之前不要继续。',
+      hostKeyMachine: '机器',
+      hostKeyAddress: '地址',
+      hostKeyType: '密钥类型',
+      hostKeyFingerprint: '本次指纹',
+      hostKeyPinned: '已记住的',
+      editorUnsavedTitle: '还没保存',
+      editorUnsavedBody: '{0} 有未保存的修改。关掉这个标签就没了。',
+      editorDiscard: '不保存，关闭',
+      editorDiscardTitle: '还没保存',
+      editorDiscardBody: '换编码要把文件重新读一遍，你改过还没保存的内容会丢。',
+      editorReread: '丢弃并重读',
+      editorConflictTitle: '文件在你编辑期间变了',
+      editorConflictBody: '磁盘上的这个文件在你打开它之后被改过——可能是助手写了记忆，可能是别的程序，'
+        + '也可能是另一个人。继续保存会用你手里这份覆盖掉它，对方的改动不会保留。',
+      editorOverwrite: '用我的覆盖',
+      nothingHint: '从左侧选一台服务器开始',
+      nothingNoServers: '先在左侧添加一台服务器',
+      nothingRecent: '最近',
+      hostKeyTrust: '信任并记住',
+      hostKeyOnce: '仅这一次',
+      hostKeyReject: '取消连接'
     },
     'en-US': {
       settings: 'Settings',
@@ -2747,18 +3555,51 @@
       close: 'Close',
       splitLeft: 'Split Left',
       splitRight: 'Split Right',
-      closeTab: 'Close',
-      closeOthers: 'Close Other Tabs',
+      closeTab: 'Close Tab',
+      closeOthers: 'Close Others',
+      closeAll: 'Close All',
       ok: 'OK',
-      stConnected: 'Connected',
-      stConnecting: 'Connecting',
-      stOffline: 'Not connected',
-      authFailed: 'Authentication failed: the server rejected this user or password.'
+      authFailed: 'Authentication failed: the server rejected this user or password.',
+      hostKeyRejected: 'Cancelled: this machine’s host key was not trusted.',
+      hostKeyNewTitle: 'First connection to this machine',
+      hostKeyNewBody: 'tshell has not seen this machine’s host key before. Before trusting it, '
+        + 'check the fingerprint below against the line printed by '
+        + '`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server itself — that is the '
+        + 'only thing that tells a first connection to the real machine apart from a first '
+        + 'connection to someone impersonating it.',
+      hostKeyChangedTitle: 'The host key has changed',
+      hostKeyChangedBody: 'This machine answered with a different key last time. A rebuild, a '
+        + 'replacement or a moved address all look like this — and so does someone sitting in '
+        + 'the middle, who would then see every character you type from here on. Do not continue '
+        + 'until you know which it is.',
+      hostKeyMachine: 'Machine',
+      hostKeyAddress: 'Address',
+      hostKeyType: 'Key type',
+      hostKeyFingerprint: 'Presented',
+      hostKeyPinned: 'Remembered',
+      editorUnsavedTitle: 'Not saved',
+      editorUnsavedBody: '{0} has changes that were never written. Closing the tab loses them.',
+      editorDiscard: 'Close without saving',
+      editorDiscardTitle: 'Not saved',
+      editorDiscardBody: 'Changing the encoding reads the file again. What you have edited and not saved will be lost.',
+      editorReread: 'Discard and reread',
+      editorConflictTitle: 'The file changed while you were editing',
+      editorConflictBody: 'This file on disk has been written since you opened it -- by the '
+        + 'assistant saving a memory, by another program, or by another person. Saving now '
+        + 'replaces it with what you have here, and their change will not survive.',
+      editorOverwrite: 'Overwrite with mine',
+      nothingHint: 'Pick a server on the left to start',
+      nothingNoServers: 'Add a server on the left to start',
+      nothingRecent: 'Recent',
+      hostKeyTrust: 'Trust and remember',
+      hostKeyOnce: 'Just this once',
+      hostKeyReject: 'Cancel'
     }
   };
 
-  function c(key) {
-    return (chromeText[language] || chromeText['en-US'])[key];
+  function c(key, arg) {
+    var value = (chromeText[language] || chromeText['en-US'])[key];
+    return arg === undefined ? value : String(value).replace('{0}', String(arg));
   }
 
   /** Tooltip and screen-reader name are the same words; set them together. */
@@ -2803,28 +3644,90 @@
     syncMaximized();
   })();
 
+  /*
+   * Full screen, and the title bar going with it.
+   *
+   * Maximised and full screen are different things here in a way they are not
+   * in a decorated window: this one draws its own title bar, so a window that
+   * merely filled the screen would still be spending 36px on chrome and would
+   * not look like anything the word "full screen" promises. `body.fullscreen`
+   * takes the bar out, and shell.css does the rest.
+   *
+   * The state is read back from the window rather than assumed, for the reason
+   * `syncMaximized` is: the OS can take a window out of full screen without
+   * asking, and a flag this side kept would then be wrong with no way to notice.
+   *
+   * The only way back out is the shortcut, which is why it is the one action in
+   * the table that does not need a terminal: bound to nothing, or bound to a
+   * combination the panel refuses, there would be no way to restore the window
+   * except by quitting it. `keys.js` allows a function key to stand alone
+   * partly for this.
+   */
+  function toggleFullscreen() {
+    var api = window.__TAURI__ && window.__TAURI__.window;
+    if (!api) return;
+    var appWindow = api.getCurrentWindow();
+    appWindow.isFullscreen()
+      .then(function (on) {
+        return appWindow.setFullscreen(!on).then(function () {
+          document.body.classList.toggle('fullscreen', !on);
+        });
+      })
+      .catch(function (error) {
+        console.warn('[shell] could not change full screen:', error);
+      });
+  }
+
+  /*
+   * The window is created hidden -- `visible` in tauri.conf.json -- so the first
+   * thing on screen is this bar and its ground, not the webview's white one.
+   * Painting the dark background from CSS cannot do that on its own: the window
+   * is on screen before the first frame exists, whatever the stylesheet says.
+   *
+   * Two frames deep, because one only gets us past style computation; the second
+   * runs after the paint that used it.
+   *
+   * Called from both arms of boot. A config that will not load still opens a
+   * window, so hanging the reveal off the success path alone would leave the
+   * user with nothing on screen and no way to fix the file.
+   */
+  var revealed = false;
+  function revealWindow() {
+    if (revealed) return;
+    revealed = true;
+    var api = window.__TAURI__ && window.__TAURI__.window;
+    if (!api) return;
+    var appWindow = api.getCurrentWindow();
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        appWindow.show().catch(function () {});
+      });
+    });
+  }
+
   document.getElementById('settings').onclick = openSettings;
+
+  /*
+   * The empty window's two actions. Both are window-wide, which is why they are
+   * the only two down there: everything else worth doing from this screen needs
+   * a machine, and the rows above are where the machines are.
+   */
+  document.getElementById('nothing-settings').onclick = openSettings;
+  document.getElementById('nothing-config').onclick = function () {
+    openLocalFile('config_file_path', {});
+  };
 
   /** Every label on the bar, in whatever language boot settled on. */
   function paintChrome() {
     label(document.getElementById('settings'), c('settings'));
+    document.getElementById('nothing-settings-text').textContent = c('settings');
+    document.getElementById('nothing-config-text').textContent = t('openConfig');
+    paintNothing();
     label(document.getElementById('win-min'), c('minimize'));
     label(document.getElementById('win-close'), c('close'));
-    label(actionAi, t('agentTitle'));
-    label(actionTransfer, t('fileTransfer'));
     paintWindowButtons();
     paintSidebar();
   }
-
-  actionAi.onclick = function () {
-    var pane = frontTerminal();
-    if (pane) openChat(pane);
-  };
-
-  actionTransfer.onclick = function () {
-    var pane = frontTerminal();
-    if (pane) openTransfer(pane.server, pane.groupId, pane);
-  };
 
   /*
    * Hiding the server panel is a button and nothing else. The obvious shortcut
@@ -2888,7 +3791,14 @@
     });
     window.addEventListener('mousemove', function (event) {
       if (!dragging) return;
-      var width = Math.min(Math.max(event.clientX, 180), window.innerWidth - 320);
+      /*
+       * Measured from where the card starts, not from the window's edge. The
+       * workbench pads the ground in by 8px, and reading `clientX` as a width
+       * would hand the sidebar that padding as well -- so it grew by 8px the
+       * moment the first drag began, however little the pointer had moved.
+       */
+      var origin = sidebar.getBoundingClientRect().left;
+      var width = Math.min(Math.max(event.clientX - origin, 180), window.innerWidth - 320);
       sidebar.style.width = width + 'px';
     });
     window.addEventListener('mouseup', function () {
@@ -2925,6 +3835,18 @@
       // Only now is there a table to name anything from.
       paintChrome();
       /*
+       * Subscribed after the table is loaded and before anything can be opened.
+       * Nothing connects until the panel has mounted, several steps below, so
+       * there is no window in which a question could be asked with nobody
+       * listening -- and Rust refuses rather than hangs if there ever were.
+       */
+      if (tauriEvent) {
+        tauriEvent.listen('host-key', function (event) { askHostKey(event.payload); })
+          .catch(function (error) {
+            console.error('[shell] host key questions cannot be delivered:', error);
+          });
+      }
+      /*
        * Before anything can be opened, because a terminal that opened in one
        * scheme and switched to another a moment later would be doing it in
        * front of the user. Nothing has a pane yet, so there is no flash to
@@ -2943,13 +3865,40 @@
           schemesError = String(error);
           console.warn('[shell] the schemes file would not load:', error);
         })
+        /*
+         * And the window's own palette, for the same reason and in the same
+         * window: nothing has a pane yet, so applying it here is the difference
+         * between opening in the user's colours and changing into them.
+         */
+        .then(function () { return invoke('theme_load'); })
+        .then(function (file) {
+          if (!window.tshellPalette) return;
+          paletteFile = window.tshellPalette.normalize(file);
+          window.tshellPalette.apply(document, paletteFile);
+        })
+        .catch(function (error) {
+          paletteError = String(error);
+          console.warn('[shell] the theme file would not load:', error);
+        })
         .then(function () { return invoke('load_state'); });
     })
     .then(function (loaded) {
       panel = loaded;
       aiEnabled = loaded.aiEnabled !== false;
-      actionAi.hidden = !aiEnabled;
+      /*
+       * Before `mountSidebar`, because mounting builds a fragment and the
+       * fragment carries the table. A frame handed an empty one would answer to
+       * nothing until the next broadcast, which for the sidebar is never.
+       */
+      if (window.tshellKeys) {
+        keysFile = window.tshellKeys.normalize(loaded.keys);
+        shortcuts = window.tshellKeys.resolve(keysFile);
+      }
       mountSidebar();
+      // Boot assigns `panel` directly rather than through `applyState`, so the
+      // empty window is told here. It was drawn once already, by `paintChrome`,
+      // against a panel that had nothing in it yet.
+      paintNothing();
     })
     .catch(function (error) {
       /*
@@ -2960,6 +3909,9 @@
        * nothing said about why.
        */
       console.error(error);
+      configBroken = true;
       mountSidebar(function () { panelError(error); });
-    });
+      paintNothing();
+    })
+    .then(revealWindow);
 })();

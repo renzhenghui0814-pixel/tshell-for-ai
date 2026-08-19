@@ -37,19 +37,40 @@
   /*
    * -- surfaces ------------------------------------------------------------
    *
-   * Five steps, ordered by height. Dark raises by getting lighter; light raises
-   * by getting whiter, which means the direction inverts: under `data-theme`
-   * light the sidebar (`elev`) is *darker* than the editor (`base`). That reads
-   * backwards next to the dark set and it is meant to -- it is how light UIs
-   * have always worked, and doing it the other way makes a white sidebar float
-   * off a white page with nothing to sit it on.
+   * The window is a ground with panels resting on it. `--bg-elev` is the
+   * ground -- the title bar, and the gaps between the panels.
+   * `--bg-base` is a panel's own surface, which is what the rounded cards are
+   * made of: the server list, and each column of tabbed panes with its tab
+   * strip. Nothing is flush against anything any more; the separating is done
+   * by the ground showing through between the cards.
+   *
+   * The ground is the grey one, and a panel separates from it by moving
+   * *away*, towards whichever end the theme calls its own -- towards black in
+   * dark, towards white in light. So `base` is darker than `elev` in one half
+   * and lighter in the other, which looks like an inconsistency written down
+   * and is the same relationship both times: only the direction of "further
+   * in" changes.
+   *
+   * Above a panel the steps go back to being about height, and there the usual
+   * inversion holds -- dark raises by getting lighter, light by getting whiter.
+   *
+   * Eight names for what the ladder only needs five of, because four of the
+   * rungs carried two jobs each and a person editing the palette could not
+   * reach one without moving the other. A text field and a block of command
+   * output were one token; the tab in front and a card in the chat thread were
+   * one token; a dialog and a menu were one token. They ship at the same value
+   * -- the pairs below are literally equal -- and that is the point: the
+   * default is the agreement, and separating them costs nothing until someone
+   * disagrees. Merged, disagreeing was impossible.
    */
-  --bg-inset: #080A0E;   /* recessed: inputs, code blocks */
-  --bg-base: #0C0E13;    /* the window's ground, and the terminal's */
-  --bg-elev: #141821;    /* title bar, sidebar, tab strip, status bar */
-  --bg-raise: #1C212C;   /* the active tab, cards */
-  --bg-raise-hi: #232936;/* a solid hover for things already on `raise` */
-  --bg-float: #212736;   /* dialogs and menus, above everything */
+  --bg-input: #080A0E;   /* recessed: text fields, search boxes, the composer */
+  --bg-code: #080A0E;    /* recessed: command echoes, output, fingerprint blocks */
+  --bg-base: #0C0E13;    /* a panel's surface: the cards, and the terminal's */
+  --bg-elev: #141821;    /* the window's ground: the title bar and the gaps */
+  --bg-tab: #1C212C;     /* the tab in front, and the ghost of one in flight */
+  --bg-card: #1C212C;    /* a card inside a panel */
+  --bg-dialog: #212736;  /* dialogs, above everything */
+  --bg-menu: #212736;    /* menus, and the list a dropdown opens */
 
   /*
    * -- text ----------------------------------------------------------------
@@ -112,14 +133,27 @@
   /* Same squeeze as `--ac-tx`, same answer: white on this red measures 2.6:1. */
   --err-tx: #180708;
   --info: #58B6F0;
+
   /*
-   * The assistant's own colour, and deliberately the orange of the application
-   * icon rather than a hue of its own. The two marks sit three characters apart
-   * on the title bar and the assistant is the product's headline feature; they
-   * should read as one family. Not the accent either -- that one means
-   * "focused", and these appear side by side.
+   * -- fills that are not the accent ---------------------------------------
+   *
+   * The user's own message in the chat thread, and the bar a transfer fills.
+   * Both were `--ac` and both are now their own token.
+   *
+   * Not a tidying: the accent means "focused" -- the ring on the field you are
+   * typing in, the border of the column that will take the next tab. Neither of
+   * these is focused. A bubble is who said it and a progress bar is how far
+   * along it is, and both of them sit on screen for minutes at a time next to
+   * something that really is focused. Sharing the token meant that tinting the
+   * focus ring also repainted every message the user had ever sent.
+   *
+   * `--chat-user-tx` follows the same ink rule as `--ac-tx` and `--err-tx`:
+   * white if white clears 4.5:1 on the fill, a near-black of the same hue if it
+   * does not. It is derived, not chosen -- see `palette.js`.
    */
-  --ai: #F97316;
+  --chat-user: #6E7CF7;
+  --chat-user-tx: #0B0E16;
+  --progress: #6E7CF7;
 
   /*
    * The plate of the application icon, to the digit, and the one token in this
@@ -130,8 +164,15 @@
    * on what it is being read against. This is not a role, it is the logo: the
    * .ico in the taskbar and the plate on media/tshell.svg do not darken when
    * the user picks the light theme, and neither should a drawing of the same
-   * mark. Use it only where the thing being drawn *is* the mark. `--ai` is the
-   * one to reach for anywhere the meaning is "the assistant".
+   * mark. Use it only where the thing being drawn *is* the mark.
+   *
+   * There used to be an `--ai` beside it, a role token meaning "the assistant",
+   * on the argument that a drawing of the logo and a thing that means the
+   * assistant should not be the same value. The argument was sound and nothing
+   * ever used it: it was an editable token, contrast-checked in the settings
+   * panel, painting no pixels in any window. It is gone. If something one day
+   * needs to say "assistant" in colour, add it back then, with the rule it
+   * belongs to written next to its first consumer.
    */
   --brand: #F97316;
 
@@ -158,6 +199,14 @@
   --r-lg: 12px;   /* dialogs */
   --r-pill: 999px;
 
+  /*
+   * The chevron every dropdown wears, as a mask shape. Here rather than inline
+   * in the rule so the select shell and anything else that needs to point down
+   * are drawing the same arrow -- and so that it is a value, editable in one
+   * place, rather than 180 characters of URI buried in a declaration.
+   */
+  --c-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.9 4.7 6 7.8l3.1-3.1' fill='none' stroke='%23fff' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+
   --sh-pop: 0 12px 34px rgba(0, 0, 0, 0.36);
   --sh-dlg: 0 18px 48px rgba(0, 0, 0, 0.46);
   --sh-tab: 0 1px 3px rgba(0, 0, 0, 0.22);
@@ -165,7 +214,7 @@
   /*
    * -- syntax ---------------------------------------------------------------
    *
-   * Six hues that stay apart from each other and sit on `--bg-inset`. Given as
+   * Six hues that stay apart from each other and sit on `--bg-code`. Given as
    * literals rather than as aliases of the semantic set: highlighting needs
    * *distinguishable*, which is a different requirement from *meaningful*, and
    * borrowing --warn for both a warning and a number makes neither read.
@@ -187,15 +236,32 @@
 :root[data-theme="light"] {
   color-scheme: light;
 
-  --bg-inset: #F7F8FC;
-  --bg-base: #FFFFFF;
-  --bg-elev: #F4F5FA;
-  --bg-raise: #FFFFFF;
-  --bg-raise-hi: #EFF1F7;
-  --bg-float: #FFFFFF;
+  /*
+   * The grey ground and the near-white panel on it. The gap between the two is
+   * the whole of the effect, so the ground carries the grey and the card stays
+   * within a couple of steps of white -- every light-mode ink below was
+   * measured against white and the six semantic ones clear 4.5:1 on it by less
+   * than half a step, so a card that goes much further grey takes them under.
+   */
+  --bg-input: #EEF0F6;
+  --bg-code: #EEF0F6;
+  --bg-base: #F9FAFD;
+  --bg-elev: #E9EBF2;
+  --bg-tab: #FFFFFF;
+  --bg-card: #FFFFFF;
+  --bg-dialog: #FFFFFF;
+  --bg-menu: #FFFFFF;
 
   --tx: #1A1E2B;
-  --tx-dim: #666E82;
+  /*
+   * A step darker than it reads like it needs to be, and the ground is why:
+   * `--bg-elev` is the grey one now, and what is written on it is the title
+   * bar -- the version beside the name, the glyphs on the window buttons. At
+   * the previous #666E82 that pair measured 4.28:1, the only thing in either
+   * half the new layering took below the line and the hardest of them to
+   * notice, because the words it fails on are the smallest in the window.
+   */
+  --tx-dim: #5F6779;
   --tx-faint: #98A0B2;
 
   --line: rgba(16, 20, 40, 0.09);
@@ -209,7 +275,7 @@
 
   /*
    * Darker than they look like they need to be, and measured rather than
-   * judged. On white these carry words -- "Connected" in the status bar, the
+   * judged. On white these carry words -- "Connected" in the transfer log, the
    * error line under the server list -- and the first pass at this palette had
    * all three of them between 2.9:1 and 4.3:1, which reads fine to someone with
    * unimpaired vision on a good monitor and not at all to everyone else.
@@ -222,8 +288,11 @@
   --err-hover: #B22A22;
   --err-soft: rgba(207, 54, 45, 0.12);
   --err-tx: #ffffff;
-  --ai: #C2410C;
   --info: #1B72C4;
+
+  --chat-user: #5A5FE0;
+  --chat-user-tx: #ffffff;
+  --progress: #5A5FE0;
 
   --term-cursor: #5A5FE0;
   --term-select: rgba(90, 95, 224, 0.22);
@@ -269,8 +338,16 @@
 
   /* Surfaces */
   --vscode-editor-background: var(--bg-base);
+  /*
+   * DEVIATION. The server panel is a card on `--bg-base` now, like every other
+   * panel; `--bg-elev` is the ground it sits on. The name is kept pointed at
+   * the ground anyway, because what the pages actually use it for is a band
+   * that has to stand off the surface under it -- a sticky table header, a
+   * blockquote -- and `--bg-elev` is the only token that does that in *both*
+   * halves. `--bg-card` would work in dark and vanish into white in light.
+   */
   --vscode-sideBar-background: var(--bg-elev);
-  --vscode-editorWidget-background: var(--bg-float);
+  --vscode-editorWidget-background: var(--bg-dialog);
   --vscode-editorWidget-border: var(--line-strong);
   --vscode-editorGutter-background: var(--bg-base);
   --vscode-editorLineNumber-foreground: var(--tx-faint);
@@ -282,15 +359,24 @@
   --vscode-button-foreground: var(--ac-tx);
   --vscode-button-hoverBackground: var(--ac-hover);
   --vscode-button-border: transparent;
-  --vscode-button-secondaryBackground: var(--bg-raise);
+  /*
+   * Nothing in ui/ draws a secondary button with these -- transfer.css writes
+   * its own outlined one, and components.css owns the rest. They are kept
+   * because the `--vscode-*` names are an interface, and repointed rather than
+   * left dangling: the fill a secondary button would want is a card's, and its
+   * hover is the veil every other hover in the window uses. `--bg-raise-hi`,
+   * which the hover used to name, was deleted along with `--ai` for the same
+   * reason -- one editable token, one contrast check, zero pixels.
+   */
+  --vscode-button-secondaryBackground: var(--bg-card);
   --vscode-button-secondaryForeground: var(--tx);
-  --vscode-button-secondaryHoverBackground: var(--bg-raise-hi);
+  --vscode-button-secondaryHoverBackground: var(--hover);
 
   /* Inputs and dropdowns */
-  --vscode-input-background: var(--bg-inset);
+  --vscode-input-background: var(--bg-input);
   --vscode-input-foreground: var(--tx);
   --vscode-input-border: var(--line-strong);
-  --vscode-dropdown-background: var(--bg-inset);
+  --vscode-dropdown-background: var(--bg-input);
   --vscode-dropdown-foreground: var(--tx);
   --vscode-dropdown-border: var(--line-strong);
 
@@ -316,7 +402,7 @@
   --vscode-list-focusOutline: var(--ac);
 
   /* Menus. Selection here *is* solid -- a menu row is one line of text. */
-  --vscode-menu-background: var(--bg-float);
+  --vscode-menu-background: var(--bg-menu);
   --vscode-menu-foreground: var(--tx);
   --vscode-menu-border: var(--line-strong);
   --vscode-menu-selectionBackground: var(--ac);
@@ -331,7 +417,7 @@
   /* Text */
   --vscode-textLink-foreground: var(--info);
   --vscode-textBlockQuote-background: var(--bg-elev);
-  --vscode-textCodeBlock-background: var(--bg-inset);
+  --vscode-textCodeBlock-background: var(--bg-code);
 
   /*
    * Chrome. The badge was a grey pill; it is a tinted accent pill now, which is
@@ -342,7 +428,7 @@
   --vscode-badge-foreground: var(--ac);
   --vscode-scrollbarSlider-background: var(--scroll);
   --vscode-scrollbarSlider-hoverBackground: var(--scroll-hover);
-  --vscode-progressBar-background: var(--ac);
+  --vscode-progressBar-background: var(--progress);
   --vscode-toolbar-hoverBackground: var(--hover);
   --vscode-toolbar-activeBackground: var(--active);
 

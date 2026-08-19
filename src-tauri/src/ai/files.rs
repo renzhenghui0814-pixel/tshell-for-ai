@@ -1,24 +1,32 @@
-//! Writing files from the assistant, over the same shared terminal everything
-//! else goes through.
+//! Writing files from the assistant: what will change, and how the bytes get
+//! there.
 //!
-//! A shell command is one line here -- that is what the marker protocol in
-//! `shell.rs` is built on -- and file content is the one thing that is not. A
-//! heredoc is the obvious answer and the wrong one: its body would have to
-//! survive being typed into an interactive shell, where a tab is completion, a
-//! newline is a PS2 continuation, and the terminal's own encoding decides what
-//! the bytes mean.
+//! # Two ways for the bytes to travel, and one way for the change to land
 //!
-//! So content never travels as shell syntax. It travels as base64, which is one
-//! line by construction, is immune to quoting, and is pure ASCII -- the last part
-//! matters because a gb18030 session would otherwise mangle UTF-8 on the way in.
-//! Large content is split into chunks that each decode on their own, which is why
-//! the chunk size is a multiple of four: base64 is only self-contained on that
-//! boundary.
+//! Where the host has a channel of its own -- see `link.rs` -- the payload is one
+//! SFTP write to a temporary file beside the target. Where it has not, the
+//! payload goes the way it always did: through the shared terminal, as base64,
+//! split into chunks that each fit on a line. Both are real paths. The second is
+//! what a test takes and what any host without a second connection takes, so it
+//! is kept working rather than kept as a rescue.
 //!
-//! A write lands on a temporary file next to the target and is moved into place
-//! at the end. The move is atomic, so the target is either the old file or the
-//! new one and never half of either; an interrupted write leaves a stray
-//! temporary behind rather than a truncated config file.
+//! Base64 is what the typed path uses because a shell command is one line here --
+//! that is what the marker protocol in `shell.rs` is built on -- and file content
+//! is the one thing that is not. A heredoc is the obvious answer and the wrong
+//! one: its body would have to survive being typed into an interactive shell,
+//! where a tab is completion, a newline is a PS2 continuation, and the terminal's
+//! own encoding decides what the bytes mean. Base64 is one line by construction,
+//! immune to quoting, and pure ASCII -- the last part matters because a gb18030
+//! session would otherwise mangle UTF-8 on the way in. Chunks are a multiple of
+//! four characters because base64 is only self-contained on that boundary.
+//!
+//! However the bytes arrived, the change lands the same way: the temporary is
+//! moved into place by a shell command at the end. The move is atomic, so the
+//! target is either the old file or the new one and never half of either; an
+//! interrupted write leaves a stray temporary behind rather than a truncated
+//! config file. Keeping that step in the shell is deliberate -- SFTP cannot
+//! promise it, and it is also the line the user sees in their terminal saying
+//! what was written.
 //!
 //! `edit` is a read, a match, and a write, with the match done here rather than
 //! by `sed` on the far side. That is what makes "not found" and "found three
@@ -45,7 +53,7 @@ use super::types::{CommandResult, FileEncoding, FileOpKind};
 
 /// Large enough for any configuration file, small enough to stay a paste, not a
 /// transfer.
-const MAX_FILE_BYTES: usize = 256 * 1024;
+pub const MAX_FILE_BYTES: usize = 256 * 1024;
 /// Base64 characters per command. A multiple of 4, and well inside a terminal line.
 const CHUNK_CHARS: usize = 3072;
 
@@ -117,14 +125,62 @@ fn fail<T>(message: impl Into<String>) -> Result<T, FileOpError> {
     Err(FileOpError(message.into()))
 }
 
-/// How a plan reaches the machine. One method, so a test can answer it from a
-/// table instead of a server.
+/// What a path turned out to be, when the byte channel could answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presence {
+    Directory,
+    File,
+    Absent,
+}
+
+/// How a plan reaches the machine.
+///
+/// `run` is the shell, and it is the only method that has to be there: it is what
+/// a test answers from a table instead of a server, and it is what carries every
+/// step the user is meant to watch.
+///
+/// The other three are the assistant's own connection -- see `link.rs` -- and
+/// they are optional in the strong sense. `None` does not mean "it failed", it
+/// means "there is no such channel here", and every one of them has a shell
+/// answer to fall back to. That is what keeps the fallback honest: it is not a
+/// path that only runs when something breaks, it is the path a test takes, and
+/// the path any host without a second connection takes.
 pub trait FileRunner: Send + Sync {
     fn run<'a>(
         &'a self,
         command: String,
         options: RunOptions,
     ) -> Pin<Box<dyn Future<Output = CommandResult> + Send + 'a>>;
+
+    /// A file's bytes, exactly. `None` when there is no channel to ask.
+    fn fetch<'a>(
+        &'a self,
+        _path: String,
+    ) -> Pin<Box<dyn Future<Output = Option<Result<Vec<u8>, String>>> + Send + 'a>> {
+        Box::pin(async { None })
+    }
+
+    /// Puts bytes at a path, creating or truncating it.
+    ///
+    /// Only ever called with a temporary path. What makes the change visible in
+    /// the target is a shell command afterwards, because that is the step that
+    /// has to be atomic and the step the user has to see.
+    fn stash<'a>(
+        &'a self,
+        _path: String,
+        _bytes: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Option<Result<(), String>>> + Send + 'a>> {
+        Box::pin(async { None })
+    }
+
+    /// What is at a path. `None` when there is no channel, or when it could not
+    /// tell -- both mean "ask the shell instead".
+    fn probe<'a>(
+        &'a self,
+        _path: String,
+    ) -> Pin<Box<dyn Future<Output = Option<Presence>> + Send + 'a>> {
+        Box::pin(async { None })
+    }
 }
 
 pub fn dir_of(path: &str) -> String {
@@ -282,6 +338,19 @@ pub fn build_commit(path: &str, temp: &str, exists: bool) -> String {
     format!("{keep_mode}mv -f -- {staged} {file}")
 }
 
+/// The commit for an append, when the addition was staged rather than typed.
+///
+/// `cat` rather than a second `mv`, because an append has a file to land at the
+/// end of and a move would replace it. `rm` runs whatever `cat` did, so a failed
+/// append does not also leave the staged bytes lying beside the target -- and it
+/// runs after, so a `cat` that failed on a full disk still reports its own status
+/// as the command's.
+pub fn build_append_commit(path: &str, temp: &str) -> String {
+    let file = quote(path);
+    let staged = quote(temp);
+    format!("cat -- {staged} >> {file}; status=$?; rm -f -- {staged}; exit $status")
+}
+
 /// Size and digest in one step, digest optional: not every box has sha256sum.
 pub fn build_verify(path: &str) -> String {
     let file = quote(path);
@@ -345,17 +414,29 @@ pub async fn plan_file_op(
         return fail(format!("{path} names a directory. Give the path of a file."));
     }
 
-    let probe = run.run(build_probe(&path), silent()).await;
-    if probe.timed_out {
-        return fail(format!("Checking {path} was interrupted before it answered."));
-    }
-    let state = probe.output.trim().lines().next_back().unwrap_or_default().trim().to_string();
+    // One `stat` where there is a channel to ask on; the shell's `[ -d ]` where
+    // there is not. Both answer the same three things, and the shell's answer is
+    // the one that has to cope with a machine that said something unexpected.
+    let state = match run.probe(path.clone()).await {
+        Some(Presence::Directory) => "dir".to_string(),
+        Some(Presence::File) => "file".to_string(),
+        Some(Presence::Absent) => "none".to_string(),
+        None => {
+            let probe = run.run(build_probe(&path), silent()).await;
+            if probe.timed_out {
+                return fail(format!("Checking {path} was interrupted before it answered."));
+            }
+            let state =
+                probe.output.trim().lines().next_back().unwrap_or_default().trim().to_string();
+            if state != "dir" && state != "file" && state != "none" {
+                let said = if probe.output.is_empty() { "no output" } else { &probe.output };
+                return fail(format!("Could not tell what {path} is: {said}"));
+            }
+            state
+        }
+    };
     if state == "dir" {
         return fail(format!("{path} is a directory, not a file."));
-    }
-    if state != "file" && state != "none" {
-        let said = if probe.output.is_empty() { "no output" } else { &probe.output };
-        return fail(format!("Could not tell what {path} is: {said}"));
     }
     let exists = state == "file";
 
@@ -385,17 +466,40 @@ async fn plan_content(
     if request.kind == FileOpKind::Append && payload.is_empty() {
         return fail("There is nothing to append. Put the text in \"content\".");
     }
-    // A file that is already there keeps its encoding; only a new one is ours to
-    // choose, and a new one is UTF-8. Replacing a file is not a licence to change
-    // what every other program on that machine reads it as.
-    let encoding =
-        if exists { probe_encoding(path, run).await } else { FileEncoding::Utf8 };
-    // A write shows the file whole, so it starts where the file does. An append
-    // shows only the tail being added, and numbering that from 1 would label it
-    // with lines that belong to the top of the file -- so it is asked where the
-    // file currently ends, and numbered on from there.
+    /*
+     * Two facts about the file it already is, and one read where there is a
+     * channel to read on.
+     *
+     * A file that is already there keeps its encoding; only a new one is ours to
+     * choose, and a new one is UTF-8. Replacing a file is not a licence to change
+     * what every other program on that machine reads it as.
+     *
+     * And a write shows the file whole, so it starts where the file does, while
+     * an append shows only the tail being added -- numbering that from 1 would
+     * label it with lines belonging to the top of the file. So where the file
+     * currently ends has to be known too.
+     *
+     * Over the shell those are two commands, `iconv` and `wc -l`. Over the
+     * channel they are two questions about the same bytes, and the bytes are one
+     * read, so they are answered together rather than asked twice.
+     */
+    let fetched = if exists { run.fetch(path.to_string()).await } else { None };
+    let (encoding, known_lines) = match &fetched {
+        Some(Ok(data)) => {
+            let encoding = detect_encoding(data, false);
+            let (text, _) = decode_content(data, encoding);
+            // Newlines, not lines -- the same thing for a file that ends in one,
+            // and `wc -l` counts the same way, so the two paths agree.
+            (encoding, Some(text.matches('\n').count() as u32))
+        }
+        _ if exists => (probe_encoding(path, run).await, None),
+        _ => (FileEncoding::Utf8, None),
+    };
     let line = if request.kind == FileOpKind::Append {
-        count_lines(path, exists, run).await + 1
+        match known_lines {
+            Some(lines) => lines + 1,
+            None => count_lines(path, exists, run).await + 1,
+        }
     } else {
         1
     };
@@ -432,6 +536,12 @@ async fn count_lines(path: &str, exists: bool, run: &dyn FileRunner) -> u32 {
 }
 
 async fn probe_encoding(path: &str, run: &dyn FileRunner) -> FileEncoding {
+    // With the bytes in hand the encoding is settled rather than guessed at, and
+    // `partial: false` says so -- the sample-tail allowance the shell probe needs
+    // is for an answer drawn from the first 64 KB, and this is not one.
+    if let Some(Ok(data)) = run.fetch(path.to_string()).await {
+        return detect_encoding(&data, false);
+    }
     let result = run.run(build_encoding_probe(path), silent_raw()).await;
     // An unreadable answer is not worth failing a write over: UTF-8 is what the
     // file would have been written as before any of this existed.
@@ -528,17 +638,27 @@ async fn read_file(
     path: &str,
     run: &dyn FileRunner,
 ) -> Result<(String, FileEncoding), FileOpError> {
-    let result = run.run(build_read(path), silent_raw()).await;
-    if result.timed_out {
-        return fail(format!("Reading {path} was interrupted before it finished."));
-    }
-    if result.exit_code != 0 {
-        let said = if result.output.is_empty() { "no output" } else { &result.output };
-        return fail(format!("Could not read {path}: {said}"));
-    }
-
-    let packed: String = result.output.chars().filter(|c| !c.is_whitespace()).collect();
-    let data = base64::engine::general_purpose::STANDARD.decode(&packed).unwrap_or_default();
+    let data = match run.fetch(path.to_string()).await {
+        Some(Ok(data)) => data,
+        // The channel is there and it said no. Not something to paper over with
+        // the shell: a read that failed over SFTP failed for a reason the shell
+        // would meet too -- no such file, no permission -- and trying twice would
+        // only report the second machine's words for the first machine's problem.
+        Some(Err(why)) => return fail(format!("Could not read {path}: {why}")),
+        None => {
+            let result = run.run(build_read(path), silent_raw()).await;
+            if result.timed_out {
+                return fail(format!("Reading {path} was interrupted before it finished."));
+            }
+            if result.exit_code != 0 {
+                let said = if result.output.is_empty() { "no output" } else { &result.output };
+                return fail(format!("Could not read {path}: {said}"));
+            }
+            let packed: String =
+                result.output.chars().filter(|c| !c.is_whitespace()).collect();
+            base64::engine::general_purpose::STANDARD.decode(&packed).unwrap_or_default()
+        }
+    };
     if data.len() > MAX_FILE_BYTES {
         return fail(format!(
             "{path} is {} bytes, too large to edit this way. Change it with a command instead.",
@@ -571,14 +691,49 @@ pub async fn apply_file_op(plan: &FilePlan, run: &dyn FileRunner) -> CommandResu
     let append = plan.kind == FileOpKind::Append;
     let nonce = format!("{:x}", now_nanos());
     let temp = temp_path_for(&plan.path, &nonce);
-    let target = if append { plan.path.clone() } else { temp.clone() };
     let label = format!("# tshell {} {} ({})", plan.kind.tag(), plan.path, format_bytes(plan.bytes));
 
     let bytes = encode_content(&plan.payload, plan.encoding);
-    let mut commands = build_chunk_commands(&bytes, &target, append);
-    if !append {
-        commands.push(build_commit(&plan.path, &temp, plan.exists));
-    }
+
+    /*
+     * Over the channel the payload is one write, and the shell is left with the
+     * single step that has to be atomic and the single step worth watching.
+     *
+     * Both kinds stage to the same temporary here, where the typed path staged
+     * only a write and appended straight onto the target. Uniform on purpose: an
+     * append whose bytes were half delivered would otherwise be half appended,
+     * and there would be nothing to take back.
+     */
+    let commands = match run.stash(temp.clone(), bytes.clone()).await {
+        Some(Ok(())) => vec![if append {
+            build_append_commit(&plan.path, &temp)
+        } else {
+            build_commit(&plan.path, &temp, plan.exists)
+        }],
+        Some(Err(why)) => {
+            return CommandResult {
+                output: format!(
+                    "{} of {} failed and nothing was changed.\nThe bytes could not be sent: {why}",
+                    plan.kind.tag(),
+                    plan.path
+                ),
+                exit_code: 1,
+                timed_out: false,
+                truncated: false,
+            };
+        }
+        // No channel. The bytes go the way they always did -- as base64, a line
+        // at a time -- and an append still lands straight on the target, because
+        // staging it would buy nothing without a single write to stage.
+        None => {
+            let target = if append { plan.path.clone() } else { temp.clone() };
+            let mut commands = build_chunk_commands(&bytes, &target, append);
+            if !append {
+                commands.push(build_commit(&plan.path, &temp, plan.exists));
+            }
+            commands
+        }
+    };
 
     for (index, command) in commands.into_iter().enumerate() {
         // The first step carries the label, so the terminal shows the intent once
@@ -736,6 +891,86 @@ mod tests {
             let answer =
                 if answers.is_empty() { CommandResult::default() } else { answers.remove(0) };
             Box::pin(async move { answer })
+        }
+    }
+
+    /// A machine that also has the assistant's own connection.
+    ///
+    /// Wraps the plain `Fake` rather than replacing it, so a test can assert on
+    /// what still went through the shell -- which is the whole point of the
+    /// second channel: almost nothing should.
+    struct Wired {
+        shell: Fake,
+        files: Mutex<std::collections::HashMap<String, Vec<u8>>>,
+        /// Set when the channel is there but refuses. Not the same as absent.
+        refuse: bool,
+    }
+
+    impl Wired {
+        fn with(files: &[(&str, &[u8])]) -> Self {
+            Self {
+                shell: Fake::default(),
+                files: Mutex::new(
+                    files.iter().map(|(p, b)| (p.to_string(), b.to_vec())).collect(),
+                ),
+                refuse: false,
+            }
+        }
+        fn commands(&self) -> Vec<String> {
+            self.shell.commands()
+        }
+        fn written(&self, path: &str) -> Option<Vec<u8>> {
+            self.files.lock().unwrap().get(path).cloned()
+        }
+    }
+
+    impl FileRunner for Wired {
+        fn run<'a>(
+            &'a self,
+            command: String,
+            options: RunOptions,
+        ) -> Pin<Box<dyn Future<Output = CommandResult> + Send + 'a>> {
+            self.shell.run(command, options)
+        }
+
+        fn fetch<'a>(
+            &'a self,
+            path: String,
+        ) -> Pin<Box<dyn Future<Output = Option<Result<Vec<u8>, String>>> + Send + 'a>> {
+            let answer = if self.refuse {
+                Some(Err("permission denied".to_string()))
+            } else {
+                self.files
+                    .lock()
+                    .unwrap()
+                    .get(&path)
+                    .cloned()
+                    .map(Ok)
+                    .or(Some(Err("no such file".to_string())))
+            };
+            Box::pin(async move { answer })
+        }
+
+        fn stash<'a>(
+            &'a self,
+            path: String,
+            bytes: Vec<u8>,
+        ) -> Pin<Box<dyn Future<Output = Option<Result<(), String>>> + Send + 'a>> {
+            if self.refuse {
+                return Box::pin(async { Some(Err("read-only file system".to_string())) });
+            }
+            self.files.lock().unwrap().insert(path, bytes);
+            Box::pin(async { Some(Ok(())) })
+        }
+
+        fn probe<'a>(
+            &'a self,
+            path: String,
+        ) -> Pin<Box<dyn Future<Output = Option<Presence>> + Send + 'a>> {
+            let here = self.files.lock().unwrap().contains_key(&path);
+            Box::pin(async move {
+                Some(if here { Presence::File } else { Presence::Absent })
+            })
         }
     }
 
@@ -1087,5 +1322,169 @@ mod tests {
     fn sizes_read_the_way_a_person_would_say_them() {
         assert_eq!(format_bytes(6), "6 B");
         assert_eq!(format_bytes(2048), "2.0 KB");
+    }
+
+    // ------------------------------------------------- the assistant's own channel ---
+
+    /// The whole point, stated as a number. A file that used to be forty-odd
+    /// typed commands is one write and one `mv`.
+    #[tokio::test]
+    async fn a_write_over_the_channel_costs_one_shell_command() {
+        let big = "x".repeat(100 * 1024);
+        let wired = Wired::with(&[]);
+        let request = FileRequest {
+            kind: FileOpKind::Write,
+            path: "/etc/app.conf".into(),
+            content: Some(big.clone()),
+            old_text: None,
+            new_text: None,
+        };
+
+        let plan = plan_file_op(&request, &wired).await.unwrap();
+        apply_file_op(&plan, &wired).await;
+
+        let commands = wired.commands();
+        // The commit, and the verify that follows it. Nothing else.
+        assert_eq!(commands.len(), 2, "commands were: {commands:#?}");
+        assert!(commands[0].contains("mv -f --"));
+        assert!(commands[1].starts_with("wc -c <"));
+        assert!(
+            !commands.iter().any(|command| command.contains("base64")),
+            "no byte should have been typed"
+        );
+    }
+
+    /// The staged bytes are the file, not a description of it.
+    #[tokio::test]
+    async fn the_staged_temporary_holds_exactly_what_was_planned() {
+        let wired = Wired::with(&[]);
+        let request = FileRequest {
+            kind: FileOpKind::Write,
+            path: "/srv/x.conf".into(),
+            content: Some("hello
+".into()),
+            old_text: None,
+            new_text: None,
+        };
+        let plan = plan_file_op(&request, &wired).await.unwrap();
+        apply_file_op(&plan, &wired).await;
+
+        let staged = wired
+            .commands()
+            .first()
+            .and_then(|commit| {
+                let start = commit.find("/srv/.tshell-")?;
+                let end = commit[start..].find(".tmp")? + start + 4;
+                Some(commit[start..end].to_string())
+            })
+            .expect("the commit names the temporary");
+        assert_eq!(wired.written(&staged).unwrap(), b"hello
+");
+    }
+
+    /// An append stages too, and commits with `cat` rather than a move: there is
+    /// a file to land at the end of, and a move would replace it.
+    #[tokio::test]
+    async fn an_append_over_the_channel_lands_at_the_end() {
+        let wired = Wired::with(&[("/var/log/notes", b"first
+")]);
+        let request = FileRequest {
+            kind: FileOpKind::Append,
+            path: "/var/log/notes".into(),
+            content: Some("second
+".into()),
+            old_text: None,
+            new_text: None,
+        };
+        let plan = plan_file_op(&request, &wired).await.unwrap();
+        apply_file_op(&plan, &wired).await;
+
+        // The only shell command in the whole operation, planning included: the
+        // line count came off the bytes that were already in hand.
+        let commands = wired.commands();
+        assert_eq!(commands.len(), 2, "commands were: {commands:#?}");
+        let commit = &commands[0];
+        assert!(commit.contains(">> '/var/log/notes'"), "commit was: {commit}");
+        assert!(commit.contains("rm -f --"), "the staged bytes are cleaned up");
+        assert!(!commit.contains("mv -f"), "an append must not replace the file");
+    }
+
+    /// The fallback is not a broken path, it is the path a host without a second
+    /// connection takes -- and it has to still be the one that worked before.
+    #[tokio::test]
+    async fn without_a_channel_the_bytes_are_still_typed() {
+        let fake = Fake::with(vec![Fake::ok("none")]);
+        let request = FileRequest {
+            kind: FileOpKind::Write,
+            path: "/tmp/a.conf".into(),
+            content: Some("hello
+".into()),
+            old_text: None,
+            new_text: None,
+        };
+        let plan = plan_file_op(&request, &fake).await.unwrap();
+        apply_file_op(&plan, &fake).await;
+
+        let commands = fake.commands();
+        assert!(commands.iter().any(|command| command.contains("base64 -d >")));
+        assert!(commands.iter().any(|command| command.contains("mv -f --")));
+    }
+
+    /// A channel that answered "no" is answering about the file. Asking the shell
+    /// the same question would only report a second machine's words for the first
+    /// machine's refusal.
+    #[tokio::test]
+    async fn a_refusal_from_the_channel_is_not_retried_through_the_shell() {
+        let mut wired = Wired::with(&[("/etc/shadow", b"root:x
+")]);
+        wired.refuse = true;
+        let request = FileRequest {
+            kind: FileOpKind::Edit,
+            path: "/etc/shadow".into(),
+            content: None,
+            old_text: Some("root:x".into()),
+            new_text: Some("root:y".into()),
+        };
+
+        let failure = plan_file_op(&request, &wired).await.unwrap_err();
+        assert!(failure.0.contains("permission denied"), "said: {}", failure.0);
+        assert!(
+            !wired.commands().iter().any(|command| command.starts_with("base64 ")),
+            "the shell must not have been asked to read it too"
+        );
+    }
+
+    /// With the bytes in hand the encoding is settled rather than sampled, so the
+    /// probe command never goes out.
+    #[tokio::test]
+    async fn the_encoding_is_read_off_the_bytes_not_probed_for() {
+        let gbk = encode_content("\u{4f60}\u{597d}\n", FileEncoding::Gb18030);
+        let wired = Wired::with(&[("/srv/gbk.txt", &gbk)]);
+        let request = FileRequest {
+            kind: FileOpKind::Append,
+            path: "/srv/gbk.txt".into(),
+            content: Some("more\n".into()),
+            old_text: None,
+            new_text: None,
+        };
+
+        let plan = plan_file_op(&request, &wired).await.unwrap();
+        assert_eq!(plan.encoding, FileEncoding::Gb18030, "the file keeps what it had");
+        assert!(
+            !wired.commands().iter().any(|command| command.contains("iconv")),
+            "nothing needed probing"
+        );
+    }
+
+    #[test]
+    fn an_append_commit_reports_the_copy_and_not_the_cleanup() {
+        let commit = build_append_commit("/a/b", "/a/.tshell-1.tmp");
+        // `rm` runs either way, and its own status is discarded: a successful
+        // append followed by a failed cleanup is a successful append.
+        let cat = commit.find("cat --").unwrap();
+        let status = commit.find("status=$?").unwrap();
+        let remove = commit.find("rm -f --").unwrap();
+        assert!(cat < status && status < remove);
+        assert!(commit.ends_with("exit $status"));
     }
 }

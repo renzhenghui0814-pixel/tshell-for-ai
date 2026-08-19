@@ -17,17 +17,18 @@
   const post = (type, payload) => vscode.postMessage(Object.assign({ type: type }, payload || {}));
   const fmt = (template, value) => String(template || '').replace('{0}', String(value));
 
-  // Highlighting lives in media/shared so the chat panel's code blocks and this
-  // preview cannot drift apart. Bound to locals to keep the call sites unchanged.
-  const escapeHtml = window.tshellHighlight.escapeHtml;
-  const highlightLine = window.tshellHighlight.highlightLine;
-
-  const COL_DEFAULTS = { size: 86, mod: 148 };
+  const COL_DEFAULTS = { name: 200, size: 86, mod: 148 };
   const COL_MIN = 44;
-  const COL_MAX = 320;
+  /*
+   * A ceiling per column, because they are not the same kind of thing. A name
+   * can genuinely run to two hundred characters and is worth the room; a file
+   * size is never longer than `999.9 MB`, and 600px of column for it is 500px
+   * of nothing between two things the eye wants side by side.
+   */
+  const COL_MAX = { name: 720, size: 220, mod: 320 };
 
   let state = Object.assign(
-    { split: 0, logHeight: 0, sort: {}, hidden: {}, cols: {}, fontSize: 12 },
+    { split: 0, logHeight: 0, sort: {}, hidden: {}, cols: {} },
     vscode.getState() || {}
   );
   if (!state.cols) state.cols = {};
@@ -66,25 +67,42 @@
     return svg;
   }
 
-  /* File kinds worth telling apart at a glance. Anything else stays neutral. */
+  /*
+    * File kinds worth telling apart at a glance. Anything else stays neutral.
+    *
+    * The kind is one word, and both halves of the icon are derived from it: the
+    * glyph is `#i-file-<kind>` in the shared sprite and the colour is `.ic-<kind>`
+    * in this page's stylesheet. It used to name the class directly, which meant
+    * the shape and the colour were two independent decisions -- and they had
+    * quietly diverged into one shape and eight colours, an icon column that said
+    * "file" forty times over in a range of hues.
+    */
   const ICON_KINDS = [
-    ['ic-code', ['c', 'cc', 'cpp', 'cxx', 'h', 'hpp', 'java', 'js', 'jsx', 'ts', 'tsx', 'py', 'sh', 'bash', 'go', 'rs', 'rb', 'php', 'vue', 'lua', 'pl']],
-    ['ic-markup', ['html', 'htm', 'xml', 'css', 'scss', 'less', 'svg', 'vcxproj', 'sln']],
-    ['ic-data', ['json', 'yml', 'yaml', 'ini', 'conf', 'cfg', 'properties', 'env', 'csv', 'dbf', 'sql', 'toml']],
-    ['ic-archive', ['zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar', 'jar', 'war']],
-    ['ic-binary', ['so', 'dll', 'exe', 'bin', 'o', 'a', 'lib', 'pdb', 'obj', 'class', 'pyc']],
-    ['ic-doc', ['md', 'txt', 'log', 'pdf', 'doc', 'docx', 'rtf']]
+    ['code', ['c', 'cc', 'cpp', 'cxx', 'h', 'hpp', 'java', 'js', 'jsx', 'ts', 'tsx', 'py', 'sh', 'bash', 'go', 'rs', 'rb', 'php', 'vue', 'lua', 'pl']],
+    ['markup', ['html', 'htm', 'xml', 'css', 'scss', 'less', 'svg', 'vcxproj', 'sln']],
+    ['data', ['json', 'yml', 'yaml', 'ini', 'conf', 'cfg', 'properties', 'env', 'csv', 'dbf', 'sql', 'toml']],
+    ['archive', ['zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar', 'jar', 'war']],
+    ['binary', ['so', 'dll', 'exe', 'bin', 'o', 'a', 'lib', 'pdb', 'obj', 'class', 'pyc']],
+    /* New with the solid set. There was no reason to tell a picture apart while
+     * every kind was the same page in a different colour; there is now, and a
+     * remote directory of screenshots is a common thing to be looking at. */
+    ['image', ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'ico', 'tif', 'tiff', 'avif', 'heic']],
+    ['doc', ['md', 'txt', 'log', 'pdf', 'doc', 'docx', 'rtf']]
   ];
 
   const EXTENSION_KIND = new Map();
   ICON_KINDS.forEach(([kind, extensions]) => extensions.forEach((extension) => EXTENSION_KIND.set(extension, kind)));
 
   function iconKind(entry) {
-    if (entry.type === 'directory') return 'ic-dir';
+    if (entry.type === 'directory') return 'dir';
+    /* Before the extension is looked at: what is on the far end of a symlink is
+     * not known from a listing, and guessing from the name it happens to carry
+     * would be the icon claiming to know. */
+    if (entry.type === 'symlink') return 'link';
     const name = String(entry.name || '');
     const dot = name.lastIndexOf('.');
-    if (dot <= 0) return 'ic-plain';
-    return EXTENSION_KIND.get(name.slice(dot + 1).toLowerCase()) || 'ic-plain';
+    if (dot <= 0) return 'plain';
+    return EXTENSION_KIND.get(name.slice(dot + 1).toLowerCase()) || 'plain';
   }
 
   function applyStrings() {
@@ -169,6 +187,7 @@
 
   /* Column widths drive both the header and every row through one pair of vars. */
   function applyColumnWidths(pane) {
+    pane.el.pane.style.setProperty('--w-name', pane.cols.name + 'px');
     pane.el.pane.style.setProperty('--w-size', pane.cols.size + 'px');
     pane.el.pane.style.setProperty('--w-mod', pane.cols.mod + 'px');
   }
@@ -193,9 +212,10 @@
     if (index === pane.dropIndex) row.classList.add('drop-target');
     row.draggable = true;
 
-    const iconId = entry.type === 'directory' ? '#i-folder'
-      : entry.type === 'symlink' ? '#i-link' : '#i-file';
-    const iconClass = 'icon ' + iconKind(entry);
+    /* One decision, two uses: the sprite symbol and the colour class. */
+    const kind = iconKind(entry);
+    const iconId = '#i-file-' + kind;
+    const iconClass = 'icon ic-' + kind;
     const name = document.createElement('span');
     name.className = 'name';
     name.textContent = entry.name;
@@ -401,8 +421,10 @@
       };
     });
 
-    // Dragging a grip left widens the column to its right; the name column,
-    // being the flexible one, absorbs the difference.
+    // A grip sits on the right edge of the column it sets, so dragging it right
+    // widens that column and everything after it moves along. Nothing absorbs
+    // the difference: past the last column the row is simply empty, and when
+    // the three together outrun the pane it scrolls sideways.
     pane.el.head.querySelectorAll('.grip').forEach((grip) => {
       grip.addEventListener('mousedown', (event) => {
         event.preventDefault();
@@ -642,8 +664,10 @@
   });
   window.addEventListener('mousemove', (event) => {
     if (columnDrag) {
-      const delta = columnDrag.startX - event.clientX;
-      columnDrag.pane.cols[columnDrag.key] = Math.max(COL_MIN, Math.min(COL_MAX, columnDrag.startWidth + delta));
+      const delta = event.clientX - columnDrag.startX;
+      const key = columnDrag.key;
+      columnDrag.pane.cols[key] =
+        Math.max(COL_MIN, Math.min(COL_MAX[key], columnDrag.startWidth + delta));
       applyColumnWidths(columnDrag.pane);
       return;
     }
@@ -781,229 +805,23 @@
   $('conflictSkipAll').onclick = () => answerConflict('skipAll');
   $('conflictCancelAll').onclick = () => answerConflict('cancelAll');
 
-  // -- preview ------------------------------------------------------------
+  // -- opening a file ------------------------------------------------------
 
-  const preview = {
-    side: 'remote',
-    path: '',
-    encoding: boot.defaultEncoding || 'utf8',
-    content: '',
-    language: 'text',
-    done: true,
-    nextOffset: 0,
-    dbfNextRecord: 0,
-    loading: false,
-    pendingLine: '',
-    renderedLines: 0,
-    highlightState: window.tshellHighlight.newState(),
-    tableMode: false
-  };
-
+  /*
+   * Files open in a tab of their own, drawn by the editor pane.
+   *
+   * There used to be an overlay here: a code view, a CSV table, a DBF table, an
+   * encoding picker and a font control, all inside this panel and all reachable
+   * only while it was in front. Every one of those now belongs to a pane that
+   * can sit beside this one, be searched, and stay open while the panel goes on
+   * being a file panel. What is left is the message that says which file.
+   *
+   * The encoding is this panel's default, and only the first word on the
+   * subject: the pane has a picker of its own and re-reads the file with it.
+   */
   function openPreview(side, path) {
-    preview.side = side;
-    post('openPreview', { side: side, path: path, encoding: preview.encoding });
+    post('openPreview', { side: side, path: path, encoding: boot.defaultEncoding || 'utf8' });
   }
-
-  function parseCsv(content) {
-    const rows = [];
-    let row = [];
-    let cell = '';
-    let quoted = false;
-    for (let index = 0; index < content.length; index += 1) {
-      const char = content[index];
-      if (quoted) {
-        if (char === '"' && content[index + 1] === '"') { cell += '"'; index += 1; }
-        else if (char === '"') quoted = false;
-        else cell += char;
-      } else if (char === '"') quoted = true;
-      else if (char === ',') { row.push(cell); cell = ''; }
-      else if (char === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
-      else if (char !== '\r') cell += char;
-    }
-    row.push(cell);
-    if (row.length > 1 || row[0]) rows.push(row);
-    return rows;
-  }
-
-  function renderTable(headers, rows, startIndex) {
-    let html = '<table class="csv-table"><thead><tr><th class="row-index">#</th>';
-    for (const header of headers) html += '<th>' + escapeHtml(header) + '</th>';
-    html += '</tr></thead><tbody>';
-    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
-      const row = rows[rowIndex];
-      html += '<tr><td class="row-index">' + (startIndex + rowIndex) + '</td>';
-      for (let index = 0; index < Math.max(row.length, headers.length); index += 1) html += '<td>' + escapeHtml(row[index] || '') + '</td>';
-      html += '</tr>';
-    }
-    return html + '</tbody></table>';
-  }
-
-  function renderCsvTable(content) {
-    const rows = parseCsv(content);
-    if (!rows.length) return '<div class="unsupported-preview"></div>';
-    return renderTable(rows[0], rows.slice(1), 1);
-  }
-
-  function resetTextPreview() {
-    $('code').textContent = '';
-    preview.pendingLine = '';
-    preview.renderedLines = 0;
-    preview.highlightState = window.tshellHighlight.newState();
-  }
-
-  function appendRenderedLines(lines, language) {
-    const fragment = document.createDocumentFragment();
-    for (const line of lines) {
-      const element = document.createElement('div');
-      element.className = 'code-line';
-      const number = document.createElement('div');
-      number.className = 'line-number';
-      preview.renderedLines += 1;
-      number.textContent = String(preview.renderedLines);
-      const code = document.createElement('div');
-      code.className = 'line-code';
-      code.innerHTML = highlightLine(line, language || 'text', preview.highlightState) || ' ';
-      element.append(number, code);
-      fragment.append(element);
-    }
-    $('code').append(fragment);
-  }
-
-  function appendTextChunk(content, language, done) {
-    const normalized = String(content || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    const merged = preview.pendingLine + normalized;
-    const lines = merged.split('\n');
-    preview.pendingLine = done ? '' : (lines.pop() || '');
-    if (!done && normalized.endsWith('\n') && lines[lines.length - 1] === '') lines.pop();
-    appendRenderedLines(lines, language);
-  }
-
-  function resetPreviewScroll() {
-    const code = $('code');
-    code.scrollTop = 0;
-    code.scrollLeft = 0;
-    requestAnimationFrame(() => { code.scrollTop = 0; code.scrollLeft = 0; });
-  }
-
-  function renderPreview(message) {
-    // A range left over from a stray select-all would otherwise swallow the
-    // lines rendered below and show the whole file highlighted.
-    clearSelection();
-    $('previewTitle').textContent = message.path || message.name || '';
-    preview.side = message.side || preview.side;
-    preview.path = message.path || '';
-    preview.encoding = message.encoding || preview.encoding;
-    preview.language = message.language || 'text';
-    preview.dbfNextRecord = 0;
-    preview.loading = false;
-    preview.tableMode = false;
-    $('previewEncoding').value = preview.encoding;
-
-    if (message.unsupported) {
-      preview.content = '';
-      preview.done = true;
-      preview.nextOffset = 0;
-      $('code').innerHTML = '<div class="unsupported-preview">' + escapeHtml(message.message || S.unsupportedBinaryPreview) + '</div>';
-      $('toggleCsvView').style.display = 'none';
-    } else {
-      preview.content = String(message.content || '');
-      preview.done = Boolean(message.done);
-      preview.nextOffset = Number(message.nextOffset) || 0;
-      $('toggleCsvView').style.display = preview.language === 'csv' ? '' : 'none';
-      $('toggleCsvView').textContent = S.tablePreview;
-      resetTextPreview();
-      appendTextChunk(preview.content, preview.language, preview.done);
-    }
-    $('preview').classList.add('open');
-    resetPreviewScroll();
-  }
-
-  function renderDbfPreview(message) {
-    clearSelection();
-    $('previewTitle').textContent = message.path || message.name || '';
-    preview.side = message.side || preview.side;
-    preview.path = message.path || '';
-    preview.encoding = message.encoding || preview.encoding;
-    preview.language = 'dbf';
-    preview.done = Boolean(message.done);
-    preview.dbfNextRecord = Number(message.nextRecord) || 0;
-    preview.loading = false;
-    preview.tableMode = true;
-    $('previewEncoding').value = preview.encoding;
-    $('toggleCsvView').style.display = 'none';
-    $('code').innerHTML = renderTable((message.fields || []).map((field) => field.name || ''), message.rows || [], 1);
-    $('preview').classList.add('open');
-    resetPreviewScroll();
-  }
-
-  function appendPreviewChunk(message) {
-    if (message.path !== preview.path || message.encoding !== preview.encoding) return;
-    preview.loading = false;
-    preview.done = Boolean(message.done);
-    preview.nextOffset = Number(message.nextOffset) || preview.nextOffset;
-    preview.content += String(message.content || '');
-    if (preview.tableMode) $('code').innerHTML = renderCsvTable(preview.content);
-    else appendTextChunk(message.content || '', preview.language, preview.done);
-  }
-
-  function appendDbfChunk(message) {
-    if (message.path !== preview.path || message.encoding !== preview.encoding || preview.language !== 'dbf') return;
-    preview.loading = false;
-    preview.done = Boolean(message.done);
-    const startIndex = preview.dbfNextRecord + 1;
-    preview.dbfNextRecord = Number(message.nextRecord) || preview.dbfNextRecord;
-    const body = $('code').querySelector('tbody');
-    if (!body) return;
-    const fragment = document.createDocumentFragment();
-    (message.rows || []).forEach((row, rowIndex) => {
-      const tr = document.createElement('tr');
-      const indexCell = document.createElement('td');
-      indexCell.className = 'row-index';
-      indexCell.textContent = String(startIndex + rowIndex);
-      tr.append(indexCell);
-      for (const cell of row) {
-        const td = document.createElement('td');
-        td.textContent = cell || '';
-        tr.append(td);
-      }
-      fragment.append(tr);
-    });
-    body.append(fragment);
-  }
-
-  function loadMorePreviewIfNeeded() {
-    const code = $('code');
-    if (!preview.path || preview.done || preview.loading) return;
-    if (code.scrollTop + code.clientHeight < code.scrollHeight - 700) return;
-    preview.loading = true;
-    if (preview.language === 'dbf') post('loadDbfChunk', { side: preview.side, path: preview.path, encoding: preview.encoding, recordOffset: preview.dbfNextRecord });
-    else post('loadTextChunk', { side: preview.side, path: preview.path, encoding: preview.encoding, offset: preview.nextOffset });
-  }
-
-  function applyPreviewFontSize() {
-    $('code').style.setProperty('--preview-font-size', state.fontSize + 'px');
-    $('previewFontSize').textContent = state.fontSize + 'px';
-  }
-
-  $('code').addEventListener('scroll', loadMorePreviewIfNeeded);
-  $('closePreview').onclick = () => $('preview').classList.remove('open');
-  $('previewEncoding').onchange = () => {
-    preview.encoding = $('previewEncoding').value;
-    if (preview.path) openPreview(preview.side, preview.path);
-  };
-  $('toggleCsvView').onclick = () => {
-    if (preview.language !== 'csv') return;
-    preview.tableMode = !preview.tableMode;
-    $('toggleCsvView').textContent = preview.tableMode ? S.textPreview : S.tablePreview;
-    if (preview.tableMode) {
-      $('code').innerHTML = renderCsvTable(preview.content);
-    } else {
-      resetTextPreview();
-      appendTextChunk(preview.content, preview.language, preview.done);
-    }
-  };
-  $('previewFontDown').onclick = () => { state.fontSize = Math.max(8, state.fontSize - 1); saveState(); applyPreviewFontSize(); };
-  $('previewFontUp').onclick = () => { state.fontSize = Math.min(24, state.fontSize + 1); saveState(); applyPreviewFontSize(); };
 
   // -- log ----------------------------------------------------------------
 
@@ -1082,26 +900,14 @@
         else endProgress();
         break;
       case 'conflict': showConflict(message); break;
-      case 'textPreview': renderPreview(message); break;
-      case 'textChunk': appendPreviewChunk(message); break;
-      case 'dbfPreview': renderDbfPreview(message); break;
-      case 'dbfChunk': appendDbfChunk(message); break;
     }
   });
-
-  window.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape') return;
-    if ($('preview').classList.contains('open')) {
-      $('preview').classList.remove('open');
-      event.stopPropagation();
-    }
-  }, true);
 
   /*
    * Text selection is only ever legitimate inside these regions. Everything
    * else -- rows, headers, toolbars -- is chrome, not content.
    */
-  const SELECTABLE = '.log, .code, .dialog';
+  const SELECTABLE = '.log, .dialog';
 
   function inSelectableRegion(node) {
     const element = node && node.nodeType === 1 ? node : node && node.parentElement;
@@ -1111,11 +917,12 @@
   /*
    * The host runs its own select-all inside the webview on Ctrl+A. A keydown
    * preventDefault cannot stop it, because it is not the key's default action --
-   * that is what paints the log, the address bars and the preview blue.
+   * that is what paints the log and the address bars blue.
    *
    * Judging such a selection by where it landed does not work: a stale range
-   * swallows whatever is rendered into it next, which is how opening a preview
-   * ended up fully highlighted. So the rule is about provenance instead of
+   * swallows whatever is rendered into it next, which is how a panel that had
+   * just been redrawn ended up fully highlighted. So the rule is about
+   * provenance instead of
    * place -- a selection survives only when the user dragged it out inside a
    * selectable region. Everything else is dropped the moment it appears.
    */
@@ -1226,7 +1033,7 @@
   window.addEventListener('keydown', (event) => {
     const isSelectAll = (event.ctrlKey || event.metaKey) && (event.key === 'a' || event.key === 'A' || event.code === 'KeyA');
     if (!isSelectAll || event.altKey) return;
-    if ($('preview').classList.contains('open') || $('conflictModal').classList.contains('open')) return;
+    if ($('conflictModal').classList.contains('open')) return;
 
     event.preventDefault();
     // Capture phase on window is the earliest hook in the document, ahead of
@@ -1254,8 +1061,6 @@
   // -- boot ---------------------------------------------------------------
 
   applyStrings();
-  applyPreviewFontSize();
-  $('previewEncoding').value = preview.encoding;
   if (state.split) $('panes').style.setProperty('--split', state.split + 'px');
   if (state.logHeight) document.body.style.setProperty('--log-height', state.logHeight + 'px');
   wirePane(panes.local);

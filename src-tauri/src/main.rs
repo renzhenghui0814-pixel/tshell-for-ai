@@ -13,19 +13,23 @@ mod ai;
 mod atomic;
 mod config;
 mod fonts;
+mod hosts;
 mod i18n;
 mod preview;
 mod schemes;
 mod secrets;
 mod ssh;
+mod textfile;
+mod theme;
 mod transfer;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
+use tauri::Manager;
 use tauri::State;
 
 use config::{AppConfig, Auth, Encoding, Group, Language, Server};
@@ -138,6 +142,11 @@ struct PanelState {
     ai_enabled: bool,
     language: Language,
     show_hidden_files: bool,
+    /// The user's edits to the shortcuts. The defaults live in `keys.js`, so
+    /// what crosses here is only what differs from them.
+    keys: BTreeMap<String, String>,
+    /// Server ids, most recently opened first. What the empty window offers.
+    recent: Vec<String>,
     storage: Storage,
 }
 
@@ -208,6 +217,8 @@ fn panel_state(config: &AppConfig, store: &Store) -> PanelState {
         ai_enabled: config.settings.ai.enabled,
         language: config.settings.language,
         show_hidden_files: config.settings.show_hidden_files,
+        keys: config.settings.keys.clone(),
+        recent: config.recent.clone(),
         storage: storage(store),
     }
 }
@@ -459,6 +470,26 @@ fn move_group(
     commit(&config, &store)
 }
 
+/// Record that a server was just opened.
+///
+/// Called after the pane exists, not before: the list is what the empty window
+/// offers to reopen, and a server that failed to open is not an offer. It
+/// answers with the panel state like every other write, so the window keeps one
+/// copy of the file rather than patching a second one.
+#[tauri::command]
+fn touch_recent(server_id: String, store: State<'_, Store>) -> Result<PanelState, String> {
+    let mut config = load()?;
+    let before = config.recent.clone();
+    config.touch_recent(&server_id);
+    if config.recent == before {
+        // Already at the front, or not a server at all. Either way there is
+        // nothing to write, and opening the same terminal twice in a row should
+        // not rewrite the config file.
+        return Ok(panel_state(&config, &store));
+    }
+    commit(&config, &store)
+}
+
 #[tauri::command]
 fn move_server(
     from_group_id: String,
@@ -520,6 +551,13 @@ pub(crate) fn dial_plan(
             username: server.username.clone(),
             encoding,
             credential,
+            // The name the user gave the machine, because that is what they will
+            // recognise in a host key dialog. An unnamed server is its host.
+            label: if server.name.trim().is_empty() {
+                server.host.clone()
+            } else {
+                server.name.clone()
+            },
         },
         encoding,
     ))
@@ -592,6 +630,43 @@ async fn fonts_monospace() -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(|| fonts::monospace().to_vec())
         .await
         .map_err(|error| error.to_string())
+}
+
+/// The same scan, unfiltered, for the window's own text.
+#[tauri::command]
+async fn fonts_all() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(|| fonts::all().to_vec())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+// ---------------------------------------------------- window appearance ---
+
+/*
+ * The window's palette, as the user's edits to it.
+ *
+ * The same division as the schemes above, and for a sharper reason: the palette
+ * that ships is `ui/shared/theme.css`, a stylesheet, and the derived half of it
+ * -- the hovers, the soft fills, the ink that goes on an accent -- is computed
+ * in `ui/shared/palette.js` while a colour is still being dragged. These two
+ * commands carry the fifteen tokens per half the user actually changed. What
+ * they mean is the front end's.
+ */
+
+/// A file that will not parse is not an empty file. Same rule as the schemes
+/// and the config: the error goes back, the file is left alone, and the window
+/// wears the palette that ships until somebody fixes it.
+#[tauri::command]
+fn theme_load() -> Result<theme::ThemeFile, String> {
+    theme::load().map_err(|error| error.message(&theme::theme_path()))
+}
+
+/// Returns what was written, normalized, which is what the next load will
+/// produce -- so a colour typed as `#abc` comes back as `#AABBCC` and the
+/// settings page never holds a second spelling of it.
+#[tauri::command]
+fn theme_save(file: theme::ThemeFile) -> Result<theme::ThemeFile, String> {
+    theme::save(&file)
 }
 
 #[tauri::command]
@@ -762,11 +837,6 @@ async fn transfer_rename(
 /// two readers below to ask. Decided from the extension, in one place, so that
 /// the page and the reader can never disagree about what a file is.
 #[tauri::command]
-fn preview_language(path: String) -> &'static str {
-    preview::language(&path)
-}
-
-#[tauri::command]
 async fn preview_text(
     pane: String,
     side: String,
@@ -778,7 +848,7 @@ async fn preview_text(
     store: State<'_, Store>,
     transfers: State<'_, Arc<transfer::Transfers>>,
 ) -> Result<preview::TextChunk, String> {
-    let (target, _) = dial_plan(&group_id, &server_id, &store)?;
+    let target = side_target(&side, &group_id, &server_id, &store)?;
     let transfers = Arc::clone(&transfers);
     preview::text(&transfers, &pane, &side, &target, &path, &encoding, offset).await
 }
@@ -795,7 +865,7 @@ async fn preview_dbf(
     store: State<'_, Store>,
     transfers: State<'_, Arc<transfer::Transfers>>,
 ) -> Result<preview::DbfChunk, String> {
-    let (target, _) = dial_plan(&group_id, &server_id, &store)?;
+    let target = side_target(&side, &group_id, &server_id, &store)?;
     let transfers = Arc::clone(&transfers);
     preview::dbf(
         &transfers,
@@ -910,15 +980,125 @@ fn set_language(language: Language, store: State<'_, Store>) -> Result<PanelStat
     commit(&config, &store)
 }
 
+/// Which keystrokes the window answers to.
+///
+/// Takes the whole map rather than one entry, because a shortcut table is only
+/// correct as a whole: rebinding one action has to be able to take a key away
+/// from another, and two calls with one binding each have a moment between them
+/// where both actions hold it.
+///
+/// Anything not shaped like a binding is dropped by `normalize` on the way in,
+/// and the reply carries what was actually stored -- so a page redrawing from
+/// it shows the file rather than what it hoped the file would say.
 #[tauri::command]
-fn open_config() -> Result<(), String> {
+fn set_keys(keys: BTreeMap<String, String>, store: State<'_, Store>) -> Result<PanelState, String> {
+    let mut config = load()?;
+    config.settings.keys = keys;
+    commit(&config, &store)
+}
+
+/// Where the config file is, having made sure there is one.
+///
+/// Created if it is not there. A first run has saved nothing yet, and "there is
+/// no config file" is not an answer to someone who asked to edit it -- the
+/// defaults written out are what they wanted to see.
+#[tauri::command]
+fn config_file_path() -> Result<String, String> {
     let path = config::config_path();
-    // Nothing has been saved yet on a first run, and opening a file that is not
-    // there is a worse answer than writing the defaults out first.
     if !path.exists() {
         config::save(&AppConfig::fresh(Language::from_locale()))?;
     }
-    reveal(&path).map_err(|error| error.to_string())
+    Ok(path.display().to_string())
+}
+
+/*
+ * The editor pane, both sides.
+ *
+ * `side` is the same word the transfer panel uses and means the same thing, and
+ * a local file needs no server at all -- which is why the dial plan is built
+ * only when there is going to be a connection. Asking for one on the local side
+ * would make editing the config file fail whenever no server happened to be
+ * selected, for a target nothing was ever going to use.
+ */
+#[tauri::command]
+async fn text_open(
+    pane: String,
+    side: String,
+    group_id: String,
+    server_id: String,
+    path: String,
+    encoding: String,
+    store: State<'_, Store>,
+    transfers: State<'_, Arc<transfer::Transfers>>,
+) -> Result<textfile::TextFile, String> {
+    let target = side_target(&side, &group_id, &server_id, &store)?;
+    let transfers = Arc::clone(&transfers);
+    textfile::read(&transfers, &pane, &side, &target, &path, &encoding).await
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn text_save(
+    pane: String,
+    side: String,
+    group_id: String,
+    server_id: String,
+    path: String,
+    encoding: String,
+    content: String,
+    base: textfile::Stamp,
+    force: bool,
+    store: State<'_, Store>,
+    transfers: State<'_, Arc<transfer::Transfers>>,
+) -> Result<textfile::Saved, String> {
+    let target = side_target(&side, &group_id, &server_id, &store)?;
+    let transfers = Arc::clone(&transfers);
+    textfile::save(
+        &transfers, &pane, &side, &target, &path, &encoding, &content, base, force,
+    )
+    .await
+}
+
+/// The machine a read is coming from, or a placeholder when it is this one.
+///
+/// The placeholder is never dialled: every path through `transfer` checks the
+/// side first and only reaches for a connection on the remote one. Building a
+/// real plan regardless is what the preview commands used to do, and it meant a
+/// local file could only be read while a server the read never touched happened
+/// to be resolvable -- which the editor found immediately, because it opens
+/// local files with no server selected at all.
+fn side_target(
+    side: &str,
+    group_id: &str,
+    server_id: &str,
+    store: &Store,
+) -> Result<ssh::Target, String> {
+    if side == "local" {
+        return Ok(ssh::Target {
+            host: String::new(),
+            port: 0,
+            username: String::new(),
+            encoding: encoding_rs::UTF_8,
+            credential: ssh::Credential::Password(String::new()),
+            label: String::new(),
+        });
+    }
+    dial_plan(group_id, server_id, store).map(|(target, _)| target)
+}
+
+/// What the user pressed on a host key dialog.
+///
+/// Its own command rather than the result of the one that asked, because the
+/// question is raised from inside a connection that a dozen different commands
+/// may have started -- and, in a transfer job, from no command at all. The
+/// question travels out as an event carrying an id; this brings the id back.
+///
+/// Answering an id nobody is waiting for does nothing: a dialog the window drew
+/// twice, or an answer that arrives after the question timed out, is not an
+/// error worth failing a call over.
+#[tauri::command]
+fn host_key_answer(id: u64, choice: String) {
+    hosts::HOST_KEYS.answer(id, &choice);
 }
 
 pub(crate) fn reveal(path: &Path) -> std::io::Result<()> {
@@ -946,6 +1126,30 @@ fn main() {
     let store = Store::open(&config::data_dir());
 
     tauri::Builder::default()
+        .setup(|app| {
+            // The front end shows the window once it has a frame up. This is the
+            // net under that: a page that throws before reaching that call would
+            // otherwise leave a process running with nothing on screen and no
+            // way to reach it. Late and visible beats invisible.
+            if let Some(window) = app.get_webview_window("main") {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    if !matches!(window.is_visible(), Ok(true)) {
+                        let _ = window.show();
+                    }
+                });
+            }
+            /*
+             * The host key dialog has somewhere to go from here on.
+             *
+             * Before this line every connection would be refused rather than
+             * asked about -- see `hosts::HostKeys::ask`. Nothing can connect
+             * before the window exists, so the window is the right moment.
+             */
+            hosts::HOST_KEYS.install(app.handle().clone());
+
+            Ok(())
+        })
         .manage(store)
         .manage(Arc::new(ssh::Sessions::default()))
         .manage(Arc::new(transfer::Transfers::default()))
@@ -962,11 +1166,19 @@ fn main() {
             delete_server,
             move_group,
             move_server,
-            open_config,
+            touch_recent,
+            config_file_path,
+            text_open,
+            text_save,
+            host_key_answer,
             set_language,
+            set_keys,
             schemes_load,
             schemes_save,
             fonts_monospace,
+            fonts_all,
+            theme_load,
+            theme_save,
             terminal_open,
             terminal_input,
             terminal_resize,
@@ -985,7 +1197,6 @@ fn main() {
             transfer_start,
             transfer_cancel,
             transfer_answer,
-            preview_language,
             preview_text,
             preview_dbf,
             ai::commands::ai_open,
@@ -993,6 +1204,9 @@ fn main() {
             ai::commands::ai_stop,
             ai::commands::ai_answer,
             ai::commands::ai_close,
+            ai::commands::ai_file_path,
+            ai::commands::ai_log_list,
+            ai::commands::ai_log_delete,
             ai::commands::ai_history,
             ai::commands::ai_load_chat,
             ai::commands::ai_new_chat,
