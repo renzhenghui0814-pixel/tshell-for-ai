@@ -21,6 +21,15 @@ use std::path::Path;
 /// temporary directory, because a rename across filesystems is not a rename --
 /// it is a copy and a delete, and it is not atomic.
 pub fn write(path: &Path, contents: &str) -> io::Result<()> {
+    write_bytes(path, contents.as_bytes())
+}
+
+/// As [`write`], for content that is not already a `str`.
+///
+/// The editor saves through here: what it holds is text, but what has to reach
+/// the disk is that text in the file's own encoding, and a GB18030 file is not
+/// a `str` by the time it is bytes.
+pub fn write_bytes(path: &Path, contents: &[u8]) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "path has no parent directory")
     })?;

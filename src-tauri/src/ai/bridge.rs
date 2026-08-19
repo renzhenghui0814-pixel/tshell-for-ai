@@ -1096,6 +1096,15 @@ impl Panel {
         self.host.server_id.clone()
     }
 
+    /// What the transcripts of this panel are filed under.
+    ///
+    /// Taken from the same place `open_log` takes it, so listing the files finds
+    /// the files that were written. The id would not do: the name is what goes
+    /// into the filename, and the two are different strings.
+    pub fn server_name(&self) -> String {
+        self.host.record.lock().unwrap().server_name.clone()
+    }
+
     /// Starts a fresh conversation, keeping the panel and its terminal.
     pub fn new_chat(&self) {
         self.session.reset();

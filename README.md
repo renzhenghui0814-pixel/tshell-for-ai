@@ -143,6 +143,14 @@ ui/                 the pages -- plain HTML/CSS/JS, no build step
    when the layout changes. `node scripts/keys-check.mjs` holds the actions in
    `keys.js` to their dispatch in `shell.js` and their names in `settings.js`.
 
+15. **Anything that changes the window is named in `capabilities/default.json`.**
+   Tauri v2 gates each window command, and `core:default` grants the read half
+   only -- `isFullscreen` comes with it, `setFullscreen` does not. A call the
+   file does not cover still compiles and still ships; it returns a rejected
+   promise, the shell catches it the way it catches every window promise, and
+   the result is a key that appears to do nothing. `node
+   scripts/capability-check.mjs` holds the list to what `shell.js` calls.
+
 `ui/vendor/strings.json` is the one string table -- 341 entries, two languages.
 The pages read it because they have no host to ask, and Rust reads the same file
 with `include_str!`. Edit it directly; there is no generator upstream of it any

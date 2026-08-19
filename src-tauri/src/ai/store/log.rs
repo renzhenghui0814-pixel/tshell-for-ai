@@ -47,25 +47,69 @@ struct Progress {
     logged: usize,
 }
 
+/// What a file will be called and what goes at the top of it, held until there
+/// is something to put in it.
+struct Plan {
+    base: String,
+    header: String,
+    keep: usize,
+}
+
 /// Where one panel's exchange is written, or nowhere when logging is off.
+///
+/// # The file is not created until something is written to it
+///
+/// A panel opens whenever anyone looks at the assistant, and most of those
+/// panels are never spoken to. Creating the file up front left a transcript per
+/// glance -- and because pruning keeps the last N files, a handful of glances
+/// evicted the transcript of the conversation someone was trying to keep. What
+/// starts a transcript is a request, so a request is what creates the file.
 pub struct LogSession {
-    file: Option<PathBuf>,
+    /// The store, so the file can still be made later. `None` when logging is
+    /// off, which is what `active` reads.
+    plan: Option<(LogStore, Plan)>,
+    file: Mutex<Option<PathBuf>>,
     progress: Mutex<Progress>,
 }
 
 impl LogSession {
     /// The session handed out when logging is off. Costs a branch per call.
     pub fn inactive() -> Self {
-        Self { file: None, progress: Mutex::new(Progress::default()) }
+        Self { plan: None, file: Mutex::new(None), progress: Mutex::new(Progress::default()) }
     }
 
+    /// Whether anything would be written, not whether anything has been.
     pub fn active(&self) -> bool {
-        self.file.is_some()
+        self.plan.is_some()
     }
 
-    /// Where it is being written, for the message that points the user at it.
-    pub fn file(&self) -> Option<&Path> {
-        self.file.as_deref()
+    /// Where it is being written, once it is. `None` before the first record --
+    /// which is the honest answer, because until then there is no file.
+    pub fn file(&self) -> Option<PathBuf> {
+        self.file.lock().unwrap().clone()
+    }
+
+    /*
+     * The file, making it if this is the first record.
+     *
+     * Pruning happens here rather than at `open` for the same reason the
+     * creation does: what it counts should be transcripts, and until this point
+     * there was no transcript to count this one among.
+     */
+    fn ensure(&self) -> Option<PathBuf> {
+        let plan = self.plan.as_ref()?;
+        let mut file = self.file.lock().unwrap();
+        if let Some(path) = file.as_ref() {
+            return Some(path.clone());
+        }
+        if std::fs::create_dir_all(&plan.0.dir).is_err() {
+            return None;
+        }
+        // Before this file exists, so it is never a candidate for its own sweep.
+        plan.0.prune(plan.1.keep.saturating_sub(1));
+        let made = plan.0.create(&plan.1.base, &plan.1.header);
+        *file = made.clone();
+        made
     }
 
     /// What was added to the conversation this time, not the whole of it.
@@ -133,7 +177,7 @@ impl LogSession {
     /// would make the file greppable and unreadable, and the reason anyone opens
     /// this is to read a prompt or an answer that did not do what they expected.
     fn append(&self, kind: &str, head: &str, content: &str) {
-        let Some(file) = &self.file else { return };
+        let Some(file) = self.ensure() else { return };
         let spaced = if head.is_empty() { String::new() } else { format!(" {head}") };
         let record = format!("time:{} type:{kind}{spaced} content:{content}\n\n", stamp_ms());
         // Opened per record rather than held: the write is rare, and a handle
@@ -207,6 +251,20 @@ fn slug(name: &str) -> String {
     }
 }
 
+/// One transcript on disk, as the panel lists it.
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct LogFile {
+    /// The filename, which carries the machine, the conversation and the time.
+    pub name: String,
+    /// The full path, which is what opening it needs.
+    pub path: String,
+    pub size: u64,
+    /// Seconds since the epoch, or zero when it cannot be read.
+    pub modified: u64,
+}
+
+#[derive(Clone)]
 pub struct LogStore {
     dir: PathBuf,
 }
@@ -244,12 +302,6 @@ impl LogStore {
         if !enabled {
             return LogSession::inactive();
         }
-        if std::fs::create_dir_all(&self.dir).is_err() {
-            return LogSession::inactive();
-        }
-        // Before the file is created, so the count is of what is already there
-        // and this session is never a candidate for its own pruning.
-        self.prune(keep.saturating_sub(1));
 
         // A header rather than a record: it is about the file, not about the
         // conversation, and a reader scanning for `time:` should not trip over it.
@@ -265,9 +317,10 @@ impl LogStore {
         // someone scanning the directory is looking for, and the id is what they
         // match against a chat they still have open.
         let base = format!("{}_{}_{}", slug(server_name), slug(chat_id), stamp_file());
-        match self.create(&base, &header) {
-            Some(file) => LogSession { file: Some(file), progress: Mutex::new(Progress::default()) },
-            None => LogSession::inactive(),
+        LogSession {
+            plan: Some((self.clone(), Plan { base, header, keep })),
+            file: Mutex::new(None),
+            progress: Mutex::new(Progress::default()),
         }
     }
 
@@ -321,6 +374,73 @@ impl LogStore {
     /// would keep whichever servers come last in the alphabet and delete the rest
     /// however recent they were. Time is what "oldest" meant all along, and it is
     /// the one thing that stays true whatever the name is made of.
+    /// One machine's transcripts, newest first.
+    ///
+    /// Filtered here rather than in the page because the filename convention is
+    /// this module's -- the page would have to know that a name is slugged and
+    /// that the machine comes first, which is exactly the kind of knowledge that
+    /// drifts once it lives in two places.
+    ///
+    /// Ordered by time and then by name. Time is what "newest" means, but two
+    /// panels opened in the same second share it, and a list whose order changes
+    /// between two identical calls is a list the eye cannot keep its place in.
+    pub fn list(&self, server_name: &str) -> Vec<LogFile> {
+        let prefix = format!("{}_", slug(server_name));
+        let Ok(entries) = std::fs::read_dir(&self.dir) else { return Vec::new() };
+
+        let mut files: Vec<LogFile> = entries
+            .flatten()
+            .filter(|entry| {
+                entry.path().extension().is_some_and(|extension| extension == "log")
+            })
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !name.starts_with(&prefix) {
+                    return None;
+                }
+                let meta = entry.metadata().ok();
+                Some(LogFile {
+                    path: entry.path().display().to_string(),
+                    name,
+                    size: meta.as_ref().map(|meta| meta.len()).unwrap_or(0),
+                    modified: meta
+                        .and_then(|meta| meta.modified().ok())
+                        .and_then(|when| when.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|since| since.as_secs())
+                        .unwrap_or(0),
+                })
+            })
+            .collect();
+
+        files.sort_by(|left, right| {
+            right.modified.cmp(&left.modified).then_with(|| right.name.cmp(&left.name))
+        });
+        files
+    }
+
+    /// Delete one transcript, if it is one of ours.
+    ///
+    /// Three conditions, and none of them is "the page said so": the path has to
+    /// resolve inside this directory, it has to end in `.log`, and it has to
+    /// exist. `canonicalize` is what makes the first one mean anything -- it
+    /// resolves `..` and any symlink before the comparison, so a path that
+    /// climbs out and points back at something else is refused for where it
+    /// lands rather than accepted for how it reads.
+    ///
+    /// False for anything refused or already gone. There is nothing for the
+    /// panel to do about either, and both end with the file not being there.
+    pub fn remove(&self, path: &str) -> bool {
+        let Ok(target) = std::fs::canonicalize(path) else { return false };
+        let Ok(dir) = std::fs::canonicalize(&self.dir) else { return false };
+        if target.parent() != Some(dir.as_path()) {
+            return false;
+        }
+        if target.extension().is_none_or(|extension| extension != "log") {
+            return false;
+        }
+        std::fs::remove_file(&target).is_ok()
+    }
+
     fn prune(&self, keep: usize) {
         let Ok(entries) = std::fs::read_dir(&self.dir) else { return };
         let mut names: Vec<PathBuf> = entries
@@ -364,8 +484,199 @@ mod tests {
         }
     }
 
+    /// The list is one machine's transcripts, not the directory.
+    ///
+    /// The button that opens it sits in a chat panel, which is attached to one
+    /// server; handing it every log on the machine would mean the user picking
+    /// their own server out of a list of all of them, every time, in a panel
+    /// that already knows which one it is.
+    #[test]
+    fn the_listing_is_filtered_to_one_machine() {
+        let temp = Temp::new("list-filter");
+        let store = temp.store();
+        // Written to, because a transcript that was never spoken to has no file
+        // and so is not in any listing -- which is the point of it.
+        for (host, id) in [("10.0.1.168", "chat-a"), ("10.0.1.168", "chat-b"), ("10.0.1.216", "chat-c")] {
+            store.open(true, 9, host, id).response("anything");
+        }
+
+        let mine = store.list("10.0.1.168");
+        assert_eq!(mine.len(), 2);
+        assert!(mine.iter().all(|file| file.name.starts_with("10.0.1.168_")), "{mine:?}");
+        assert_eq!(store.list("10.0.1.216").len(), 1);
+        assert_eq!(store.list("10.0.1.99").len(), 0);
+    }
+
+    /// Names are slugged on the way in, so they have to be slugged on the way
+    /// out too -- a server called `a b` writes `a_b_...log`, and a listing that
+    /// matched the raw name would find none of its own files.
+    #[test]
+    fn a_name_that_was_slugged_still_finds_its_files() {
+        let temp = Temp::new("list-slug");
+        let store = temp.store();
+        store.open(true, 9, "prod box", "chat-a").response("anything");
+        assert_eq!(store.list("prod box").len(), 1);
+    }
+
+    /// Newest first: the transcript worth opening is nearly always the last
+    /// one, and a list that puts it at the bottom makes the common case the
+    /// longest reach.
+    #[test]
+    fn the_listing_is_newest_first() {
+        let temp = Temp::new("list-order");
+        let store = temp.store();
+        let first = store.open(true, 9, "host", "chat-a");
+        first.response("anything");
+        let second = store.open(true, 9, "host", "chat-b");
+        second.response("anything");
+        // Two files opened in the same second share a modification time, so the
+        // order has to be settled by something else as well -- otherwise this
+        // test passes or fails on where the second boundary happened to fall.
+        let older = first.file().unwrap().to_path_buf();
+        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        filetime_set(&older, long_ago);
+
+        let listed = store.list("host");
+        assert_eq!(listed.len(), 2);
+        assert_eq!(
+            listed[0].path,
+            second.file().unwrap().display().to_string(),
+            "the newer file comes first"
+        );
+    }
+
+    /// Sets a file modification time, so an ordering test does not depend on
+    /// the clock ticking between two calls.
+    fn filetime_set(path: &Path, when: std::time::SystemTime) {
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(when).unwrap();
+    }
+
+    /// The page hands back a path it was given, and this refuses to take that on
+    /// trust.
+    ///
+    /// It is a command that deletes a file, reachable from a web page. The
+    /// listing is the only thing that ever produces these paths today, which is
+    /// exactly the argument that stops being true the first time something else
+    /// calls it.
+    #[test]
+    fn only_a_file_inside_the_log_directory_can_be_removed() {
+        let temp = Temp::new("remove");
+        let store = temp.store();
+        let session = store.open(true, 9, "host", "chat-a");
+        session.response("anything");
+        let mine = session.file().unwrap().display().to_string();
+
+        let outside = std::env::temp_dir().join("tshell-not-a-log.log");
+        std::fs::write(&outside, "x").unwrap();
+
+        assert!(!store.remove(&outside.display().to_string()), "outside the directory");
+        assert!(outside.exists(), "and it is still there");
+
+        // Climbing out and back in is the same refusal: the check is on where
+        // the path resolves to, not on what it looks like.
+        let climbed = temp.0.join("..").join("tshell-not-a-log.log").display().to_string();
+        assert!(!store.remove(&climbed));
+        assert!(outside.exists());
+
+        assert!(store.remove(&mine), "a file this store wrote");
+        assert!(!std::path::Path::new(&mine).exists());
+
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    /// A path that is gone is not an error worth reporting: two panels showing
+    /// the same list, one delete, and the second click has nothing to do.
+    #[test]
+    fn removing_what_is_already_gone_says_so_without_failing() {
+        let temp = Temp::new("remove-twice");
+        let store = temp.store();
+        let session = store.open(true, 9, "host", "chat-a");
+        session.response("anything");
+        let mine = session.file().unwrap().display().to_string();
+        assert!(store.remove(&mine));
+        assert!(!store.remove(&mine));
+    }
+
+    /// Only transcripts. The directory holds nothing else today, and the day it
+    /// does, this command must not be the thing that empties it.
+    #[test]
+    fn only_a_log_file_can_be_removed() {
+        let temp = Temp::new("remove-kind");
+        let store = temp.store();
+        let other = temp.0.join("notes.txt");
+        std::fs::write(&other, "x").unwrap();
+        assert!(!store.remove(&other.display().to_string()));
+        assert!(other.exists());
+    }
+
+    /// Opening a panel writes nothing.
+    ///
+    /// It used to write a file with a header the moment a panel opened, which
+    /// meant a directory of empty transcripts for every time the assistant was
+    /// opened and closed without being spoken to -- and, worse, it meant the
+    /// pruning that keeps the last N transcripts was counting those. A file per
+    /// glance pushed out the file per conversation.
+    #[test]
+    fn opening_a_panel_creates_no_file() {
+        let temp = Temp::new("lazy-open");
+        let store = temp.store();
+        let session = store.open(true, 9, "host", "chat-a");
+        assert!(session.active(), "logging is on");
+        assert!(session.file().is_none(), "but nothing is written yet");
+        assert_eq!(store.list("host").len(), 0);
+    }
+
+    /// The first thing actually sent is what creates it, header and all.
+    #[test]
+    fn the_first_request_creates_the_file() {
+        let temp = Temp::new("lazy-first");
+        let store = temp.store();
+        let session = store.open(true, 9, "host", "chat-a");
+        session.request(&LogRequest {
+            endpoint: "https://example.invalid/v1/chat/completions",
+            params: &json!({ "model": "m" }),
+            system: "system prompt",
+            messages: vec![("user".into(), "hello".into())],
+        });
+        assert!(session.file().is_some());
+        assert_eq!(store.list("host").len(), 1);
+
+        let text = read(&session);
+        assert!(text.contains("# tshell AI transcript"), "the header is still first");
+        assert!(text.contains("hello"), "and the request follows it");
+    }
+
+    /// Pruning counts what has been written, and it happens when a file is
+    /// actually created -- so a panel that is never spoken to cannot evict a
+    /// transcript that was.
+    #[test]
+    fn a_panel_that_says_nothing_evicts_nothing() {
+        let temp = Temp::new("lazy-prune");
+        let store = temp.store();
+        let mut real = Vec::new();
+        for id in ["a", "b"] {
+            let session = store.open(true, 2, "host", id);
+            session.response("an answer");
+            real.push(session.file().expect("a transcript that was written to").to_path_buf());
+        }
+        assert_eq!(store.list("host").len(), 2);
+
+        // Three panels opened and never used.
+        for id in ["c", "d", "e"] {
+            let _ = store.open(true, 2, "host", id);
+        }
+
+        // By identity, not by count: eager creation kept the count at two as
+        // well, by replacing both transcripts with empty ones.
+        let left: Vec<String> = store.list("host").into_iter().map(|file| file.path).collect();
+        for path in real {
+            assert!(left.contains(&path.display().to_string()), "{path:?} survived");
+        }
+    }
+
     fn read(session: &LogSession) -> String {
-        std::fs::read_to_string(session.file().unwrap()).unwrap()
+        std::fs::read_to_string(session.file().expect("a file, once written to")).unwrap()
     }
 
     #[test]
@@ -383,6 +694,8 @@ mod tests {
         let temp = Temp::new("header");
         let session = temp.store().open(true, 20, "web-1", "chat-1");
         assert!(session.active());
+        // The header goes in when the file does, which is at the first record.
+        session.response("anything");
         let text = read(&session);
         assert!(text.starts_with("# tshell AI transcript -- web-1\n"));
         assert!(text.contains("NOT masked"));
@@ -438,6 +751,7 @@ mod tests {
     fn the_name_carries_the_machine_the_conversation_and_the_time() {
         let temp = Temp::new("naming");
         let session = temp.store().open(true, 10, "10.0.0.1", "a1b2c3d4");
+        session.response("anything");
         let name = session
             .file()
             .unwrap()
@@ -486,12 +800,15 @@ mod tests {
         let first = temp.store().open(true, 10, "10.0.0.1", "chat-1");
         let second = temp.store().open(true, 10, "10.0.0.1", "chat-1");
 
-        let one = first.file().expect("the first has a file").to_path_buf();
-        let two = second.file().expect("the second has a file").to_path_buf();
-        assert_ne!(one, two, "both panels wrote to {}", one.display());
-
+        // Written to first: the name is claimed when the file is made, and the
+        // file is made by the first record. Two panels that both stayed silent
+        // never collide because neither ever has a name.
         first.response("FIRST PANEL");
         second.response("SECOND PANEL");
+
+        let one = first.file().expect("the first has a file");
+        let two = second.file().expect("the second has a file");
+        assert_ne!(one, two, "both panels wrote to {}", one.display());
 
         let text_one = read(&first);
         let text_two = read(&second);
@@ -576,6 +893,8 @@ mod tests {
 
         let session = store.open(true, 2, "web-1", "chat-1");
         assert!(session.active());
+        // Pruning runs when the file is made, which is now the first record.
+        session.response("anything");
 
         let names: Vec<String> = std::fs::read_dir(&temp.0)
             .unwrap()

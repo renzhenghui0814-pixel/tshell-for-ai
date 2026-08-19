@@ -171,7 +171,9 @@ button:disabled { opacity: .38; cursor: default; }
  * every one of them.
  */
 .empty-mark { margin: 0 0 20px; display: flex; justify-content: center; }
-.empty-mark svg { width: min(8.5em, 116px); height: auto; color: var(--brand); }
+/* Two colours, both written by the mark itself -- there is nothing here to
+ * inherit. See `tshellMark` in shared/icons.js. */
+.empty-mark svg { width: min(8.5em, 116px); height: auto; }
 
 /* -- timeline ------------------------------------------------------------ */
 
@@ -1502,3 +1504,60 @@ textarea::placeholder { color: var(--tx-dim); }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* -- transcripts ---------------------------------------------------------- */
+
+/*
+ * One day of transcripts, folded or not.
+ *
+ * The header is a button and the body is what it shows, so folding is one class
+ * on the group. `display: none` rather than a height animation: the list can
+ * hold sixty rows, and the useful thing about folding it is that the rows below
+ * are immediately where you expect, not that the fold looks smooth.
+ */
+.log-group { display: flex; flex-direction: column; }
+
+.log-day {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--tx-dim);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.log-day:hover { background: var(--hover); color: var(--tx); }
+
+.log-day .icon {
+  flex: none;
+  transition: transform .12s ease;
+  transform: rotate(90deg);
+}
+
+.log-group.shut .log-day .icon { transform: rotate(0deg); }
+
+.log-day-name { flex: 1; min-width: 0; }
+
+/* How many are in there, which is the one thing a folded group cannot show. */
+.log-day-count {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--tx-faint);
+}
+
+.log-day-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 2px 0 6px 14px;
+}
+
+.log-group.shut .log-day-body { display: none; }

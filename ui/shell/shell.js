@@ -409,7 +409,8 @@
     terminal: 'terminal',
     transfer: 'transfer',
     chat: 'ai',
-    settings: 'gear'
+    settings: 'gear',
+    editor: 'file'
   };
 
   function makeTab(pane) {
@@ -459,12 +460,52 @@
     return tab;
   }
 
+  /*
+   * Which tab was in front, most recent first, across the whole window.
+   *
+   * Window-wide rather than one list per column, because a tab can change
+   * column: dragging one moves its `grid-column` and nothing else, so a list
+   * owned by a column would have to be maintained on every move. One list, read
+   * with a filter, cannot go stale that way.
+   */
+  var recent = [];
+
+  function remember(paneId) {
+    var at = recent.indexOf(paneId);
+    if (at >= 0) recent.splice(at, 1);
+    recent.unshift(paneId);
+  }
+
+  /*
+   * Which tab a column falls back to when the one in front leaves it.
+   *
+   * Where you were, not what is next to where you were. Position says nothing
+   * about where you came from: open a file panel, look at one file, come back
+   * to the panel, look at a second, close the second -- by position that lands
+   * on the first file, a tab finished with two steps ago and never asked for
+   * again. What you were doing is the panel.
+   *
+   * Filtered to this column, because a column shows one of its own tabs and the
+   * most recent tab in the window may well be in the one beside it.
+   *
+   * Both ways a tab can leave a column -- closed, or dragged into another one --
+   * ask this. They used to answer it separately and identically, which is a
+   * pair that stays identical only until one of them is changed.
+   */
+  function nextActive(column, at) {
+    var seen = recent.filter(function (id) { return column.order.indexOf(id) >= 0; })[0];
+    // Nothing left here has been in front yet. Position is the only answer
+    // available, and it is the one this used to give always.
+    return seen || column.order[Math.min(at, column.order.length - 1)] || null;
+  }
+
   function activate(paneId) {
     var pane = panes.get(paneId);
     var column = pane ? columnById(pane.columnId) : null;
     if (!column) return;
     column.active = paneId;
     focusedColumn = column.id;
+    remember(paneId);
     paintPanes();
     revealTab(pane);
   }
@@ -565,6 +606,24 @@
     var column = pane ? columnById(pane.columnId) : null;
     if (!column) return;
 
+    /*
+     * Unsaved work is the one thing in this window that closing a tab can
+     * destroy and nothing can bring back. Asked here rather than in the page,
+     * because this is where closing happens and because the shell owns the only
+     * dialog the window has -- and asked per tab, so "close all" over three
+     * edited files is three questions rather than one that speaks for all of
+     * them.
+     */
+    if (pane.dirty) {
+      confirm(c('editorUnsavedTitle'), c('editorUnsavedBody', pane.title), c('editorDiscard'))
+        .then(function (yes) {
+          if (!yes) return;
+          pane.dirty = false;
+          closePane(paneId);
+        });
+      return;
+    }
+
     // The connection belongs to the tab, not to the window. Closing one without
     // the other leaves a shell running on the far side with nobody reading it.
     if (pane.kind === 'terminal') invoke('terminal_close', { pane: paneId });
@@ -573,6 +632,17 @@
       invoke('transfer_close', { pane: paneId });
     }
     if (pane.kind === 'chat') invoke('ai_close', { pane: paneId });
+    /*
+     * An editor on a remote file dialled its own SFTP session, under its own
+     * pane id, and it is the only thing holding it.
+     *
+     * Its own rather than the file panel's: an editor outlives the tab it was
+     * opened from, and a connection closed out from under a save is a truncated
+     * file. The cost is one dial when a remote file is opened for editing.
+     */
+    if (pane.kind === 'editor' && pane.side !== 'local') {
+      invoke('transfer_close', { pane: paneId });
+    }
 
     pane.iframe.remove();
     pane.tab.remove();
@@ -580,10 +650,10 @@
 
     var at = column.order.indexOf(paneId);
     column.order.splice(at, 1);
-    if (column.active === paneId) {
-      // The neighbour on the right, or the one on the left if there was none.
-      column.active = column.order[Math.min(at, column.order.length - 1)] || null;
-    }
+    var forgotten = recent.indexOf(paneId);
+    if (forgotten >= 0) recent.splice(forgotten, 1);
+
+    if (column.active === paneId) column.active = nextActive(column, at);
     if (!column.order.length) dropColumn(column);
     paintLayout();
   }
@@ -637,9 +707,7 @@
     column.tabbar.insertBefore(pane.tab, after ? panes.get(after).tab : null);
 
     if (from !== column) {
-      if (from.active === paneId) {
-        from.active = from.order[Math.min(at, from.order.length - 1)] || null;
-      }
+      if (from.active === paneId) from.active = nextActive(from, at);
       if (!from.order.length) dropColumn(from);
     }
     paintLayout();
@@ -1792,6 +1860,212 @@
     return pane;
   }
 
+  /*
+   * A file, in a tab of its own.
+   *
+   * One pane per file, like `openChat` is one panel per terminal, and for a
+   * related reason: two editors on one file are two buffers that will disagree,
+   * and whichever is saved second silently discards the other. Opening a file
+   * that is already open brings its tab forward instead.
+   *
+   * The identity of a file is its side, its path and -- on the remote side --
+   * the machine. `/etc/hosts` on two servers is two files, and the path alone
+   * cannot tell them apart.
+   */
+  function openEditor(options) {
+    var side = options.side || 'local';
+    var path = options.path || '';
+    if (!path) return null;
+    var serverId = options.server ? options.server.id : '';
+
+    var open = null;
+    panes.forEach(function (pane) {
+      if (pane.kind !== 'editor' || pane.path !== path || pane.side !== side) return;
+      if (side !== 'local' && (!pane.server || pane.server.id !== serverId)) return;
+      open = pane;
+    });
+    if (open) {
+      activate(open.id);
+      return open;
+    }
+
+    var pane = openPane('editor', {
+      page: 'editor/editor.html',
+      title: baseName(path),
+      server: options.server || null,
+      column: options.column,
+      bootstrap: {
+        strings: pageStrings(),
+        language: language,
+        side: side,
+        path: path,
+        encoding: options.encoding || '',
+        // A transcript is evidence. It opens read-only however small it is,
+        // because a record you can edit is a record that answers nothing.
+        readOnly: !!options.readOnly
+      }
+    });
+    pane.groupId = options.groupId || null;
+    pane.side = side;
+    pane.path = path;
+    pane.encoding = options.encoding || '';
+    pane.dirty = false;
+    return pane;
+  }
+
+  /*
+   * Open one of tshell's own files, wherever Rust says it lives.
+   *
+   * The page never learns a path until Rust has resolved one, and the six
+   * buttons that reach this all name a purpose rather than a location -- which
+   * is the only way `memoryServer` can mean a different file depending on which
+   * panel asked. A local file needs no server and no encoding beyond UTF-8:
+   * every file tshell writes, it writes itself.
+   */
+  function openLocalFile(command, args, column) {
+    return invoke(command, args)
+      .then(function (path) {
+        openEditor({ side: 'local', path: path, encoding: 'utf8', column: column });
+      })
+      .catch(panelError);
+  }
+
+  /*
+   * The four fields every editor call carries, in the shape both the text
+   * commands and the preview commands already take. One builder, because a
+   * read that went to a different file than the save is the worst bug this
+   * pane could have.
+   */
+  function editorArgs(pane, extra) {
+    var args = {
+      pane: pane.id,
+      side: pane.side,
+      groupId: pane.groupId || '',
+      serverId: pane.server ? pane.server.id : '',
+      path: pane.path,
+      encoding: pane.encoding || ''
+    };
+    Object.keys(extra || {}).forEach(function (key) { args[key] = extra[key]; });
+    return args;
+  }
+
+  /*
+   * Save, and ask before writing over someone else.
+   *
+   * The question is asked here rather than in the page because this is where the
+   * window's only dialog lives, and because answering it is a second call with
+   * the same arguments -- which the page would otherwise have to hold on to
+   * across a modal it did not draw.
+   */
+  function saveEditor(pane, content, base, force) {
+    invoke('text_save', editorArgs(pane, { content: content, base: base, force: !!force }))
+      .then(function (reply) {
+        if (reply.conflict) {
+          confirm(c('editorConflictTitle'), c('editorConflictBody'), c('editorOverwrite'))
+            .then(function (yes) {
+              if (!yes) {
+                send(pane.id, { type: 'editorSaved', cancelled: true });
+                return;
+              }
+              saveEditor(pane, content, reply.stamp, true);
+            });
+          return;
+        }
+        send(pane.id, { type: 'editorSaved', stamp: reply.stamp, content: content });
+      })
+      .catch(function (error) {
+        send(pane.id, { type: 'editorSaved', error: reason(error) });
+      });
+  }
+
+  function reopenEditor(pane, encoding) {
+    var go = function () {
+      pane.encoding = encoding;
+      pane.dirty = false;
+      pane.tab.classList.remove('unsaved');
+      send(pane.id, { type: 'editorEncoding', encoding: encoding });
+      invoke('text_open', editorArgs(pane, {}))
+        .then(function (file) { send(pane.id, { type: 'editorFile', file: file }); })
+        .catch(function (error) {
+          send(pane.id, { type: 'editorError', reason: reason(error) });
+        });
+    };
+
+    if (!pane.dirty) { go(); return; }
+    confirm(c('editorDiscardTitle'), c('editorDiscardBody'), c('editorReread'))
+      .then(function (yes) {
+        // Refused, so nothing moves -- and the page is told, because its select
+        // is already showing the encoding that is not going to be used.
+        if (!yes) { send(pane.id, { type: 'editorEncoding', encoding: pane.encoding }); return; }
+        go();
+      });
+  }
+
+  function fromEditor(pane, message) {
+    var id = pane.id;
+    switch (message.type) {
+      case 'editorOpen':
+        invoke('text_open', editorArgs(pane, {}))
+          .then(function (file) { send(id, { type: 'editorFile', file: file }); })
+          .catch(function (error) {
+            send(id, { type: 'editorError', reason: reason(error) });
+          });
+        return;
+
+      /*
+       * A file too large to edit is read through the preview commands, which
+       * have streamed files of any size since the file panel had a preview.
+       * Writing a second chunked reader for the same job is how two readers end
+       * up disagreeing about where a file ends.
+       */
+      case 'editorMore':
+        invoke('preview_text', editorArgs(pane, { offset: message.offset || 0 }))
+          .then(function (chunk) { send(id, { type: 'editorMore', chunk: chunk }); })
+          .catch(function (error) {
+            send(id, { type: 'editorError', reason: reason(error) });
+          });
+        return;
+
+      /*
+       * A page of records, for a DBF. The same command the file panel read them
+       * with, unchanged -- the table moved, the reader did not.
+       */
+      case 'editorTable':
+        invoke('preview_dbf', editorArgs(pane, { recordOffset: message.recordOffset || 0 }))
+          .then(function (chunk) { send(id, { type: 'editorTable', chunk: chunk }); })
+          .catch(function (error) {
+            send(id, { type: 'editorError', reason: reason(error) });
+          });
+        return;
+
+      /*
+       * Read the same file again in a different encoding.
+       *
+       * The question about unsaved work is asked here because this is where the
+       * window's dialog lives, and it is asked before the encoding is recorded:
+       * answering "keep what I have" has to leave the pane exactly as it was,
+       * including which encoding the next save will write.
+       */
+      case 'editorReopen':
+        reopenEditor(pane, message.encoding || 'utf8');
+        return;
+
+      case 'editorSave':
+        saveEditor(pane, message.content || '', message.base || { size: 0, modified: 0 }, false);
+        return;
+
+      /*
+       * The tab carries the mark, because the tab is what is visible when the
+       * pane is not. `closePane` reads the same flag before it asks.
+       */
+      case 'editorDirty':
+        pane.dirty = !!message.dirty;
+        pane.tab.classList.toggle('unsaved', pane.dirty);
+        return;
+    }
+    console.info('[shell] editor pane, not wired yet:', message.type, message);
+  }
+
   function openTransfer(server, groupId, beside) {
     var pane = openPane('transfer', {
       page: 'transfer/transfer.html',
@@ -1916,59 +2190,28 @@
   }
 
   /*
-   * Which reader answers is decided by Rust, from the extension, so that the
-   * highlighter the panel picks and the parser that produced the data are never
-   * working from different ideas about what the file is.
+   * Opening a file from the panel: every kind of it, in a tab of its own.
+   *
+   * There is no reader here any more and no branch on what the file is. The
+   * editor pane asks Rust what it is holding and decides between text and a
+   * table on the other side of one message -- which is the only place that can
+   * decide it, because it is the only place that has to draw both.
    */
   function openPreview(pane, side, path, encoding) {
     if (!path) return;
 
-    invoke('preview_language', { path: path }).then(function (language) {
-      if (language === 'dbf') {
-        return invoke('preview_dbf', transferArgs(pane, side, {
-          path: path,
-          encoding: encoding,
-          recordOffset: 0
-        })).then(function (chunk) {
-          send(pane.id, {
-            type: 'dbfPreview',
-            side: side,
-            path: path,
-            name: baseName(path),
-            language: 'dbf',
-            encoding: encoding,
-            fields: chunk.fields,
-            rows: chunk.rows,
-            recordCount: chunk.recordCount,
-            nextRecord: chunk.nextRecord,
-            done: chunk.done
-          });
-          transferLog(pane, t('previewing') + ': ' + path);
-        });
-      }
-
-      return invoke('preview_text', transferArgs(pane, side, {
-        path: path,
-        encoding: encoding,
-        offset: 0
-      })).then(function (chunk) {
-        send(pane.id, {
-          type: 'textPreview',
-          side: side,
-          path: path,
-          name: baseName(path),
-          language: language,
-          encoding: encoding,
-          content: chunk.content,
-          unsupported: chunk.binary,
-          message: chunk.binary ? t('unsupportedBinaryPreview') : '',
-          done: chunk.done,
-          nextOffset: chunk.nextOffset,
-          totalSize: chunk.size
-        });
-        transferLog(pane, t(chunk.binary ? 'unsupportedBinaryPreview' : 'previewing') + ': ' + path);
-      });
-    }).catch(function (error) { transferFailed(pane, error); });
+    openEditor({
+      side: side,
+      path: path,
+      encoding: encoding,
+      server: pane.server,
+      groupId: pane.groupId,
+      // The column the panel is in, not the one beside it. Opening a file used
+      // to be an overlay inside this pane; putting it in a new column would
+      // split the window every time someone looked at one.
+      column: columnById(pane.columnId)
+    });
+    transferLog(pane, t('previewing') + ': ' + path);
   }
 
   /*
@@ -2188,43 +2431,6 @@
         openPreview(pane, side, message.path || '', message.encoding || '');
         return;
 
-      case 'loadTextChunk':
-        invoke('preview_text', transferArgs(pane, side, {
-          path: message.path,
-          encoding: message.encoding || '',
-          offset: message.offset || 0
-        })).then(function (chunk) {
-          send(pane.id, {
-            type: 'textChunk',
-            side: side,
-            path: message.path,
-            encoding: message.encoding,
-            content: chunk.content,
-            done: chunk.done,
-            nextOffset: chunk.nextOffset,
-            totalSize: chunk.size
-          });
-        }).catch(function (error) { transferFailed(pane, error); });
-        return;
-
-      case 'loadDbfChunk':
-        invoke('preview_dbf', transferArgs(pane, side, {
-          path: message.path,
-          encoding: message.encoding || '',
-          recordOffset: message.recordOffset || 0
-        })).then(function (chunk) {
-          send(pane.id, {
-            type: 'dbfChunk',
-            side: side,
-            path: message.path,
-            encoding: message.encoding,
-            rows: chunk.rows,
-            nextRecord: chunk.nextRecord,
-            done: chunk.done
-          });
-        }).catch(function (error) { transferFailed(pane, error); });
-        return;
-
       case 'clearLog':
         return;
     }
@@ -2417,10 +2623,10 @@
         });
         return;
       case 'openMemory':
-        invoke('ai_reveal', {
+        openLocalFile('ai_file_path', {
           what: message.scope === 'global' ? 'memoryGlobal' : 'memoryServer',
           pane: id
-        });
+        }, columnById(pane.columnId));
         return;
 
       case 'trustList':
@@ -2436,7 +2642,48 @@
         });
         return;
       case 'openTrust':
-        invoke('ai_reveal', { what: 'trust', pane: id });
+        openLocalFile('ai_file_path', { what: 'trust', pane: id }, columnById(pane.columnId));
+        return;
+
+      /*
+       * The transcripts of this machine, and one of them opened to read.
+       *
+       * Read-only whatever its size: a record of what was sent to a model is
+       * evidence, and evidence you can edit answers nothing. It is also the one
+       * file in this window that is still being written while it is open, which
+       * is a second reason not to offer to write it from here as well.
+       */
+      case 'logList':
+        invoke('ai_log_list', { pane: id })
+          .then(function (files) { send(id, { type: 'logList', files: files }); })
+          .catch(function (error) {
+            send(id, { type: 'logList', files: [], error: reason(error) });
+          });
+        return;
+
+      /*
+       * Deleting redraws from the store rather than from what the panel had.
+       * A file the store refused to delete -- or one another panel removed a
+       * moment ago -- would otherwise leave a row on screen that points at
+       * nothing.
+       */
+      case 'deleteLog':
+        invoke('ai_log_delete', { path: message.path || '' })
+          .then(function () { return invoke('ai_log_list', { pane: id }); })
+          .then(function (files) { send(id, { type: 'logList', files: files }); })
+          .catch(function (error) {
+            send(id, { type: 'logList', files: [], error: reason(error) });
+          });
+        return;
+
+      case 'openLog':
+        openEditor({
+          side: 'local',
+          path: message.path || '',
+          encoding: 'utf8',
+          readOnly: true,
+          column: columnById(pane.columnId)
+        });
         return;
 
       case 'skillList':
@@ -2780,7 +3027,7 @@
         return;
 
       case 'openConfig':
-        invoke('open_config').catch(panelError);
+        openLocalFile('config_file_path', {});
         return;
     }
 
@@ -2917,6 +3164,7 @@
     if (pane.kind === 'terminal') { fromTerminal(pane, message); return; }
     if (pane.kind === 'transfer') { fromTransfer(pane, message); return; }
     if (pane.kind === 'chat') { fromChat(pane, message); return; }
+    if (pane.kind === 'editor') { fromEditor(pane, message); return; }
     if (pane.kind === 'settings') {
       if (message.type === 'setTheme') { applyTheme(message.theme); return; }
       /*
@@ -3280,6 +3528,16 @@
       hostKeyType: '密钥类型',
       hostKeyFingerprint: '本次指纹',
       hostKeyPinned: '已记住的',
+      editorUnsavedTitle: '还没保存',
+      editorUnsavedBody: '{0} 有未保存的修改。关掉这个标签就没了。',
+      editorDiscard: '不保存，关闭',
+      editorDiscardTitle: '还没保存',
+      editorDiscardBody: '换编码要把文件重新读一遍，你改过还没保存的内容会丢。',
+      editorReread: '丢弃并重读',
+      editorConflictTitle: '文件在你编辑期间变了',
+      editorConflictBody: '磁盘上的这个文件在你打开它之后被改过——可能是助手写了记忆，可能是别的程序，'
+        + '也可能是另一个人。继续保存会用你手里这份覆盖掉它，对方的改动不会保留。',
+      editorOverwrite: '用我的覆盖',
       nothingHint: '从左侧选一台服务器开始',
       nothingNoServers: '先在左侧添加一台服务器',
       nothingRecent: '最近',
@@ -3319,6 +3577,17 @@
       hostKeyType: 'Key type',
       hostKeyFingerprint: 'Presented',
       hostKeyPinned: 'Remembered',
+      editorUnsavedTitle: 'Not saved',
+      editorUnsavedBody: '{0} has changes that were never written. Closing the tab loses them.',
+      editorDiscard: 'Close without saving',
+      editorDiscardTitle: 'Not saved',
+      editorDiscardBody: 'Changing the encoding reads the file again. What you have edited and not saved will be lost.',
+      editorReread: 'Discard and reread',
+      editorConflictTitle: 'The file changed while you were editing',
+      editorConflictBody: 'This file on disk has been written since you opened it -- by the '
+        + 'assistant saving a memory, by another program, or by another person. Saving now '
+        + 'replaces it with what you have here, and their change will not survive.',
+      editorOverwrite: 'Overwrite with mine',
       nothingHint: 'Pick a server on the left to start',
       nothingNoServers: 'Add a server on the left to start',
       nothingRecent: 'Recent',
@@ -3328,8 +3597,9 @@
     }
   };
 
-  function c(key) {
-    return (chromeText[language] || chromeText['en-US'])[key];
+  function c(key, arg) {
+    var value = (chromeText[language] || chromeText['en-US'])[key];
+    return arg === undefined ? value : String(value).replace('{0}', String(arg));
   }
 
   /** Tooltip and screen-reader name are the same words; set them together. */
@@ -3444,7 +3714,7 @@
    */
   document.getElementById('nothing-settings').onclick = openSettings;
   document.getElementById('nothing-config').onclick = function () {
-    invoke('open_config').catch(panelError);
+    openLocalFile('config_file_path', {});
   };
 
   /** Every label on the bar, in whatever language boot settled on. */

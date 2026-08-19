@@ -41,9 +41,9 @@
       <div class="head-clip" id="headclip-local">
         <div class="col-head" id="head-local">
           <span></span>
-          <span class="sortable" data-key="name" data-i18n-title="sortByColumn"><b data-i18n="name"></b><svg class="sort"><use href="#i-caret"/></svg></span>
-          <span class="sortable num" data-key="size" data-i18n-title="sortByColumn"><i class="grip" data-col="size"></i><b data-i18n="size"></b><svg class="sort"><use href="#i-caret"/></svg></span>
-          <span class="sortable" data-key="modified" data-i18n-title="sortByColumn"><i class="grip" data-col="mod"></i><b data-i18n="modified"></b><svg class="sort"><use href="#i-caret"/></svg></span>
+          <span class="sortable" data-key="name" data-i18n-title="sortByColumn"><b data-i18n="name"></b><svg class="sort"><use href="#i-caret"/></svg><i class="grip" data-col="name"></i></span>
+          <span class="sortable num" data-key="size" data-i18n-title="sortByColumn"><b data-i18n="size"></b><svg class="sort"><use href="#i-caret"/></svg><i class="grip" data-col="size"></i></span>
+          <span class="sortable" data-key="modified" data-i18n-title="sortByColumn"><b data-i18n="modified"></b><svg class="sort"><use href="#i-caret"/></svg><i class="grip" data-col="mod"></i></span>
         </div>
       </div>
       <div class="list" id="list-local" tabindex="0" role="listbox" aria-multiselectable="true">
@@ -66,9 +66,9 @@
       <div class="head-clip" id="headclip-remote">
         <div class="col-head" id="head-remote">
           <span></span>
-          <span class="sortable" data-key="name" data-i18n-title="sortByColumn"><b data-i18n="name"></b><svg class="sort"><use href="#i-caret"/></svg></span>
-          <span class="sortable num" data-key="size" data-i18n-title="sortByColumn"><i class="grip" data-col="size"></i><b data-i18n="size"></b><svg class="sort"><use href="#i-caret"/></svg></span>
-          <span class="sortable" data-key="modified" data-i18n-title="sortByColumn"><i class="grip" data-col="mod"></i><b data-i18n="modified"></b><svg class="sort"><use href="#i-caret"/></svg></span>
+          <span class="sortable" data-key="name" data-i18n-title="sortByColumn"><b data-i18n="name"></b><svg class="sort"><use href="#i-caret"/></svg><i class="grip" data-col="name"></i></span>
+          <span class="sortable num" data-key="size" data-i18n-title="sortByColumn"><b data-i18n="size"></b><svg class="sort"><use href="#i-caret"/></svg><i class="grip" data-col="size"></i></span>
+          <span class="sortable" data-key="modified" data-i18n-title="sortByColumn"><b data-i18n="modified"></b><svg class="sort"><use href="#i-caret"/></svg><i class="grip" data-col="mod"></i></span>
         </div>
       </div>
       <div class="list" id="list-remote" tabindex="0" role="listbox" aria-multiselectable="true">
@@ -113,26 +113,6 @@
     <div class="menu-item" id="menuCopyLog"><svg class="icon"><use href="#i-copy"/></svg><span data-i18n="copy"></span></div>
   </div>
 
-  <div class="preview" id="preview">
-    <div class="preview-bar">
-      <div class="preview-title" id="previewTitle"></div>
-      <button class="secondary" id="toggleCsvView" style="display:none"></button>
-      <span class="c-select">
-        <select id="previewEncoding" class="c-field" data-i18n-title="previewEncoding" data-i18n-aria="previewEncoding">
-          <option value="utf8">UTF-8</option>
-          <option value="gb2312">GB2312</option>
-        </select>
-      </span>
-      <div class="font-control" data-i18n-title="previewFontSize">
-        <button class="secondary" id="previewFontDown" aria-label="-">-</button>
-        <span class="font-size" id="previewFontSize">12px</span>
-        <button class="secondary" id="previewFontUp" aria-label="+">+</button>
-      </div>
-      <button class="secondary" id="closePreview" data-i18n="close"></button>
-    </div>
-    <div class="code" id="code"></div>
-  </div>
-
   <div class="modal" id="conflictModal" role="dialog" aria-modal="true" aria-labelledby="conflictTitle">
     <div class="dialog">
       <h2 id="conflictTitle" data-i18n="conflictTitle"></h2>
@@ -154,7 +134,6 @@
     </div>
   </div>
   <!-- Must load first: transfer.js binds its helpers at evaluation time. -->
-  <script src="../shared/highlight.js"></script>
   <script src="transfer.js"></script>
 </body>
 </html>

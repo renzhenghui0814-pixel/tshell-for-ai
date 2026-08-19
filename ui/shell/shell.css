@@ -935,3 +935,21 @@ body.maximized .glyph-restore { display: block; }
   gap: 8px;
   flex-wrap: wrap;
 }
+
+/*
+ * A tab whose file has changes that were never written.
+ *
+ * On the tab rather than only in the pane, because the pane is what you cannot
+ * see when it matters: an edited file behind two other tabs is exactly the one
+ * about to be closed by someone tidying up.
+ */
+.tab.unsaved .tab-title::after {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--ac);
+  vertical-align: middle;
+}

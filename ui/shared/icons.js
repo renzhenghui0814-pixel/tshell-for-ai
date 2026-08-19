@@ -461,58 +461,101 @@
   /*
    * The product's own mark, in blocks.
    *
-   * media/tshell.svg draws the nautilus whorl as one filled path with a tapered
-   * stroke -- 1.85 turns of r = e^(0.30 theta), thickening from 3% of the outer
-   * radius at the centre to 34% at the mouth. This is that same curve sampled
-   * onto a 17x15 grid: a cell is set if the stroke covers more than a third of
-   * it. Nothing here was placed by hand, which is why the bitmap below can be
-   * read as a picture in the source and still be the logo.
+   * A square orange tile with the nautilus laid into it in white -- which is the
+   * application icon, built out of parts. The icon is a rounded orange square
+   * with a white whorl on it, and the mark that stood here before was only the
+   * whorl: orange line art on the panel background, with no tile and no white,
+   * so the one thing that makes the icon recognisable at 16px was the one thing
+   * missing from it.
    *
-   * Blocks, and not the curve itself, because this is the empty state of the
-   * assistant panel and it is the only place in the window where the mark is
-   * decoration rather than identity. Drawn smooth at 100px next to a paragraph
-   * of help text it reads as a watermark someone forgot to remove; drawn as
-   * something assembled out of parts, it reads as a thing waiting to be built,
+   * THE CURVE
+   *
+   * A logarithmic spiral of 1.4 turns, anticlockwise from a mouth at 38 degrees,
+   * the radius falling by 8.5 over its length, stroked from 46% of the outer
+   * radius at the mouth down to a hairline at the eye on a taper of t^2.1. Those
+   * six numbers are the drawing; the bitmap below is what they sample to on a
+   * 19x19 grid, fitted to the tile by its own bounding box rather than placed.
+   * Nothing here was put where it is by hand, which is why it can be read as a
+   * picture in the source and still be the logo.
+   *
+   * The radius falls by 8.5 and not by 4 because of what the second winding has
+   * to be. Shrink too slowly and it comes out six cells tall and one cell wide,
+   * which at this resolution is a straight line and a right angle rather than a
+   * curl; fast enough, and it closes into a small ring with a single cell of
+   * ground at its centre, which is an eye.
+   *
+   * WHY IT IS SAMPLED IN TWO PASSES
+   *
+   * A grid cannot draw a stroke thinner than one cell, and the thin end is the
+   * entire point of a tapered mark. Sampling by area alone drops the tail below
+   * the threshold and breaks it into loose cells -- not a hairline, a dotted
+   * line. So every cell the curve passes through is set outright, which floors
+   * the stroke at one block, and area is what adds the second, third and fourth
+   * block where the stroke really is that wide. The result reads four blocks
+   * thick at the mouth and one at the eye, which is the whole of "thick to thin"
+   * at a resolution this coarse.
+   *
+   * WHY BLOCKS AT ALL
+   *
+   * This is the empty state of the assistant panel, the only place in the window
+   * where the mark is decoration rather than identity. Drawn smooth at 100px
+   * beside a paragraph of help text it reads as a watermark someone forgot to
+   * remove; assembled out of parts, it reads as a thing waiting to be built,
    * which is what an empty conversation is.
    *
    * The blocks stay square with a 0.6-unit gutter at every size. That gutter is
    * the whole effect -- close it and this is just a low-resolution logo.
    */
   var MARK = [
-    '.......####......',
-    '.....#########...',
-    '...#############.',
-    '..###############',
-    '.#####......#####',
-    '.####.........##.',
-    '####.............',
-    '####.............',
-    '###...###........',
-    '###..#####.......',
-    '####..####.......',
-    '.####..###.......',
-    '..########.......',
-    '..#######........',
-    '....###..........'
+    '...................',
+    '...................',
+    '........#####......',
+    '.....###########...',
+    '....#############..',
+    '...###############.',
+    '..#####.....######.',
+    '..####.......####..',
+    '.####..........#...',
+    '.###...............',
+    '.###...###.........',
+    '.###..##.##........',
+    '.###..#...#........',
+    '..###.....#........',
+    '..####...##........',
+    '...#######.........',
+    '.....####..........',
+    '...................',
+    '...................'
   ];
 
+  /*
+   * Every cell is drawn, not only the shell.
+   *
+   * `--brand` for the ground and white for the whorl, both written as inline
+   * styles rather than left to `currentColor`: there are two colours here and
+   * only one of them can be inherited. `--brand` is the token the palette panel
+   * deliberately does not expose -- it is not a role, it is this logo -- so it
+   * is the same orange in both themes, and white on it is the same white the
+   * application icon uses.
+   */
   window.tshellMark = function (className) {
     var CELL = 4, BLOCK = 3.4, INSET = (CELL - BLOCK) / 2, RADIUS = 0.9;
+    var size = MARK.length * CELL;
     var svg = document.createElementNS(NS, 'svg');
     svg.setAttribute('class', className || 'mark');
-    svg.setAttribute('viewBox', '0 0 ' + MARK[0].length * CELL + ' ' + MARK.length * CELL);
-    svg.setAttribute('fill', 'currentColor');
+    svg.setAttribute('viewBox', '0 0 ' + MARK[0].length * CELL + ' ' + size);
     svg.setAttribute('aria-hidden', 'true');
     svg.setAttribute('focusable', 'false');
     for (var y = 0; y < MARK.length; y++) {
       for (var x = 0; x < MARK[y].length; x++) {
-        if (MARK[y].charAt(x) !== '#') continue;
+        var shell = MARK[y].charAt(x) === '#';
         var block = document.createElementNS(NS, 'rect');
         block.setAttribute('x', x * CELL + INSET);
         block.setAttribute('y', y * CELL + INSET);
         block.setAttribute('width', BLOCK);
         block.setAttribute('height', BLOCK);
         block.setAttribute('rx', RADIUS);
+        block.setAttribute('style', 'fill:' + (shell ? '#fff' : 'var(--brand)'));
         svg.appendChild(block);
       }
     }

@@ -39,8 +39,6 @@ body {
 }
 
 .log,
-.code,
-.csv-table,
 .compare .detail,
 input { user-select: text; }
 
@@ -171,21 +169,26 @@ button:focus-visible,
   --w-mod: 148px;
 
   /*
-   * The name column has a floor and the other two do not.
+   * Three widths, all set by the user, none of them elastic.
    *
-   * Grid takes the slack out of `fr` tracks before it touches a fixed one, so
-   * with the name as a bare `1fr` it was the only column that gave way: a
-   * narrow pane ended up as a list of `20...` and `sp...` beside two columns of
-   * perfectly legible timestamps. That is backwards. Which file it is comes
-   * first; how big it is and when it changed are what you look at second, and
-   * they are the ones that should be squeezed.
+   * The name column used to be `1fr` and the other two capped, so the width of
+   * the pane was shared out rather than spent: every change went into the name.
+   * That made a grip able to set only the column to its RIGHT -- grab the line
+   * after "name" and it was "size" that moved -- which is the opposite of what
+   * a file manager does and reads as a broken handle rather than a deliberate
+   * model. Fixed tracks put each grip on the right edge of the column it sets.
    *
-   * Below the floor the pane scrolls sideways rather than truncating further --
-   * `--min-w` is the width at which every column is at its own minimum, so
-   * there is always a scroll position that shows a whole file name.
+   * Nothing takes up the slack. Past the last column the row is empty, and when
+   * the three together outrun the pane it scrolls sideways -- `--min-w` is the
+   * width at which all three are fully shown, so there is always a scroll
+   * position that shows a whole file name rather than a truncation of one.
+   *
+   * `--w-*` here are the defaults; `applyColumnWidths` writes the user's over
+   * them on the same element, and `COL_DEFAULTS` in transfer.js holds the same
+   * three numbers for a pane that has never been dragged.
    */
-  --w-name: 150px;
-  --cols: 24px minmax(var(--w-name), 1fr) minmax(0, var(--w-size)) minmax(0, var(--w-mod));
+  --w-name: 200px;
+  --cols: 24px var(--w-name) var(--w-size) var(--w-mod);
   --min-w: calc(
     24px + var(--w-name) + var(--w-size) + var(--w-mod) + 30px + 2 * var(--gutter)
   );
@@ -266,11 +269,17 @@ button:focus-visible,
 }
 
 /* Sits over the gap to the left of a column, and resizes that column. */
+/*
+ * The handle on a column's right edge, straddling the gap after it.
+ *
+ * On the right rather than the left, because a grip sets the column it belongs
+ * to and a column's right edge is the boundary that moves when it does.
+ */
 .grip {
   position: absolute;
   top: -5px;
   bottom: -5px;
-  left: -10px;
+  right: -10px;
   width: 11px;
   cursor: col-resize;
 }
@@ -553,86 +562,6 @@ button:focus-visible,
 .menu-item.danger { color: var(--err); }
 .menu-item.danger:hover { color: var(--err-tx); background: var(--err); }
 .menu-sep { height: 1px; margin: 5px 4px; background: var(--line); }
-
-/* -- preview overlay ---------------------------------------------------- */
-
-.preview {
-  position: fixed;
-  inset: 24px;
-  display: none;
-  grid-template-rows: auto minmax(0, 1fr);
-  z-index: var(--z-overlay);
-  min-height: 0;
-  overflow: hidden;
-  background: var(--bg-base);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-lg);
-  box-shadow: var(--sh-dlg);
-}
-
-.preview.open { display: grid; }
-
-.preview-bar {
-  display: grid;
-  grid-template-columns: minmax(120px, 1fr) auto auto auto auto;
-  gap: 8px;
-  align-items: center;
-  padding: 8px 10px;
-  background: var(--bg-elev);
-  border-bottom: 1px solid var(--hairline);
-}
-
-.preview-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); }
-.font-control { display: inline-grid; grid-template-columns: auto 42px auto; gap: 4px; align-items: center; }
-.font-control button { min-width: 26px; height: 24px; padding: 0 7px; }
-.font-size { text-align: center; font-size: var(--fs-sm); color: var(--tx-dim); font-variant-numeric: tabular-nums; }
-
-.code {
-  overflow: auto;
-  font-family: var(--vscode-editor-font-family, Consolas, monospace);
-  font-size: var(--preview-font-size, 12px);
-  line-height: 1.35;
-}
-
-.code-line { display: grid; grid-template-columns: 54px minmax(0, 1fr); min-height: 18px; }
-
-.line-number {
-  padding: 0 10px 0 6px;
-  text-align: right;
-  user-select: none;
-  color: var(--tx-faint);
-  background: var(--bg-base);
-  border-right: 1px solid var(--line);
-}
-
-.line-code { padding: 0 10px; white-space: pre; }
-
-/* Token colours now live in media/shared/highlight.css, loaded alongside this file. */
-
-.csv-table {
-  width: max-content;
-  min-width: 100%;
-  border-collapse: collapse;
-  font-family: var(--vscode-font-family);
-  font-size: var(--vscode-font-size);
-}
-
-.csv-table th,
-.csv-table td { max-width: 320px; padding: 4px 8px; border: 1px solid var(--vscode-panel-border); white-space: pre-wrap; vertical-align: top; }
-.csv-table th { position: sticky; top: 0; z-index: 1; background: var(--vscode-sideBar-background); font-weight: 700; }
-
-.csv-table .row-index {
-  position: sticky;
-  left: 0;
-  z-index: 2;
-  min-width: 54px;
-  text-align: right;
-  color: var(--vscode-editorLineNumber-foreground);
-  background: var(--vscode-editorGutter-background, var(--vscode-editor-background));
-}
-
-.csv-table th.row-index { z-index: 3; background: var(--vscode-sideBar-background); }
-.unsupported-preview { display: grid; place-items: center; min-height: 220px; padding: 24px; color: var(--vscode-descriptionForeground); text-align: center; }
 
 /* -- conflict dialog ---------------------------------------------------- */
 

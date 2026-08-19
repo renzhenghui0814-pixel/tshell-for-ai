@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; connect-src 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="../shared/theme.css">
+  <script src="../shared/palette.js"></script>
+  <script src="../shared/keys.js"></script>
+  <script src="../shared/host.js"></script>
+  <link rel="stylesheet" href="../shared/highlight.css">
+  <link rel="stylesheet" href="../shared/components.css">
+  <script src="../shared/dropdown.js"></script>
+  <script src="../shared/scrollbars.js"></script>
+  <link rel="stylesheet" href="editor.css">
+</head>
+<body>
+  <!-- Must stay first: the sprite has to be in the document before the parser
+       reaches any `<use>` below it. -->
+  <script src="../shared/icons.js"></script>
+
+  <header class="bar">
+    <!--
+      The path, and nothing decorative beside it. A tab is 210px and truncates,
+      so this strip is where the answer to "which file am I in" actually lives --
+      which matters more here than anywhere else in the window, because two
+      panes showing two files look identical from six feet away.
+    -->
+    <span class="where" id="where" title=""></span>
+    <span class="badge" id="badge" hidden></span>
+    <span class="spacer"></span>
+
+    <!--
+      Only for a file that has two forms. A table is not a view of arbitrary
+      text -- it is what a DBF is and what a CSV can be read as -- so the button
+      appears when there is a second form to switch to and not otherwise.
+    -->
+    <button type="button" class="c-btn" id="mode" hidden></button>
+
+    <!--
+      How the bytes are being read. Changing it re-reads the file: the text on
+      screen is a decoding, not the file, and there is no way to change one
+      without doing the other again.
+    -->
+    <span class="c-select">
+      <select id="encoding" class="c-field" data-i18n-title="editorEncoding" data-i18n-aria="editorEncoding">
+        <option value="utf8">UTF-8</option>
+        <option value="gb2312">GB2312</option>
+      </select>
+    </span>
+
+    <div class="fontsize" data-i18n-title="editorFontSize">
+      <button type="button" class="c-btn c-btn-icon" id="fontDown" aria-label="-">-</button>
+      <span class="fontsize-value" id="fontValue"></span>
+      <button type="button" class="c-btn c-btn-icon" id="fontUp" aria-label="+">+</button>
+    </div>
+
+    <button type="button" class="c-btn c-btn-icon" id="find" data-i18n-title="editorFind" data-i18n-aria="editorFind">
+      <svg class="c-icon"><use href="#i-search"/></svg>
+    </button>
+    <button type="button" class="c-btn c-btn-icon" id="save" data-i18n-title="editorSave" data-i18n-aria="editorSave" hidden>
+      <svg class="c-icon"><use href="#i-check"/></svg>
+    </button>
+  </header>
+
+  <!--
+    Find is a strip rather than a floating box. A box would sit over the text it
+    is searching, and the one line you want is as likely to be under it as
+    anywhere else.
+  -->
+  <div class="findbar" id="findbar" hidden>
+    <svg class="c-icon dim"><use href="#i-search"/></svg>
+    <input class="c-field" id="findInput" spellcheck="false" autocomplete="off" data-i18n-placeholder="editorFind">
+    <span class="tally" id="tally"></span>
+    <button type="button" class="c-btn c-btn-icon" id="findPrev" data-i18n-title="editorFindPrev" data-i18n-aria="editorFindPrev">
+      <svg class="c-icon"><use href="#i-caret"/></svg>
+    </button>
+    <button type="button" class="c-btn c-btn-icon" id="findNext" data-i18n-title="editorFindNext" data-i18n-aria="editorFindNext">
+      <svg class="c-icon down"><use href="#i-caret"/></svg>
+    </button>
+    <button type="button" class="c-btn c-btn-icon" id="findClose" data-i18n-title="editorFindClose" data-i18n-aria="editorFindClose">
+      <svg class="c-icon"><use href="#i-close"/></svg>
+    </button>
+  </div>
+
+  <!--
+    The editing surface: three layers that have to agree on every pixel.
+
+    `rows` is one flex row so the gutter can be `position: sticky` against the
+    horizontal scroll -- line numbers stay put while a long line slides under
+    them. `sheet` is sized by `paint`, which is in normal flow; the textarea is
+    absolutely positioned over it and therefore exactly as large, which is what
+    keeps the caret on the character it is drawn next to.
+
+    The textarea holds the text and draws nothing but the caret and the
+    selection; `paint` draws the text and takes no events. The alternative --
+    colouring a `contenteditable` -- rebuilds the DOM on every keystroke, and a
+    DOM rebuilt mid-composition ends an input method's session. In a terminal
+    tool used in Chinese that is not a trade-off, it is a defect.
+  -->
+  <div class="scroll" id="scroll">
+    <div class="rows">
+      <div class="gutter" id="gutter" aria-hidden="true"></div>
+      <div class="sheet" id="sheet">
+        <div class="paint" id="paint" aria-hidden="true"></div>
+        <textarea class="input" id="input" spellcheck="false" autocomplete="off"
+                  autocapitalize="off" autocorrect="off" wrap="off"></textarea>
+      </div>
+    </div>
+  </div>
+
+  <!--
+    The table. A DBF has no other form; a CSV has this one and its text.
+
+    Its own scroller rather than a third layer over the text: nothing here has
+    to line up with anything, and a table that shared the text scroller would
+    have to be as tall as text that is not being shown.
+  -->
+  <div class="grid" id="grid" hidden></div>
+
+  <div class="notice" id="notice" hidden></div>
+
+  <!--
+    Before editor.js, which reaches for `window.tshellHighlight` on the first
+    line it draws. Same place transfer.html and chat.html load it.
+  -->
+  <script src="../shared/highlight.js"></script>
+  <script src="editor.js"></script>
+</body>
+</html>

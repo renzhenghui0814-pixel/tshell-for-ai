@@ -11,6 +11,7 @@
 //! the page has the string table, so what crosses this boundary is keys, ids and
 //! outcomes.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
@@ -483,18 +484,24 @@ fn merge(into: &mut Value, patch: &Value) {
 ///
 /// There is no editor in this window, and building one to show a five-line
 /// markdown file would be a worse answer than the one every desktop already has.
-#[tauri::command]
-pub fn ai_reveal(
-    what: String,
+/// Where one of the assistant's own files lives, creating it if it does not.
+///
+/// Shared by the two things that can be done with such a file -- open it in the
+/// editor pane, or hand it to the system -- because which file `memoryServer`
+/// means depends on which panel asked, and that is a rule worth having in one
+/// place. Two copies of it drift towards showing one machine the memory of
+/// another, which is the kind of wrong that reads as correct.
+fn locate(
+    what: &str,
     pane: Option<String>,
-    panels: State<'_, SharedPanels>,
-    stores: State<'_, SharedStores>,
-) -> Result<(), String> {
+    panels: &SharedPanels,
+    stores: &SharedStores,
+) -> Result<PathBuf, String> {
     let server = pane
         .and_then(|pane| panels.get(&pane))
         .map(|panel| panel.server_id())
         .unwrap_or_default();
-    let path = match what.as_str() {
+    let path = match what {
         "memoryGlobal" => stores.memory.file_for(MemoryScope::Global, None),
         "memoryServer" => stores.memory.file_for(MemoryScope::Server, Some(&server)),
         "trust" => stores.trust.path().clone(),
@@ -518,7 +525,61 @@ pub fn ai_reveal(
             let _ = std::fs::create_dir_all(&path);
         }
     }
+    Ok(path)
+}
+
+/// Opens one of the assistant's own files in whatever the system uses for it.
+///
+/// Still here after the editor pane arrived, and still the only way to reach the
+/// skills folder: that one is a directory, and a directory is the one thing an
+/// editor cannot open.
+#[tauri::command]
+pub fn ai_reveal(
+    what: String,
+    pane: Option<String>,
+    panels: State<'_, SharedPanels>,
+    stores: State<'_, SharedStores>,
+) -> Result<(), String> {
+    let path = locate(&what, pane, &panels, &stores)?;
     reveal(&path).map_err(|error| error.to_string())
+}
+
+/// The same file, as a path for the editor pane to open.
+#[tauri::command]
+pub fn ai_file_path(
+    what: String,
+    pane: Option<String>,
+    panels: State<'_, SharedPanels>,
+    stores: State<'_, SharedStores>,
+) -> Result<String, String> {
+    locate(&what, pane, &panels, &stores).map(|path| path.display().to_string())
+}
+
+/// Delete one transcript.
+///
+/// The store decides whether the path is one of its own; this only carries the
+/// answer back so the panel can redraw. No confirmation is asked for here, the
+/// same as deleting a conversation from the history window -- it is the same
+/// kind of thing in the same panel, and one of the two asking would be a rule
+/// the user has to learn rather than a warning they can act on.
+#[tauri::command]
+pub fn ai_log_delete(path: String, stores: State<'_, SharedStores>) -> bool {
+    stores.logs.remove(&path)
+}
+
+/// Every transcript belonging to the machine this panel is attached to.
+///
+/// Empty when the panel is gone or never had a server: a list of every log on
+/// the machine would be worse than none, because the user would have to know
+/// which of their servers wrote which file to pick one.
+#[tauri::command]
+pub fn ai_log_list(
+    pane: String,
+    panels: State<'_, SharedPanels>,
+    stores: State<'_, SharedStores>,
+) -> Vec<crate::ai::store::log::LogFile> {
+    let Some(panel) = panels.get(&pane) else { return Vec::new() };
+    stores.logs.list(&panel.server_name())
 }
 
 #[cfg(test)]

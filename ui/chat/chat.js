@@ -1397,6 +1397,124 @@
     return row;
   }
 
+  /*
+   * One transcript per row: when it was written, and how big it got.
+   *
+   * The filename is not drawn. It carries the machine, the conversation id and
+   * the timestamp, which is right for a directory listing and wrong here --
+   * every row in this list is the same machine, and the id matches nothing the
+   * reader can see. The time is what tells two of them apart.
+   */
+  function logRow(file) {
+    const row = document.createElement('div');
+    row.className = 'history-row';
+
+    const open = document.createElement('button');
+    open.className = 'history-open';
+    open.type = 'button';
+    const title = document.createElement('div');
+    title.className = 'history-title';
+    // The time alone: the group above it already said which day.
+    title.textContent = logTime(Number(file.modified || 0) * 1000);
+    const meta = document.createElement('div');
+    meta.className = 'history-meta';
+    meta.textContent = [logSize(file.size), file.name].filter(Boolean).join(' · ');
+    open.append(title, meta);
+    open.onclick = () => { post('openLog', { path: file.path }); closePanels(); };
+
+    const remove = document.createElement('button');
+    remove.className = 'icon-button danger';
+    remove.type = 'button';
+    remove.title = S.logDelete;
+    remove.setAttribute('aria-label', S.logDelete);
+    remove.append(icon('#i-trash'));
+    // Not confirmed, the same as deleting a conversation two panels over. One of
+    // the two asking would be a rule to learn rather than a warning to act on.
+    remove.onclick = () => post('deleteLog', { path: file.path });
+
+    row.append(open, remove);
+    return row;
+  }
+
+  function logSize(size) {
+    const value = Number(size) || 0;
+    if (value < 1024) return value + ' B';
+    if (value < 1024 * 1024) return (value / 1024).toFixed(1) + ' KB';
+    return (value / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  /*
+   * Grouped by the day they were written, newest day first and open; the rest
+   * folded.
+   *
+   * A machine that has been worked on for a month has a flat list of sixty
+   * files, all named the same way, told apart by a timestamp the eye has to
+   * parse one row at a time. The day is the thing anyone actually remembers
+   * about a transcript -- what went wrong was on Tuesday -- so it is the thing
+   * the list is cut by, and only the day you are most likely to want is open.
+   *
+   * The list arrives newest first, so walking it in order produces the groups in
+   * order too. Nothing here sorts anything.
+   */
+  function paintLogs(files) {
+    const list = $('logList');
+    list.replaceChildren();
+    $('logEmpty').hidden = files.length > 0;
+
+    const days = new Map();
+    files.forEach((file) => {
+      const key = logDay(Number(file.modified || 0) * 1000);
+      if (!days.has(key)) days.set(key, []);
+      days.get(key).push(file);
+    });
+
+    let first = true;
+    days.forEach((group, day) => {
+      list.append(logGroup(day, group, first));
+      first = false;
+    });
+  }
+
+  function logGroup(day, files, open) {
+    const group = document.createElement('div');
+    group.className = 'log-group' + (open ? '' : ' shut');
+
+    const head = document.createElement('button');
+    head.className = 'log-day';
+    head.type = 'button';
+    head.setAttribute('aria-expanded', String(!!open));
+    head.append(icon('#i-chevron'));
+
+    const label = document.createElement('span');
+    label.className = 'log-day-name';
+    label.textContent = day;
+    const count = document.createElement('span');
+    count.className = 'log-day-count';
+    count.textContent = String(files.length);
+    head.append(label, count);
+
+    const body = document.createElement('div');
+    body.className = 'log-day-body';
+    files.forEach((file) => body.append(logRow(file)));
+
+    head.onclick = () => {
+      const shut = group.classList.toggle('shut');
+      head.setAttribute('aria-expanded', String(!shut));
+    };
+
+    group.append(head, body);
+    return group;
+  }
+
+  function logDay(stamp) {
+    return new Date(stamp).toLocaleDateString(boot.language);
+  }
+
+  function logTime(stamp) {
+    return new Date(stamp)
+      .toLocaleTimeString(boot.language, { hour: '2-digit', minute: '2-digit' });
+  }
+
   function paintHistory(items, current) {
     const list = $('historyList');
     list.replaceChildren();
@@ -1415,7 +1533,8 @@
    * whichever is up.
    */
   const panels = [
-    'historyPanel', 'memoryPanel', 'skillPanel', 'thinkPanel', 'modePanel', 'trustPanel', 'modelPanel'
+    'historyPanel', 'memoryPanel', 'skillPanel', 'thinkPanel', 'modePanel', 'trustPanel',
+    'modelPanel', 'logPanel'
   ];
 
   function openPanel(id, request) {
@@ -2106,6 +2225,10 @@
       paintTrust(data);
       return;
     }
+    if (data.type === 'logList') {
+      paintLogs(data.files || []);
+      return;
+    }
     if (data.type === 'modelList') {
       paintModels(data);
       return;
@@ -2188,6 +2311,8 @@
   // arrives on every `aiState`, so there is nothing to fetch.
   $('mode').onclick = () => { openPanel('modePanel'); paintModeList(); };
   $('trust').onclick = () => openPanel('trustPanel', 'trustList');
+  $('logs').onclick = () => openPanel('logPanel', 'logList');
+  $('logClose').onclick = closePanels;
   $('memoryClose').onclick = closePanels;
   $('skillClose').onclick = closePanels;
   $('thinkClose').onclick = closePanels;

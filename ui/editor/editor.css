@@ -1,0 +1,378 @@
+/*
+ * The editor pane.
+ *
+ * Everything here is either layout or the one thing this page has that no other
+ * page does: three layers that must agree on the exact position of every
+ * character. The controls are `c-btn` and `c-field` from components.css, the
+ * colours are tokens, and the token colours in the painted layer come from
+ * highlight.css -- the same ones the file preview, the chat code blocks and the
+ * assistant file cards use, so a line of Python looks the same everywhere.
+ *
+ * THE ONE RULE OF THIS FILE: `.paint`, `.paint .ln`, `.input` and `.gutter b`
+ * share a font, a size, a line height and a tab size. They are declared once, in
+ * `.rows`, and inherited. Setting any of them on one layer alone puts the caret
+ * a fraction of a character away from the glyph it is next to, which grows down
+ * the line until it is a word out.
+ */
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-base);
+  color: var(--tx);
+  font-family: var(--font);
+  font-size: var(--fs);
+  overflow: hidden;
+}
+
+/* -- the strip over the top ------------------------------------------------ */
+
+.bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 7px 0 12px;
+}
+
+/*
+ * The path, from the right. A long path is distinctive at its end -- the file
+ * name and the directory holding it -- and generic at its start, where six
+ * files under one project share the first forty characters.
+ */
+.where {
+  min-width: 0;
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--tx-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.badge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.badge[hidden] { display: none; }
+
+.spacer { flex: none; }
+
+/* The save button says whether there is anything to save. */
+#save.dirty { color: var(--ac); }
+#save[hidden] { display: none; }
+
+/* -- find ------------------------------------------------------------------ */
+
+.findbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px 5px 12px;
+}
+
+.findbar[hidden] { display: none; }
+
+.findbar .c-icon.dim { color: var(--tx-faint); flex: none; }
+
+#findInput {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Nothing found is a state of the query, so it is said on the query. */
+#findInput.empty { border-color: var(--err); }
+
+.tally {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--tx-dim);
+  white-space: nowrap;
+}
+
+/*
+ * The caret in the shared set points up, so "previous" uses it as drawn and
+ * "next" is the same glyph turned over -- one drawing, two directions.
+ */
+.c-icon.down { transform: rotate(180deg); }
+
+/* -- the surface ----------------------------------------------------------- */
+
+.scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+}
+
+/*
+ * Where the shared measurements are declared, once, for all three layers.
+ *
+ * `width: max-content` so the row is as wide as its longest line and the
+ * container scrolls horizontally; `min-width: 100%` so a short file still fills
+ * the pane and the gutter reaches the bottom.
+ */
+.rows {
+  display: flex;
+  align-items: flex-start;
+  width: max-content;
+  min-width: 100%;
+  min-height: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--code-size, 12.5px);
+  /*
+   * A ratio, not a number of pixels. The size is adjustable, and a fixed line
+   * height would leave the three layers agreeing at one size and drifting apart
+   * at every other -- which is the one failure this page cannot survive.
+   * `editor.js` re-reads the computed value after every change.
+   */
+  line-height: 1.6;
+  tab-size: 4;
+  -moz-tab-size: 4;
+}
+
+/*
+ * Sticky against the horizontal scroll only. The numbers slide up and down with
+ * the text and stay put as a long line runs off to the right, which is the
+ * behaviour of every editor and the reason the gutter is inside the scroller
+ * rather than beside it.
+ */
+.gutter {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  flex: none;
+  padding: 10px 10px 10px 12px;
+  text-align: right;
+  color: var(--tx-faint);
+  background: var(--bg-base);
+  user-select: none;
+  cursor: default;
+}
+
+.gutter b {
+  display: block;
+  font-weight: inherit;
+  white-space: pre;
+}
+
+/* Sized by `paint`, which is the layer in normal flow. */
+.sheet {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.paint,
+.input {
+  margin: 0;
+  padding: 10px 14px 10px 0;
+  border: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+
+.paint {
+  pointer-events: none;
+  color: var(--tx);
+}
+
+/*
+ * No height of its own: every line is written with at least a space in it, so
+ * the inherited line-height is the height. Repeating the number here would put
+ * the one measurement all three layers share in two places, which is the one
+ * thing this file must not do.
+ */
+.paint .ln {
+  display: block;
+  white-space: pre;
+}
+
+/*
+ * Matches.
+ *
+ * Two weights, which is the whole reason this is worth drawing at all: every
+ * match in a soft wash so the eye can count them down the file, and the one you
+ * are on filled, so moving between them is visible without reading the tally.
+ *
+ * `color: inherit` because a `<mark>` comes with the browser's own black on
+ * yellow, and these are wrapped around text that is already coloured by the
+ * highlighter -- taking the colour would mean a match on a string literal
+ * stopped looking like a string literal.
+ */
+/*
+ * Strong enough to count down a file at a glance. `--ac-soft` was not: it is
+ * the wash used behind a selected row, where it sits under a whole band and has
+ * the row's full width to be seen across. Four characters of it in the middle
+ * of a line is invisible.
+ */
+.paint mark.hit {
+  background: color-mix(in srgb, var(--ac) 42%, transparent);
+  color: inherit;
+  border-radius: 2px;
+}
+
+.paint mark.hit.now {
+  background: var(--ac);
+  color: var(--ac-tx);
+}
+
+/*
+ * The other places the selected text appears.
+ *
+ * Weaker than a search result on purpose. A search was asked for and its marks
+ * should carry; this one appears merely because the caret went somewhere, and a
+ * mark that loud would make ordinary selecting feel like the file had lit up.
+ */
+.paint mark.echo {
+  background: color-mix(in srgb, var(--tx) 22%, transparent);
+  color: inherit;
+  border-radius: 2px;
+}
+
+/*
+ * Over the paint, exactly. `inset: 0` against `.sheet`, which is as tall and as
+ * wide as the painted text, so the textarea never scrolls inside itself -- the
+ * container scrolls, and the browser brings the caret into view within it.
+ *
+ * The text is transparent and the caret is not. The selection stays the
+ * browser's own, which is what makes find able to show a match by selecting it
+ * rather than by cutting marks into highlighted HTML.
+ */
+.input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  outline: none;
+  overflow: hidden;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--tx);
+}
+
+.input::selection { background: var(--term-select); }
+
+/* Read-only is a fact about the file, not a disabled control: it still takes
+ * focus, still scrolls, still selects, and find still works in it. */
+.input[readonly] { caret-color: transparent; }
+
+/* -- the toolbar's own controls -------------------------------------------- */
+
+.bar .c-select { flex: none; }
+.bar .c-select select { height: 26px; padding: 0 26px 0 8px; font-size: var(--fs-sm); }
+
+.fontsize {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* Fixed width so the row does not shuffle sideways as the number changes. */
+.fontsize-value {
+  min-width: 34px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--tx-dim);
+}
+
+#mode { flex: none; }
+#mode[hidden] { display: none; }
+
+/* -- the table ------------------------------------------------------------- */
+
+/*
+ * What a DBF is, and what a CSV can be read as.
+ *
+ * Sized in the same unit as the text, so the one font control governs both --
+ * a reader who made the text bigger meant the file, not the mode they happened
+ * to be in.
+ */
+.grid {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--code-size, 12.5px);
+}
+
+.grid[hidden] { display: none; }
+
+.grid table {
+  border-collapse: collapse;
+  min-width: 100%;
+}
+
+.grid th,
+.grid td {
+  max-width: 320px;
+  padding: 4px 8px;
+  border: 1px solid var(--line-strong);
+  text-align: left;
+  vertical-align: top;
+  white-space: pre-wrap;
+}
+
+/* Sticky, so the names stay while the records go past. */
+.grid th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-elev);
+  color: var(--tx);
+  font-weight: 600;
+}
+
+/*
+ * The record number. Sticky on both axes, because a wide table scrolled
+ * sideways is a screen of cells with nothing saying which row they are in.
+ */
+.grid .at {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--bg-elev);
+  color: var(--tx-faint);
+  text-align: right;
+  user-select: none;
+}
+
+.grid th.at { z-index: 3; }
+
+/* -- the line at the bottom ------------------------------------------------ */
+
+.notice {
+  flex: none;
+  padding: 7px 12px;
+  font-size: var(--fs-sm);
+  color: var(--tx-dim);
+  background: var(--bg-elev);
+}
+
+.notice[hidden] { display: none; }
+
+.notice.bad { color: var(--err); background: var(--err-soft); }

@@ -19,6 +19,7 @@ mod preview;
 mod schemes;
 mod secrets;
 mod ssh;
+mod textfile;
 mod theme;
 mod transfer;
 
@@ -836,11 +837,6 @@ async fn transfer_rename(
 /// two readers below to ask. Decided from the extension, in one place, so that
 /// the page and the reader can never disagree about what a file is.
 #[tauri::command]
-fn preview_language(path: String) -> &'static str {
-    preview::language(&path)
-}
-
-#[tauri::command]
 async fn preview_text(
     pane: String,
     side: String,
@@ -852,7 +848,7 @@ async fn preview_text(
     store: State<'_, Store>,
     transfers: State<'_, Arc<transfer::Transfers>>,
 ) -> Result<preview::TextChunk, String> {
-    let (target, _) = dial_plan(&group_id, &server_id, &store)?;
+    let target = side_target(&side, &group_id, &server_id, &store)?;
     let transfers = Arc::clone(&transfers);
     preview::text(&transfers, &pane, &side, &target, &path, &encoding, offset).await
 }
@@ -869,7 +865,7 @@ async fn preview_dbf(
     store: State<'_, Store>,
     transfers: State<'_, Arc<transfer::Transfers>>,
 ) -> Result<preview::DbfChunk, String> {
-    let (target, _) = dial_plan(&group_id, &server_id, &store)?;
+    let target = side_target(&side, &group_id, &server_id, &store)?;
     let transfers = Arc::clone(&transfers);
     preview::dbf(
         &transfers,
@@ -1001,15 +997,93 @@ fn set_keys(keys: BTreeMap<String, String>, store: State<'_, Store>) -> Result<P
     commit(&config, &store)
 }
 
+/// Where the config file is, having made sure there is one.
+///
+/// Created if it is not there. A first run has saved nothing yet, and "there is
+/// no config file" is not an answer to someone who asked to edit it -- the
+/// defaults written out are what they wanted to see.
 #[tauri::command]
-fn open_config() -> Result<(), String> {
+fn config_file_path() -> Result<String, String> {
     let path = config::config_path();
-    // Nothing has been saved yet on a first run, and opening a file that is not
-    // there is a worse answer than writing the defaults out first.
     if !path.exists() {
         config::save(&AppConfig::fresh(Language::from_locale()))?;
     }
-    reveal(&path).map_err(|error| error.to_string())
+    Ok(path.display().to_string())
+}
+
+/*
+ * The editor pane, both sides.
+ *
+ * `side` is the same word the transfer panel uses and means the same thing, and
+ * a local file needs no server at all -- which is why the dial plan is built
+ * only when there is going to be a connection. Asking for one on the local side
+ * would make editing the config file fail whenever no server happened to be
+ * selected, for a target nothing was ever going to use.
+ */
+#[tauri::command]
+async fn text_open(
+    pane: String,
+    side: String,
+    group_id: String,
+    server_id: String,
+    path: String,
+    encoding: String,
+    store: State<'_, Store>,
+    transfers: State<'_, Arc<transfer::Transfers>>,
+) -> Result<textfile::TextFile, String> {
+    let target = side_target(&side, &group_id, &server_id, &store)?;
+    let transfers = Arc::clone(&transfers);
+    textfile::read(&transfers, &pane, &side, &target, &path, &encoding).await
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn text_save(
+    pane: String,
+    side: String,
+    group_id: String,
+    server_id: String,
+    path: String,
+    encoding: String,
+    content: String,
+    base: textfile::Stamp,
+    force: bool,
+    store: State<'_, Store>,
+    transfers: State<'_, Arc<transfer::Transfers>>,
+) -> Result<textfile::Saved, String> {
+    let target = side_target(&side, &group_id, &server_id, &store)?;
+    let transfers = Arc::clone(&transfers);
+    textfile::save(
+        &transfers, &pane, &side, &target, &path, &encoding, &content, base, force,
+    )
+    .await
+}
+
+/// The machine a read is coming from, or a placeholder when it is this one.
+///
+/// The placeholder is never dialled: every path through `transfer` checks the
+/// side first and only reaches for a connection on the remote one. Building a
+/// real plan regardless is what the preview commands used to do, and it meant a
+/// local file could only be read while a server the read never touched happened
+/// to be resolvable -- which the editor found immediately, because it opens
+/// local files with no server selected at all.
+fn side_target(
+    side: &str,
+    group_id: &str,
+    server_id: &str,
+    store: &Store,
+) -> Result<ssh::Target, String> {
+    if side == "local" {
+        return Ok(ssh::Target {
+            host: String::new(),
+            port: 0,
+            username: String::new(),
+            encoding: encoding_rs::UTF_8,
+            credential: ssh::Credential::Password(String::new()),
+            label: String::new(),
+        });
+    }
+    dial_plan(group_id, server_id, store).map(|(target, _)| target)
 }
 
 /// What the user pressed on a host key dialog.
@@ -1093,7 +1167,9 @@ fn main() {
             move_group,
             move_server,
             touch_recent,
-            open_config,
+            config_file_path,
+            text_open,
+            text_save,
             host_key_answer,
             set_language,
             set_keys,
@@ -1121,7 +1197,6 @@ fn main() {
             transfer_start,
             transfer_cancel,
             transfer_answer,
-            preview_language,
             preview_text,
             preview_dbf,
             ai::commands::ai_open,
@@ -1129,6 +1204,9 @@ fn main() {
             ai::commands::ai_stop,
             ai::commands::ai_answer,
             ai::commands::ai_close,
+            ai::commands::ai_file_path,
+            ai::commands::ai_log_list,
+            ai::commands::ai_log_delete,
             ai::commands::ai_history,
             ai::commands::ai_load_chat,
             ai::commands::ai_new_chat,

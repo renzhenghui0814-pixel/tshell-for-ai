@@ -108,6 +108,10 @@ ui/
 
 **设置页捕获时桥要站下来**（`window.tshellShortcutsPaused`）。面板问「你想让这个键做什么」，而用户最可能按的就是一个已经绑好的组合——他们正在重绑它。不停掉的话，在「打开文件传输」那一栏上按 Ctrl+Shift+T 会打开一个文件传输，那是这个问题唯一不许有的回答。做成标志位而不是「设置页注册一个更早的监听器」，是因为它做不到：`host.js` 在 `<head>` 里跑，永远在捕获路径最前面。
 
+**窗口操作要在 capability 里逐条列出。** Tauri v2 把每个窗口命令挡在权限后面，而 `core:default` 给的**只有读的那一半**——`isMaximized`、`isFullscreen`、`innerSize` 都在里面，`minimize`、`setFullscreen` 一个都不在。改变窗口的操作必须在 `capabilities/default.json` 里一条一条写。
+
+**编译期什么都不会说。** 漏掉的调用照样编译、照样打包，到用户按下键的那一刻返回一个 rejected promise——而外壳自己 catch 掉了（一个最小化不了的按钮不构成让窗口崩掉的理由），于是失败是一条没人开着的 console 里的 warn，表现为「这个键按了没反应」。F11 第一版就是这样：`setFullscreen` 从来没进过 capability，`isFullscreen` 进了（跟着 defaults 来的），所以调用走了一步就停住，连它后面那句隐藏标题栏的 class 切换都没轮到——快捷键匹配成功、动作分发成功、窗口纹丝不动。`scripts/capability-check.mjs` 把这张表钉在 `shell.js` 实际调用的那些方法上。
+
 **分发只有一处**（`shell.js` 的 `runShortcut`），所以「助手关掉时不许开助手」这条只写一遍。它原来在 terminal.js 里跟着那个硬编码快捷键，现在跟着动作走。两个终端动作都作用于**焦点列最前面的终端**，没有就什么都不做——一个悄悄选了另一台机器的快捷键比一个什么都不做的快捷键糟得多。
 
 ## 各模块的关键设计

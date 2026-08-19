@@ -95,6 +95,15 @@
           <svg class="icon"><use href="#i-trust"/></svg>
         </button>
         <!--
+          What actually went to the model, verbatim. It belongs with the other
+          things that answer "what is this assistant working from" rather than
+          with the running total: a transcript is not a cost, it is the evidence
+          for everything else on this row.
+        -->
+        <button class="icon-button" id="logs" data-i18n-title="logTitle">
+          <svg class="icon"><use href="#i-file"/></svg>
+        </button>
+        <!--
           How the last answer arrived. Sits with the token counts because it
           belongs to the same question -- what did that request actually cost and
           do -- and because an answer that came in one piece is a fact about the
@@ -236,6 +245,24 @@
     hands off to the file for anything this list cannot do -- reordering, a
     comment, trusting something by typing it rather than by writing to it once.
   -->
+  <!--
+    The transcripts of this machine. Same shape as the four above: a backdrop, a
+    heading, a scrolling list. No foot, because there is nothing to do here that
+    the rows do not do -- opening one is the whole panel.
+  -->
+  <div class="backdrop" id="logPanel" hidden>
+    <div class="dialog history" role="dialog" aria-modal="true" aria-labelledby="logWindowTitle">
+      <div class="dialog-head">
+        <div class="dialog-title" id="logWindowTitle" data-i18n="logTitle"></div>
+        <button class="icon-button" id="logClose" data-i18n-title="agentHistoryClose">
+          <svg class="icon"><use href="#i-close"/></svg>
+        </button>
+      </div>
+      <div class="history-empty" id="logEmpty" data-i18n="logEmpty" hidden></div>
+      <div class="history-list" id="logList"></div>
+    </div>
+  </div>
+
   <div class="backdrop" id="trustPanel" hidden>
     <div class="dialog history" role="dialog" aria-modal="true" aria-labelledby="trustWindowTitle">
       <div class="dialog-head">
