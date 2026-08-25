@@ -56,7 +56,9 @@ pub struct ContextInput<'a> {
 /// prompt. Prompts written with a space before the `$` have no such boundary and
 /// fall back to the looser reading, which is what they had before.
 fn command_on(line: &str) -> String {
-    let Some(found) = PROMPT_LINE.captures(line) else { return String::new() };
+    let Some(found) = PROMPT_LINE.captures(line) else {
+        return String::new();
+    };
 
     let mut boundary = None;
     let mut prompts = 0;
@@ -121,7 +123,11 @@ pub fn build_context(input: &ContextInput) -> String {
     if !input.send_output {
         return String::new();
     }
-    let budget = if input.budget == 0 { DEFAULT_BUDGET } else { input.budget };
+    let budget = if input.budget == 0 {
+        DEFAULT_BUDGET
+    } else {
+        input.budget
+    };
     let clean = redact(&strip_ansi(input.transcript));
     let recent = extract_commands(&clean, Some(MAX_COMMANDS));
 
@@ -165,20 +171,15 @@ pub fn build_context(input: &ContextInput) -> String {
 mod tests {
     use super::*;
 
-    fn facts() -> MachineFacts {
-        MachineFacts {
-            os: "Ubuntu 24.04".into(),
-            kernel: "6.8.0".into(),
-            shell: "/bin/bash".into(),
-            user: "me".into(),
-            home: "/home/me".into(),
-        }
-    }
-
     /// On by default here: the switch being off is now the whole of the
     /// behaviour rather than a variation on it, so it gets its own tests.
     fn input(transcript: &str) -> ContextInput<'_> {
-        ContextInput { transcript, send_output: true, output_lines: 40, budget: 0 }
+        ContextInput {
+            transcript,
+            send_output: true,
+            output_lines: 40,
+            budget: 0,
+        }
     }
 
     #[test]
@@ -189,8 +190,7 @@ mod tests {
 
     #[test]
     fn only_the_last_few_commands_are_kept() {
-        let transcript: String =
-            (1..=20).map(|n| format!("me@h:/$ command{n}\n")).collect();
+        let transcript: String = (1..=20).map(|n| format!("me@h:/$ command{n}\n")).collect();
         let commands = extract_commands(&transcript, Some(3));
         assert_eq!(commands, vec!["command18", "command19", "command20"]);
     }
@@ -198,7 +198,10 @@ mod tests {
     #[test]
     fn a_command_that_starts_with_a_hash_survives_intact() {
         let transcript = "me@web-1:/srv$ # tshell edit /etc/nginx.conf\n";
-        assert_eq!(extract_commands(transcript, None), vec!["# tshell edit /etc/nginx.conf"]);
+        assert_eq!(
+            extract_commands(transcript, None),
+            vec!["# tshell edit /etc/nginx.conf"]
+        );
     }
 
     #[test]

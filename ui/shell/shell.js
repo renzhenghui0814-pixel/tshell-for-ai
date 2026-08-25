@@ -376,6 +376,10 @@
       columnId: column.id,
       title: options.title,
       server: options.server || null,
+      // A local terminal instead of a remote one. The terminal pane is the
+      // same page either way; this is what tells every session call below
+      // which backend to dial.
+      localTerm: options.localTerm || null,
       groupId: options.groupId || null,
       // The terminal a chat pane borrows. Null on every other kind.
       terminal: options.terminal || null,
@@ -589,7 +593,9 @@
   function releaseSessions() {
     var closing = [];
     panes.forEach(function (pane) {
-      if (pane.kind === 'terminal') closing.push(invoke('terminal_close', { pane: pane.id }));
+      if (pane.kind === 'terminal') {
+        closing.push(invoke(pane.localTerm ? 'local_terminal_close' : 'terminal_close', { pane: pane.id }));
+      }
       if (pane.kind === 'transfer') {
         clearInterval(pane.watch);
         closing.push(invoke('transfer_close', { pane: pane.id }));
@@ -626,7 +632,9 @@
 
     // The connection belongs to the tab, not to the window. Closing one without
     // the other leaves a shell running on the far side with nobody reading it.
-    if (pane.kind === 'terminal') invoke('terminal_close', { pane: paneId });
+    if (pane.kind === 'terminal') {
+      invoke(pane.localTerm ? 'local_terminal_close' : 'terminal_close', { pane: paneId });
+    }
     if (pane.kind === 'transfer') {
       clearInterval(pane.watch);
       invoke('transfer_close', { pane: paneId });
@@ -2569,7 +2577,11 @@
         return;
 
       case 'send':
-        invoke('ai_send', { pane: id, text: message.text || '' });
+        invoke('ai_send', {
+          pane: id,
+          text: message.text || '',
+          images: Array.isArray(message.images) ? message.images : []
+        });
         return;
       case 'stop':
         invoke('ai_stop', { pane: id });
@@ -2845,26 +2857,50 @@
     var channel = new tauri.Channel();
     channel.onmessage = function (payload) { onSessionEvent(pane, payload); };
 
-    note(pane, t('connecting') + ' ' + who(pane) + ' ...');
+    if (!pane.localTerm) {
+      note(pane, t('connecting') + ' ' + who(pane) + ' ...');
+    } else {
+      note(pane, t('starting') + ' ' + pane.title + ' ...');
+    }
 
     // The pty is opened at whatever the page has most recently reported, so that
     // is what it is on record as having been told.
     pane.ptyCols = pane.cols;
     pane.ptyRows = pane.rows;
 
-    invoke('terminal_open', {
-      pane: pane.id,
-      groupId: pane.groupId,
-      serverId: pane.server.id,
-      cols: pane.cols,
-      rows: pane.rows,
-      onEvent: channel
-    }).then(function () {
+    var open = pane.localTerm
+      ? invoke('local_terminal_open', {
+          pane: pane.id,
+          termId: pane.localTerm.id,
+          cols: pane.cols,
+          rows: pane.rows,
+          onEvent: channel
+        })
+      : invoke('terminal_open', {
+          pane: pane.id,
+          groupId: pane.groupId,
+          serverId: pane.server.id,
+          cols: pane.cols,
+          rows: pane.rows,
+          onEvent: channel
+        });
+
+    open.then(function () {
       // Success is announced by the `opened` frame above, which has already
       // cleared the screen. Saying so again here would only put a line back on
       // top of the greeting that was just made room for.
       pane.connecting = false;
       pane.connected = true;
+      // ConPTY renders `cls` as one erase-line per PTY row. The terminal page
+      // can finish its first layout while the open command is in flight, so
+      // always deliver its latest measured dimensions once the local session
+      // exists; deduplication before this point only knows the provisional
+      // 120x36 opening size.
+      if (pane.localTerm) {
+        pane.ptyCols = pane.cols;
+        pane.ptyRows = pane.rows;
+        invoke('local_terminal_resize', { pane: pane.id, cols: pane.cols, rows: pane.rows });
+      }
       // Asked for from the server panel, where there was no terminal to hang
       // it on. Now there is one and it is up.
       if (pane.assistantWhenReady) {
@@ -2910,6 +2946,30 @@
       case 'openTerminal':
         var server = findServer(message.groupId, message.serverId);
         if (server) openTerminal(server, message.groupId);
+        return;
+
+      case 'openLocalTerminal':
+        var localTerm = findLocalTerm(message.termId);
+        if (localTerm) openLocalTerm(localTerm);
+        return;
+
+      case 'addLocalTerm':
+      case 'updateLocalTerm':
+        panelCommand(message.type === 'addLocalTerm' ? 'add_local_term' : 'update_local_term', {
+          groupId: message.groupId || '',
+          term: message.term
+        });
+        return;
+
+      case 'requestDeleteLocalTerm':
+        var doomedTerm = findLocalTerm(message.termId);
+        if (!doomedTerm) return;
+        confirm(t('delete'), t('deleteLocalTermConfirm', doomedTerm.name), t('delete'))
+          .then(function (yes) {
+            if (yes) {
+              panelCommand('delete_local_term', { termId: message.termId });
+            }
+          });
         return;
 
       case 'openTransfer':
@@ -2958,10 +3018,10 @@
         });
         return;
 
-      case 'moveServer':
-        panelCommand('move_server', {
+      case 'moveService':
+        panelCommand('move_service', {
           fromGroupId: message.fromGroupId,
-          serverId: message.serverId,
+          serviceId: message.serviceId,
           toGroupId: message.toGroupId,
           toIndex: message.toIndex
         }).then(function () {
@@ -2978,9 +3038,13 @@
            * runs whether or not the move happened, and only the new state knows
            * which of those it was.
            */
-          if (findServer(message.toGroupId, message.serverId)) {
+          var destination = findGroup(message.toGroupId);
+          if (destination && destination.servers.some(function (service) {
+            return service.id === message.serviceId;
+          })) {
             panes.forEach(function (pane) {
-              if (pane.server && pane.server.id === message.serverId) {
+              if ((pane.server && pane.server.id === message.serviceId)
+                  || (pane.localTerm && pane.localTerm.id === message.serviceId)) {
                 pane.groupId = message.toGroupId;
               }
             });
@@ -3039,13 +3103,37 @@
 
     if (message.type === 'input') {
       var data = message.data || '';
+      if (pane.localTerm) {
+        pane.localLine = pane.localLine || '';
+        if (data.indexOf('\r') >= 0 || data.indexOf('\n') >= 0) {
+          // Both commands rely on incremental erase sequences from the child
+          // console. ConPTY can position the new prompt at the top while old
+          // viewport rows remain painted at the bottom, so clear xterm's full
+          // buffer at the command boundary before forwarding Enter.
+          var clearCommand = pane.localLine.trim().toLowerCase();
+          if (clearCommand === 'cls' || clearCommand === 'clear') {
+            send(pane.id, { type: 'hardClear' });
+          }
+          pane.localLine = '';
+        } else if (data === '\x7f' || data === '\b') {
+          pane.localLine = pane.localLine.slice(0, -1);
+        } else if (!/[\x00-\x1f\x7f]/.test(data)) {
+          pane.localLine += data;
+        }
+      }
       if (pane.connected) {
-        invoke('terminal_input', {
-          pane: pane.id,
-          groupId: pane.groupId,
-          serverId: pane.server.id,
-          data: data
-        }).then(function (accepted) {
+        var input = pane.localTerm
+          ? invoke('local_terminal_input', {
+              pane: pane.id,
+              data: data
+            })
+          : invoke('terminal_input', {
+              pane: pane.id,
+              groupId: pane.groupId,
+              serverId: pane.server.id,
+              data: data
+            });
+        input.then(function (accepted) {
           // The session went away between the keystroke and its arrival. Say so
           // once, here, rather than letting the next dozen keys vanish silently.
           if (!accepted && pane.connected) {
@@ -3103,7 +3191,11 @@
       if (cols === pane.ptyCols && rows === pane.ptyRows) return;
       pane.ptyCols = cols;
       pane.ptyRows = rows;
-      invoke('terminal_resize', { pane: pane.id, cols: cols, rows: rows });
+      if (pane.localTerm) {
+        invoke('local_terminal_resize', { pane: pane.id, cols: cols, rows: rows });
+      } else {
+        invoke('terminal_resize', { pane: pane.id, cols: cols, rows: rows });
+      }
       return;
     }
 
@@ -3332,7 +3424,9 @@
     if (box.hidden) return;
 
     var servers = 0;
-    panel.groups.forEach(function (group) { servers += group.servers.length; });
+    panel.groups.forEach(function (group) {
+      servers += group.servers.filter(function (service) { return service.kind === 'SSH'; }).length;
+    });
 
     document.getElementById('nothing-hint').textContent =
       configBroken ? '' : (servers ? c('nothingHint') : c('nothingNoServers'));
@@ -3360,7 +3454,7 @@
     for (var i = 0; i < panel.groups.length; i += 1) {
       var group = panel.groups[i];
       for (var j = 0; j < group.servers.length; j += 1) {
-        if (group.servers[j].id === serverId) {
+        if (group.servers[j].kind === 'SSH' && group.servers[j].id === serverId) {
           return { server: group.servers[j], groupId: group.id };
         }
       }
@@ -3435,11 +3529,49 @@
   function findServer(groupId, serverId) {
     var group = findGroup(groupId);
     if (!group) return null;
-    return group.servers.filter(function (s) { return s.id === serverId; })[0] || null;
+    return group.servers.filter(function (s) { return s.kind === 'SSH' && s.id === serverId; })[0] || null;
+  }
+
+  function findLocalTerm(termId) {
+    for (var i = 0; i < panel.groups.length; i += 1) {
+      var services = panel.groups[i].servers || [];
+      for (var j = 0; j < services.length; j += 1) {
+        if (services[j].kind !== 'SSH' && services[j].id === termId) return services[j];
+      }
+    }
+    return null;
   }
 
   function nameOf(server) {
     return server.name || server.host;
+  }
+
+  /*
+   * A local terminal is a server that is already here. The pane is the same
+   * kind of pane -- a terminal page that receives bytes and sends keystrokes
+   * -- but it carries `localTerm` instead of `server`, which is what tells
+   * every session call below which backend to dial. There is no recent list:
+   * nothing was connected to, and the panel is one click away.
+   */
+  function openLocalTerm(term, column) {
+    var pane = openPane('terminal', {
+      page: 'terminal/terminal.html',
+      title: term.name,
+      localTerm: term,
+      column: column,
+      bootstrap: {
+        strings: pageStrings(),
+        language: language,
+        appearance: appearance()
+      }
+    });
+    pane.cols = 120;
+    pane.rows = 36;
+    pane.ptyCols = 0;
+    pane.ptyRows = 0;
+    pane.connected = false;
+    pane.connecting = false;
+    return pane;
   }
 
   /*
@@ -3456,6 +3588,16 @@
    */
   function adoptEdits() {
     panes.forEach(function (pane) {
+      if (pane.localTerm) {
+        // A local terminal holds the configuration it was opened with, and an
+        // edit renames it or changes what it starts. The running console is
+        // not disturbed -- that is the same bargain as a server's -- but the
+        // pane's copy follows the file, so the next open uses the new shape.
+        var freshTerm = findLocalTerm(pane.localTerm.id);
+        if (freshTerm) {
+          pane.localTerm = freshTerm;
+        }
+      }
       if (!pane.server) return;
       var fresh = findServer(pane.groupId, pane.server.id);
       if (!fresh) return;
@@ -3663,14 +3805,54 @@
    * except by quitting it. `keys.js` allows a function key to stand alone
    * partly for this.
    */
+  var lastFullscreenToggle = 0;
+  var maximizeAfterFullscreen = false;
+
+  /** Let WebView2 consume the native resize before asking Windows for the next state. */
+  function windowLayoutSettled() {
+    return new Promise(function (resolve) {
+      requestAnimationFrame(function () {
+        requestAnimationFrame(resolve);
+      });
+    });
+  }
+
   function toggleFullscreen() {
     var api = window.__TAURI__ && window.__TAURI__.window;
-    if (!api) return;
+    var now = Date.now();
+    if (!api || now - lastFullscreenToggle < 500) return;
+    lastFullscreenToggle = now;
     var appWindow = api.getCurrentWindow();
     appWindow.isFullscreen()
       .then(function (on) {
-        return appWindow.setFullscreen(!on).then(function () {
-          document.body.classList.toggle('fullscreen', !on);
+        if (on) {
+          return appWindow.setFullscreen(false)
+            .then(windowLayoutSettled)
+            .then(function () {
+              document.body.classList.remove('fullscreen');
+              var restore = maximizeAfterFullscreen;
+              maximizeAfterFullscreen = false;
+              // Windows may restore the maximized native state as part of
+              // leaving fullscreen. Calling maximize again is harmless, but
+              // its IPC promise is not guaranteed to settle in that state;
+              // it must not keep the F11 transition lock held forever.
+              if (restore) {
+                appWindow.maximize().catch(function (error) {
+                  console.warn('[shell] could not restore maximized state:', error);
+                });
+              }
+            });
+        }
+
+        return appWindow.isMaximized().then(function (wasMaximized) {
+          maximizeAfterFullscreen = wasMaximized;
+          var ready = wasMaximized ? appWindow.unmaximize() : Promise.resolve();
+          return ready
+            .then(windowLayoutSettled)
+            .then(function () { return appWindow.setFullscreen(true); })
+            .then(function () {
+              document.body.classList.add('fullscreen');
+            });
         });
       })
       .catch(function (error) {

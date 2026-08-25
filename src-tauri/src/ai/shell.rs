@@ -124,9 +124,13 @@ impl AgentShell {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|since| since.subsec_nanos())
             .unwrap_or(0);
-        Self::new(format!("{:x}{:x}", std::process::id(), nanos), output_budget)
+        Self::new(
+            format!("{:x}{:x}", std::process::id(), nanos),
+            output_budget,
+        )
     }
 
+    #[cfg(test)]
     pub fn is_busy(&self) -> bool {
         self.inner.lock().unwrap().busy
     }
@@ -134,6 +138,22 @@ impl AgentShell {
     /// The tail of the session, for the context block handed to the model.
     pub fn transcript(&self) -> String {
         self.inner.lock().unwrap().transcript.clone()
+    }
+
+    /// The cleaned output produced by the command that is currently running.
+    /// A snapshot cannot lose data when a UI update arrives late.
+    pub fn output_snapshot(&self) -> String {
+        let inner = self.inner.lock().unwrap();
+        if !inner.busy {
+            return String::new();
+        }
+        let marker = self.start_marker();
+        let Some(from) = inner.buffer.find(&marker).map(|at| at + marker.len()) else {
+            return String::new();
+        };
+        let rest = &inner.buffer[from..];
+        let raw = self.find_end(rest).map_or(rest, |(at, _, _)| &rest[..at]);
+        truncate(&clean(raw, true), self.output_budget).0
     }
 
     fn start_marker(&self) -> String {
@@ -269,8 +289,15 @@ impl AgentShell {
             }
             inner.busy = true;
             inner.buffer.clear();
-            inner.echo = options.display.clone().unwrap_or_else(|| command.to_string());
-            inner.hide_until = Some(if options.silent { Hide::End } else { Hide::Start });
+            inner.echo = options
+                .display
+                .clone()
+                .unwrap_or_else(|| command.to_string());
+            inner.hide_until = Some(if options.silent {
+                Hide::End
+            } else {
+                Hide::Start
+            });
             // A step nobody sees must not leave the prompt it was typed at behind.
             // A visible one keeps its prompt: that is where its command is about
             // to appear.
@@ -363,7 +390,12 @@ impl AgentShell {
         } else {
             truncate(&cleaned, self.output_budget)
         };
-        CommandResult { output, exit_code, timed_out, truncated }
+        CommandResult {
+            output,
+            exit_code,
+            timed_out,
+            truncated,
+        }
     }
 }
 
@@ -396,7 +428,11 @@ pub fn wrap_command(command: &str, nonce: &str) -> String {
 fn clean(raw: &str, mask: bool) -> String {
     let stripped = strip_ansi(raw);
     let text = if mask { redact(&stripped) } else { stripped };
-    text.replace("\r\n", "\n").replace('\r', "\n").trim_start_matches('\n').trim_end().to_string()
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .trim_start_matches('\n')
+        .trim_end()
+        .to_string()
 }
 
 /// Keeps the head and the tail of a long output. Both ends carry meaning: the
@@ -411,7 +447,10 @@ pub fn truncate(text: &str, budget: usize) -> (String, bool) {
     let removed = length - head - tail;
     let start: String = text.chars().take(head).collect();
     let end: String = text.chars().skip(length - tail).collect();
-    (format!("{start}\n... [{removed} characters omitted] ...\n{end}"), true)
+    (
+        format!("{start}\n... [{removed} characters omitted] ...\n{end}"),
+        true,
+    )
 }
 
 #[cfg(test)]
@@ -457,7 +496,9 @@ mod tests {
             let shell = shell.clone();
             async move {
                 let io = Typed::default();
-                shell.run(&io, "pwd", 5_000, &Cancel::new(), &RunOptions::default()).await
+                shell
+                    .run(&io, "pwd", 5_000, &Cancel::new(), &RunOptions::default())
+                    .await
             }
         });
         tokio::task::yield_now().await;
@@ -470,12 +511,18 @@ mod tests {
         running.await.unwrap().unwrap();
 
         let transcript = shell.transcript();
-        assert!(transcript.contains("pwd"), "the command is there: {transcript:?}");
+        assert!(
+            transcript.contains("pwd"),
+            "the command is there: {transcript:?}"
+        );
         assert!(
             !transcript.contains("\\033]97"),
             "the plumbing must not be: {transcript:?}"
         );
-        assert!(!transcript.contains("eval"), "nor the eval that carried it: {transcript:?}");
+        assert!(
+            !transcript.contains("eval"),
+            "nor the eval that carried it: {transcript:?}"
+        );
     }
 
     /// A silent step is the assistant's own bookkeeping. It is not the terminal's
@@ -489,8 +536,13 @@ mod tests {
             let shell = shell.clone();
             async move {
                 let io = Typed::default();
-                let silent = RunOptions { silent: true, ..Default::default() };
-                shell.run(&io, "uname -r", 5_000, &Cancel::new(), &silent).await
+                let silent = RunOptions {
+                    silent: true,
+                    ..Default::default()
+                };
+                shell
+                    .run(&io, "uname -r", 5_000, &Cancel::new(), &silent)
+                    .await
             }
         });
         tokio::task::yield_now().await;
@@ -502,8 +554,14 @@ mod tests {
         running.await.unwrap().unwrap();
 
         let transcript = shell.transcript();
-        assert!(!transcript.contains("uname"), "a silent step is not activity: {transcript:?}");
-        assert!(!transcript.contains("\\033]97"), "and neither is its plumbing");
+        assert!(
+            !transcript.contains("uname"),
+            "a silent step is not activity: {transcript:?}"
+        );
+        assert!(
+            !transcript.contains("\\033]97"),
+            "and neither is its plumbing"
+        );
     }
 
     /// What the user types is the main thing this exists to record, and none of
@@ -513,6 +571,26 @@ mod tests {
         let shell = shell();
         shell.observe("[me@box ~]$ ls -la\r\ntotal 8\r\n");
         assert!(shell.transcript().contains("[me@box ~]$ ls -la"));
+    }
+
+    #[tokio::test]
+    async fn running_output_can_be_read_before_the_command_finishes() {
+        let shell = Arc::new(shell());
+        let watcher = shell.clone();
+        let running = tokio::spawn({
+            let shell = shell.clone();
+            async move {
+                let io = Typed::default();
+                shell
+                    .run(&io, "slow", 5_000, &Cancel::new(), &RunOptions::default())
+                    .await
+            }
+        });
+        tokio::task::yield_now().await;
+        watcher.observe(&format!("{}first line\r\n", start(&watcher)));
+        assert_eq!(watcher.output_snapshot(), "first line");
+        watcher.observe(&end(&watcher, 0));
+        running.await.unwrap().unwrap();
     }
 
     #[test]
@@ -539,7 +617,9 @@ mod tests {
             let shell = shell.clone();
             async move {
                 let io = Typed::default();
-                shell.run(&io, "ls", 5_000, &Cancel::new(), &RunOptions::default()).await
+                shell
+                    .run(&io, "ls", 5_000, &Cancel::new(), &RunOptions::default())
+                    .await
             }
         });
         // Let the command be typed before anything is fed back.
@@ -562,13 +642,18 @@ mod tests {
     async fn a_silent_step_erases_its_prompt_and_shows_nothing_else() {
         let shell = Arc::new(shell());
         let watcher = shell.clone();
-        let options = RunOptions { silent: true, ..Default::default() };
+        let options = RunOptions {
+            silent: true,
+            ..Default::default()
+        };
 
         let running = tokio::spawn({
             let shell = shell.clone();
             async move {
                 let io = Typed::default();
-                shell.run(&io, "cat /tmp/x", 5_000, &Cancel::new(), &options).await
+                shell
+                    .run(&io, "cat /tmp/x", 5_000, &Cancel::new(), &options)
+                    .await
             }
         });
         tokio::task::yield_now().await;
@@ -590,7 +675,9 @@ mod tests {
             let shell = shell.clone();
             async move {
                 let io = Typed::default();
-                shell.run(&io, "false", 5_000, &Cancel::new(), &RunOptions::default()).await
+                shell
+                    .run(&io, "false", 5_000, &Cancel::new(), &RunOptions::default())
+                    .await
             }
         });
         tokio::task::yield_now().await;
@@ -610,7 +697,14 @@ mod tests {
             let shell = shell.clone();
             let io = io.clone();
             async move {
-                shell.run(io.as_ref(), "sleep 999", 30_000, &Cancel::new(), &RunOptions::default())
+                shell
+                    .run(
+                        io.as_ref(),
+                        "sleep 999",
+                        30_000,
+                        &Cancel::new(),
+                        &RunOptions::default(),
+                    )
                     .await
             }
         });
@@ -622,7 +716,12 @@ mod tests {
         assert!(result.timed_out);
         assert_eq!(result.exit_code, -1);
         assert_eq!(result.output, "partial output");
-        assert!(io.written.lock().unwrap().iter().any(|line| line == INTERRUPT));
+        assert!(io
+            .written
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line == INTERRUPT));
     }
 
     #[tokio::test]
@@ -637,7 +736,15 @@ mod tests {
             let cancel = cancel.clone();
             let io = io.clone();
             async move {
-                shell.run(io.as_ref(), "sleep 999", 60_000, &cancel, &RunOptions::default()).await
+                shell
+                    .run(
+                        io.as_ref(),
+                        "sleep 999",
+                        60_000,
+                        &cancel,
+                        &RunOptions::default(),
+                    )
+                    .await
             }
         });
         tokio::task::yield_now().await;
@@ -646,7 +753,12 @@ mod tests {
 
         let result = running.await.unwrap().unwrap();
         assert!(result.timed_out);
-        assert!(io.written.lock().unwrap().iter().any(|line| line == INTERRUPT));
+        assert!(io
+            .written
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line == INTERRUPT));
     }
 
     #[tokio::test]
@@ -657,7 +769,9 @@ mod tests {
             let shell = shell.clone();
             async move {
                 let io = Typed::default();
-                shell.run(&io, "env", 5_000, &Cancel::new(), &RunOptions::default()).await
+                shell
+                    .run(&io, "env", 5_000, &Cancel::new(), &RunOptions::default())
+                    .await
             }
         });
         tokio::task::yield_now().await;
@@ -675,12 +789,17 @@ mod tests {
     async fn raw_output_is_handed_back_byte_for_byte() {
         let shell = Arc::new(AgentShell::new("n0nce", 10));
         let watcher = shell.clone();
-        let options = RunOptions { raw_output: true, ..Default::default() };
+        let options = RunOptions {
+            raw_output: true,
+            ..Default::default()
+        };
         let running = tokio::spawn({
             let shell = shell.clone();
             async move {
                 let io = Typed::default();
-                shell.run(&io, "base64 x", 5_000, &Cancel::new(), &options).await
+                shell
+                    .run(&io, "base64 x", 5_000, &Cancel::new(), &options)
+                    .await
             }
         });
         tokio::task::yield_now().await;
@@ -709,7 +828,10 @@ mod tests {
     fn nothing_is_hidden_while_no_command_is_running() {
         let shell = shell();
         assert!(!shell.is_busy());
-        assert_eq!(shell.observe("an ordinary prompt$ "), "an ordinary prompt$ ");
+        assert_eq!(
+            shell.observe("an ordinary prompt$ "),
+            "an ordinary prompt$ "
+        );
     }
 
     #[test]

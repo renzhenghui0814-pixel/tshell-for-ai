@@ -121,7 +121,10 @@ impl Local {
             .and_then(|when| when.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|since| since.as_secs())
             .unwrap_or(0);
-        Ok(Stat { size: meta.len(), modified })
+        Ok(Stat {
+            size: meta.len(),
+            modified,
+        })
     }
 
     /*
@@ -296,8 +299,8 @@ impl Remote {
      * This is what every editor that writes over SFTP does, for the same reason.
      */
     async fn write_bytes(&self, path: &str, bytes: &[u8]) -> Result<(), String> {
-        use tokio::io::AsyncWriteExt;
         use russh_sftp::protocol::OpenFlags;
+        use tokio::io::AsyncWriteExt;
 
         let mut file = self
             .sftp
@@ -307,7 +310,9 @@ impl Remote {
             )
             .await
             .map_err(|error| error.to_string())?;
-        file.write_all(bytes).await.map_err(|error| error.to_string())?;
+        file.write_all(bytes)
+            .await
+            .map_err(|error| error.to_string())?;
         // Explicit, not left to the drop: a drop cannot report a failure, and a
         // short write nobody noticed is a truncated file reported as saved.
         file.flush().await.map_err(|error| error.to_string())?;
@@ -914,7 +919,8 @@ async fn scan(ends: &Ends<'_>, roots: &[(String, bool)], target_dir: &str) -> Re
     }
 
     // Shallowest first, so a parent is never created after its child.
-    plan.dirs.sort_by_key(|path| path.matches(['/', '\\']).count());
+    plan.dirs
+        .sort_by_key(|path| path.matches(['/', '\\']).count());
     Ok(plan)
 }
 

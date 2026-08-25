@@ -8,6 +8,11 @@
 // `terminal_*` commands are the whole of what the front end can do to one.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// MSVC reports the import library it creates for the test executable on
+// stdout. Rust 1.97 promotes any linker stdout to `linker_messages`, although
+// this line is informational and the link succeeded. Keep real Rust and linker
+// diagnostics enabled; silence only that platform-specific wrapper lint.
+#![cfg_attr(target_env = "msvc", allow(linker_messages))]
 
 mod ai;
 mod atomic;
@@ -15,6 +20,7 @@ mod config;
 mod fonts;
 mod hosts;
 mod i18n;
+mod local;
 mod preview;
 mod schemes;
 mod secrets;
@@ -32,7 +38,7 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::Manager;
 use tauri::State;
 
-use config::{AppConfig, Auth, Encoding, Group, Language, Server};
+use config::{AppConfig, Auth, Encoding, Group, Language, SshService};
 use secrets::{server_passphrase, server_password, Backend, Store};
 
 // ------------------------------------------------------------------ views ---
@@ -63,15 +69,28 @@ struct ServerView {
 }
 
 #[derive(Serialize)]
+#[serde(tag = "kind")]
+enum ServiceView {
+    #[serde(rename = "SSH")]
+    Ssh(ServerView),
+    #[serde(rename = "vsDev")]
+    VsDev(config::VsDevService),
+    #[serde(rename = "powerShell")]
+    PowerShell(config::ShellService),
+    #[serde(rename = "cmd")]
+    Cmd(config::ShellService),
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GroupView {
     id: String,
     name: String,
-    servers: Vec<ServerView>,
+    servers: Vec<ServiceView>,
 }
 
-impl From<&Server> for ServerView {
-    fn from(server: &Server) -> Self {
+impl From<&SshService> for ServerView {
+    fn from(server: &SshService) -> Self {
         let (auth_type, private_key_path) = match &server.auth {
             Auth::Password { .. } => ("password", String::new()),
             Auth::PrivateKey { path, .. } => ("privateKey", path.clone()),
@@ -85,6 +104,17 @@ impl From<&Server> for ServerView {
             encoding: server.encoding,
             auth_type,
             private_key_path,
+        }
+    }
+}
+
+impl From<&config::Service> for ServiceView {
+    fn from(service: &config::Service) -> Self {
+        match service {
+            config::Service::Ssh(server) => ServiceView::Ssh(ServerView::from(server)),
+            config::Service::VsDev(term) => ServiceView::VsDev(term.clone()),
+            config::Service::PowerShell(term) => ServiceView::PowerShell(term.clone()),
+            config::Service::Cmd(term) => ServiceView::Cmd(term.clone()),
         }
     }
 }
@@ -106,7 +136,7 @@ fn group_view(group: &Group, language: Language) -> GroupView {
         } else {
             group.name.clone()
         },
-        servers: group.servers.iter().map(ServerView::from).collect(),
+        servers: group.servers.iter().map(ServiceView::from).collect(),
     }
 }
 
@@ -180,7 +210,7 @@ fn panel_state(config: &AppConfig, store: &Store) -> PanelState {
     let mut passwords = HashMap::new();
     let mut private_key_passphrases = HashMap::new();
     for group in &config.groups {
-        for server in &group.servers {
+        for server in group.servers.iter().filter_map(config::Service::as_ssh) {
             /*
              * The plaintext goes to the page because the edit dialog fills its
              * password field from it, exactly as it did under VS Code. Moving
@@ -198,7 +228,9 @@ fn panel_state(config: &AppConfig, store: &Store) -> PanelState {
                 Auth::PrivateKey {
                     has_passphrase: true,
                     ..
-                } => store.get(&server_passphrase(&server.id)).unwrap_or_default(),
+                } => store
+                    .get(&server_passphrase(&server.id))
+                    .unwrap_or_default(),
                 _ => String::new(),
             };
             passwords.insert(server.id.clone(), password);
@@ -234,7 +266,7 @@ fn commit(config: &AppConfig, store: &Store) -> Result<PanelState, String> {
 }
 
 /// Apply the dialog's fields to a server, keeping what the dialog does not own.
-fn apply(server: &mut Server, input: &ServerInput) -> Result<(), String> {
+fn apply(server: &mut SshService, input: &ServerInput) -> Result<(), String> {
     let host = input.host.trim();
     let username = input.username.trim();
     if host.is_empty() || username.is_empty() {
@@ -281,7 +313,7 @@ fn apply(server: &mut Server, input: &ServerInput) -> Result<(), String> {
  * passphrase behind in the keychain for nobody.
  */
 fn store_secrets(
-    server: &mut Server,
+    server: &mut SshService,
     store: &Store,
     password: &str,
     passphrase: &str,
@@ -375,7 +407,7 @@ fn delete_group(group_id: String, store: State<'_, Store>) -> Result<PanelState,
         .ok_or_else(|| "Group not found.".to_string())?;
 
     // The servers go with the group, so their secrets go too.
-    for server in &doomed.servers {
+    for server in doomed.servers.iter().filter_map(config::Service::as_ssh) {
         store.forget_server(&server.id);
     }
 
@@ -394,7 +426,7 @@ fn add_server(
     store: State<'_, Store>,
 ) -> Result<PanelState, String> {
     let mut config = load()?;
-    let mut next = Server {
+    let mut next = SshService {
         id: config::make_id(),
         name: String::new(),
         host: String::new(),
@@ -405,7 +437,10 @@ fn add_server(
     };
     apply(&mut next, &server)?;
     store_secrets(&mut next, &store, &password, &private_key_passphrase)?;
-    config.group_mut(&group_id)?.servers.push(next);
+    config
+        .group_mut(&group_id)?
+        .servers
+        .push(config::Service::Ssh(next));
     commit(&config, &store)
 }
 
@@ -422,6 +457,7 @@ fn update_server(
     let existing = group
         .servers
         .iter_mut()
+        .filter_map(config::Service::as_ssh_mut)
         .find(|candidate| candidate.id == server.id)
         .ok_or_else(|| "Server not found.".to_string())?;
 
@@ -437,12 +473,14 @@ fn delete_server(
     store: State<'_, Store>,
 ) -> Result<PanelState, String> {
     let mut config = load()?;
-    config.find_server(&group_id, &server_id).ok_or("Server not found.")?;
+    config
+        .find_server(&group_id, &server_id)
+        .ok_or("Server not found.")?;
     store.forget_server(&server_id);
     config
         .group_mut(&group_id)?
         .servers
-        .retain(|server| server.id != server_id);
+        .retain(|service| service.id() != server_id);
     commit(&config, &store)
 }
 
@@ -491,15 +529,15 @@ fn touch_recent(server_id: String, store: State<'_, Store>) -> Result<PanelState
 }
 
 #[tauri::command]
-fn move_server(
+fn move_service(
     from_group_id: String,
-    server_id: String,
+    service_id: String,
     to_group_id: String,
     to_index: usize,
     store: State<'_, Store>,
 ) -> Result<PanelState, String> {
     let mut config = load()?;
-    if !config.move_server(&from_group_id, &server_id, &to_group_id, to_index)? {
+    if !config.move_service(&from_group_id, &service_id, &to_group_id, to_index)? {
         return Ok(panel_state(&config, &store));
     }
     commit(&config, &store)
@@ -723,6 +761,141 @@ fn terminal_reload_encoding(
 
 #[tauri::command]
 fn terminal_close(pane: String, sessions: State<'_, Arc<ssh::Sessions>>) {
+    sessions.close(&pane);
+}
+
+// -------------------------------------------------------- local terminals ---
+
+/*
+ * A local terminal is a shell on this machine -- a cmd or PowerShell console,
+ * a Visual Studio developer prompt -- shown in the same xterm pane as a
+ * remote one. The pane commands mirror the ssh ones, and the CRUD commands
+ * mirror the server ones: the config file is the record, the panel redraws
+ * from whatever `commit` hands back.
+ */
+
+/// What the dialog sends back for a local terminal.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct LocalTermInput {
+    id: String,
+    name: String,
+    kind: String,
+    path: String,
+    arch: String,
+    cwd: String,
+}
+
+fn local_service(input: &LocalTermInput, id: String) -> Result<config::Service, String> {
+    if input.name.trim().is_empty() {
+        return Err("localTermNameRequired".to_string());
+    }
+    let name = input.name.trim().to_string();
+    let cwd = input.cwd.trim().to_string();
+    Ok(match input.kind.as_str() {
+        "powerShell" => config::Service::PowerShell(config::ShellService { id, name, cwd }),
+        "vsDev" => config::Service::VsDev(config::VsDevService {
+            id,
+            name,
+            path: input.path.trim().to_string(),
+            arch: input.arch.trim().to_string(),
+            cwd,
+        }),
+        _ => config::Service::Cmd(config::ShellService { id, name, cwd }),
+    })
+}
+
+#[tauri::command]
+fn add_local_term(
+    group_id: String,
+    term: LocalTermInput,
+    store: State<'_, Store>,
+) -> Result<PanelState, String> {
+    let mut config = load()?;
+    let next = local_service(&term, config::make_id())?;
+    config.group_mut(&group_id)?.servers.push(next);
+    commit(&config, &store)
+}
+
+#[tauri::command]
+fn update_local_term(term: LocalTermInput, store: State<'_, Store>) -> Result<PanelState, String> {
+    let mut config = load()?;
+    let existing = config
+        .groups
+        .iter_mut()
+        .find_map(|group| {
+            group
+                .servers
+                .iter_mut()
+                .find(|service| service.id() == term.id && service.as_ssh().is_none())
+        })
+        .ok_or_else(|| "Local service not found.".to_string())?;
+    *existing = local_service(&term, term.id.clone())?;
+    commit(&config, &store)
+}
+
+#[tauri::command]
+fn delete_local_term(term_id: String, store: State<'_, Store>) -> Result<PanelState, String> {
+    let mut config = load()?;
+    let mut found = false;
+    for group in &mut config.groups {
+        if let Some(at) = group
+            .servers
+            .iter()
+            .position(|service| service.id() == term_id && service.as_ssh().is_none())
+        {
+            group.servers.remove(at);
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        return Err("LocalTerm not found.".to_string());
+    }
+    commit(&config, &store)
+}
+
+#[tauri::command]
+fn local_terminal_open(
+    pane: String,
+    term_id: String,
+    cols: u32,
+    rows: u32,
+    on_event: Channel<InvokeResponseBody>,
+    sessions: State<'_, Arc<local::Sessions>>,
+) -> Result<(), String> {
+    let config = load()?;
+    let term = config
+        .find_local_term(&term_id)
+        .ok_or_else(|| "LocalTerm not found.".to_string())?;
+    let plan = local::plan(term).ok_or_else(|| "LocalTerm not runnable.".to_string())?;
+    let sessions = Arc::clone(&sessions);
+    local::open(sessions, pane, plan, cols.max(1), rows.max(1), on_event)
+}
+
+/// Returns whether the session took it, like `terminal_input` -- a `false` is
+/// a console that is gone, and the shell answers it by reopening on Enter.
+#[tauri::command]
+fn local_terminal_input(
+    pane: String,
+    data: String,
+    sessions: State<'_, Arc<local::Sessions>>,
+) -> bool {
+    sessions.input(&pane, &data)
+}
+
+#[tauri::command]
+fn local_terminal_resize(
+    pane: String,
+    cols: u32,
+    rows: u32,
+    sessions: State<'_, Arc<local::Sessions>>,
+) {
+    sessions.resize(&pane, cols.max(1), rows.max(1));
+}
+
+#[tauri::command]
+fn local_terminal_close(pane: String, sessions: State<'_, Arc<local::Sessions>>) {
     sessions.close(&pane);
 }
 
@@ -1152,6 +1325,7 @@ fn main() {
         })
         .manage(store)
         .manage(Arc::new(ssh::Sessions::default()))
+        .manage(Arc::new(local::Sessions::default()))
         .manage(Arc::new(transfer::Transfers::default()))
         .manage(Arc::new(ai::bridge::Panels::default()))
         .manage(Arc::new(ai::bridge::AiStores::default()))
@@ -1165,7 +1339,7 @@ fn main() {
             update_server,
             delete_server,
             move_group,
-            move_server,
+            move_service,
             touch_recent,
             config_file_path,
             text_open,
@@ -1184,6 +1358,13 @@ fn main() {
             terminal_resize,
             terminal_close,
             terminal_reload_encoding,
+            add_local_term,
+            update_local_term,
+            delete_local_term,
+            local_terminal_open,
+            local_terminal_input,
+            local_terminal_resize,
+            local_terminal_close,
             transfer_list,
             transfer_parent,
             transfer_join,

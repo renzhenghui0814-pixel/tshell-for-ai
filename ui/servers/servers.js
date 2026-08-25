@@ -148,6 +148,7 @@
       event.stopPropagation();
       showContextMenu(event, [
         [text('addServer'), () => openServerDialog(group.id), 'plus'],
+        [text('addLocalTerm'), () => openLocalTermDialog(group.id, null), 'terminal'],
         [text('renameGroup'), () => post('requestRenameGroup', { groupId: group.id }), 'edit'],
         [text('addGroup'), () => post('requestAddGroup'), 'new-folder'],
         [text('deleteGroup'), () => post('requestDeleteGroup', { groupId: group.id }), 'trash', true]
@@ -172,6 +173,7 @@
     const icon = document.createElement('span');
     icon.className = 'server-icon';
     icon.title = server.name || server.host;
+    icon.append(window.tshellIcon('server', 'server-glyph'));
 
     const main = document.createElement('div');
     main.className = 'server-main';
@@ -326,17 +328,13 @@
 
     const row = event.target.closest('.server');
     if (row) {
-      if (row.dataset.serverId === dragging.serverId) return null;
-      const at = group.servers.findIndex((server) => server.id === row.dataset.serverId);
+      const id = row.dataset.serverId || row.dataset.termId;
+      const draggedId = dragging.serverId || dragging.termId;
+      if (id === draggedId) return null;
+      const at = group.servers.findIndex((service) => service.id === id);
       if (at < 0) return null;
       const after = isAfter(event, row);
-      return {
-        kind: 'server',
-        mark: row,
-        edge: after ? 'after' : 'before',
-        toGroupId: groupId,
-        toIndex: at + (after ? 1 : 0)
-      };
+      return { kind: 'service', mark: row, edge: after ? 'after' : 'before', toGroupId: groupId, toIndex: at + (after ? 1 : 0) };
     }
 
     // The header, or the "no servers" line of an empty group: the top of it.
@@ -344,7 +342,7 @@
     // makes the line under the header the right thing to draw.
     const empty = event.target.closest('.empty');
     return {
-      kind: 'server',
+      kind: 'service',
       mark: empty || groupEl.querySelector('.group-head'),
       edge: empty ? 'before' : 'into',
       toGroupId: groupId,
@@ -388,6 +386,80 @@
       || (server.username || '').toLowerCase().includes(needle);
   }
 
+  /** What a local terminal's kind is called, in the current language. */
+  function localKindLabel(term) {
+    switch (term.kind) {
+      case 'powerShell': return text('termTypePowerShell');
+      case 'vsDev': return text('termTypeVsDev') + ' ' + (term.arch || 'x86');
+      default: return text('termTypeCmd');
+    }
+  }
+
+  /** The name shown for a new, unnamed local terminal. */
+  function defaultLocalTermName(kind) {
+    return localKindLabel({ kind: kind, arch: 'x86' });
+  }
+
+  /**
+   * One row in a group, for a local terminal. It is a server row with the
+   * server half replaced: there is no host or username, and what it says about
+   * itself is its kind. It has the same drag contract as an SSH row, including
+   * moving between groups, because a group is an organisational choice rather
+   * than a network property.
+   */
+  function localTermRow(group, term) {
+    const row = document.createElement('div');
+    row.className = 'server local-term';
+    row.tabIndex = 0;
+    row.dataset.termId = term.id;
+    row.draggable = !query;
+    row.ondragstart = (event) =>
+      beginDrag(event, { kind: 'localTerm', groupId: group.id, termId: term.id }, row);
+    row.ondragend = endDrag;
+
+    const icon = document.createElement('span');
+    icon.className = 'server-icon local-term-icon';
+    icon.title = term.name;
+    icon.append(window.tshellIcon('terminal', 'local-term-glyph'));
+
+    const main = document.createElement('div');
+    main.className = 'server-main';
+    main.title = text('doubleClickConnect');
+    main.onclick = () => selectLocal(term.id);
+    main.ondblclick = () => post('openLocalTerminal', { termId: term.id });
+
+    const title = document.createElement('div');
+    title.className = 'server-name';
+    title.textContent = term.name;
+    const meta = document.createElement('div');
+    meta.className = 'server-meta';
+    meta.textContent = localKindLabel(term);
+    main.append(title, meta);
+
+    row.oncontextmenu = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      selectLocal(term.id);
+      showContextMenu(event, [
+        [text('openTerminal'), () => post('openLocalTerminal', { termId: term.id }), 'terminal'],
+        '-',
+        [text('edit'), () => openLocalTermDialog(group.id, term), 'edit'],
+        '-',
+        [text('delete'), () => post('requestDeleteLocalTerm', { termId: term.id }), 'trash', true]
+      ]);
+    };
+
+    row.append(icon, main);
+    return row;
+  }
+
+  function selectLocal(termId) {
+    selectedServerId = termId;
+    document.querySelectorAll('.server').forEach((row) => {
+      row.classList.toggle('selected', row.dataset.serverId === termId || row.dataset.termId === termId);
+    });
+  }
+
   function render() {
     const root = $('groups');
     root.replaceChildren();
@@ -403,23 +475,25 @@
        * answer a question nobody asked.
        */
       const groupHit = !!needle && (group.name || '').toLowerCase().includes(needle);
-      const servers = !needle || groupHit
+      const services = !needle || groupHit
         ? group.servers
-        : group.servers.filter((server) => matches(server, needle));
+        : group.servers.filter((service) => matches(service, needle));
 
-      if (needle && !servers.length) continue;
-      matched += servers.length;
+      if (needle && !services.length) continue;
+      matched += services.length;
 
-      const wrap = groupNode(group, servers.length);
+      const wrap = groupNode(group, services.length);
       const children = document.createElement('div');
       children.className = 'children';
-      if (!servers.length) {
+      if (!services.length) {
         const empty = document.createElement('div');
         empty.className = 'empty';
         empty.textContent = text('noServers');
         children.append(empty);
       }
-      for (const server of servers) children.append(serverRow(group, server));
+      services.forEach((service) => {
+        children.append(service.kind === 'SSH' ? serverRow(group, service) : localTermRow(group, service));
+      });
       wrap.append(children);
       root.append(wrap);
     }
@@ -487,6 +561,47 @@
       privateKeyPassphrase: $('privateKeyPassphrase').value
     });
     closeServerDialog();
+  }
+
+  // -- local terminal dialog -------------------------------------------------
+
+  function openLocalTermDialog(groupId, term) {
+    $('localTermDialogTitle').textContent = term ? text('editLocalTerm') : text('newLocalTerm');
+    $('localTermId').value = (term && term.id) || '';
+    // The group this terminal belongs to: the group whose menu opened the
+    // dialog for a new one, the row's own group for an edit.
+    $('localTermGroupId').value = groupId || '';
+    $('localTermName').value = (term && term.name) || defaultLocalTermName((term && term.kind) || 'cmd');
+    $('localTermType').value = (term && term.kind) || 'cmd';
+    $('vsDevPath').value = (term && term.path) || '';
+    $('vsDevArch').value = (term && term.arch) || 'x86';
+    $('localTermCwd').value = (term && term.cwd) || '';
+    updateLocalTermFields();
+    $('localTermModal').classList.add('open');
+  }
+
+  /** Only the fields the chosen kind actually uses are on screen. */
+  function updateLocalTermFields() {
+    const kind = $('localTermType').value;
+    $('vsDevFields').hidden = kind !== 'vsDev';
+  }
+
+  function closeLocalTermDialog() { $('localTermModal').classList.remove('open'); }
+
+  function saveLocalTerm() {
+    const term = {
+      id: $('localTermId').value,
+      name: $('localTermName').value.trim(),
+      kind: $('localTermType').value,
+      path: $('vsDevPath').value.trim(),
+      arch: $('vsDevArch').value,
+      cwd: $('localTermCwd').value.trim()
+    };
+    post(term.id ? 'updateLocalTerm' : 'addLocalTerm', {
+      groupId: $('localTermGroupId').value,
+      term: term
+    });
+    closeLocalTermDialog();
   }
 
   // -- wiring ---------------------------------------------------------------
@@ -563,9 +678,9 @@
          * arrived -- the one report the user gets that the drop worked.
          */
         collapsedGroups.delete(plan.toGroupId);
-        post('moveServer', {
+        post('moveService', {
           fromGroupId: from.groupId,
-          serverId: from.serverId,
+          serviceId: from.serverId || from.termId,
           toGroupId: plan.toGroupId,
           toIndex: plan.toIndex
         });
@@ -584,6 +699,11 @@
   $('saveServer').onclick = saveServer;
   $('authType').onchange = updateAuthFields;
   $('serverModal').onclick = (event) => { if (event.target === $('serverModal')) closeServerDialog(); };
+
+  $('cancelLocalTerm').onclick = closeLocalTermDialog;
+  $('saveLocalTerm').onclick = saveLocalTerm;
+  $('localTermType').onchange = updateLocalTermFields;
+  $('localTermModal').onclick = (event) => { if (event.target === $('localTermModal')) closeLocalTermDialog(); };
 
   document.body.addEventListener('click', hideContextMenu);
   window.addEventListener('blur', hideContextMenu);

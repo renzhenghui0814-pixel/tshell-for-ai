@@ -42,7 +42,10 @@ pub struct Stamp {
 
 impl From<transfer::Stat> for Stamp {
     fn from(stat: transfer::Stat) -> Self {
-        Stamp { size: stat.size, modified: stat.modified }
+        Stamp {
+            size: stat.size,
+            modified: stat.modified,
+        }
     }
 }
 
@@ -199,7 +202,10 @@ pub async fn save(
         .unwrap_or_default();
 
     if !force && changed(&base, &now) {
-        return Ok(Saved { conflict: true, stamp: now });
+        return Ok(Saved {
+            conflict: true,
+            stamp: now,
+        });
     }
 
     transfer::write_bytes(transfers, pane, side, target, path, &bytes).await?;
@@ -213,7 +219,10 @@ pub async fn save(
         .await
         .map(Stamp::from)
         .unwrap_or_default();
-    Ok(Saved { conflict: false, stamp })
+    Ok(Saved {
+        conflict: false,
+        stamp,
+    })
 }
 
 #[cfg(test)]
@@ -236,15 +245,42 @@ mod tests {
     /// A file that grew or shrank changed, whatever the clock says.
     #[test]
     fn a_different_size_is_a_change() {
-        assert!(changed(&Stamp { size: 10, modified: 5 }, &Stamp { size: 11, modified: 5 }));
-        assert!(!changed(&Stamp { size: 10, modified: 5 }, &Stamp { size: 10, modified: 5 }));
+        assert!(changed(
+            &Stamp {
+                size: 10,
+                modified: 5
+            },
+            &Stamp {
+                size: 11,
+                modified: 5
+            }
+        ));
+        assert!(!changed(
+            &Stamp {
+                size: 10,
+                modified: 5
+            },
+            &Stamp {
+                size: 10,
+                modified: 5
+            }
+        ));
     }
 
     /// An edit that replaces one character with another leaves the size alone,
     /// so the clock is the only thing that can report it.
     #[test]
     fn a_different_time_at_the_same_size_is_a_change() {
-        assert!(changed(&Stamp { size: 10, modified: 5 }, &Stamp { size: 10, modified: 6 }));
+        assert!(changed(
+            &Stamp {
+                size: 10,
+                modified: 5
+            },
+            &Stamp {
+                size: 10,
+                modified: 6
+            }
+        ));
     }
 
     /// A side that cannot report a modification time reports zero, and zero is
@@ -253,9 +289,36 @@ mod tests {
     /// one habit this dialog exists to avoid.
     #[test]
     fn an_unknown_time_falls_back_to_the_size() {
-        assert!(!changed(&Stamp { size: 10, modified: 0 }, &Stamp { size: 10, modified: 9 }));
-        assert!(!changed(&Stamp { size: 10, modified: 9 }, &Stamp { size: 10, modified: 0 }));
-        assert!(changed(&Stamp { size: 10, modified: 0 }, &Stamp { size: 12, modified: 0 }));
+        assert!(!changed(
+            &Stamp {
+                size: 10,
+                modified: 0
+            },
+            &Stamp {
+                size: 10,
+                modified: 9
+            }
+        ));
+        assert!(!changed(
+            &Stamp {
+                size: 10,
+                modified: 9
+            },
+            &Stamp {
+                size: 10,
+                modified: 0
+            }
+        ));
+        assert!(changed(
+            &Stamp {
+                size: 10,
+                modified: 0
+            },
+            &Stamp {
+                size: 12,
+                modified: 0
+            }
+        ));
     }
 
     /// What was decoded to show has to encode back to the same bytes, or every
@@ -279,7 +342,10 @@ mod tests {
     fn a_character_the_encoding_cannot_hold_is_refused() {
         let gb = preview::encoding_of("gb2312");
         assert!(encode("行情 quote", gb).is_some());
-        assert!(encode("\u{1F600}", gb).is_some(), "an emoji goes through GB18030");
+        assert!(
+            encode("\u{1F600}", gb).is_some(),
+            "an emoji goes through GB18030"
+        );
         // The one code point the GB18030 encoder refuses: a private-use
         // character the standard deliberately leaves out.
         assert!(encode("\u{E5E5}", gb).is_none());

@@ -14,6 +14,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use base64::Engine;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::ipc::Channel;
 use tauri::State;
@@ -30,6 +32,64 @@ use super::types::MemoryScope;
 
 type SharedPanels = Arc<Panels>;
 type SharedStores = Arc<AiStores>;
+
+const MAX_PASTED_IMAGES: usize = 20;
+// DeepSeek caps the complete request body at 48 MiB. Leave room for JSON,
+// prompts, tools and prior text instead of accepting a payload that can only
+// fail after the model request has started.
+const MAX_PASTED_IMAGE_BYTES: usize = 30 * 1024 * 1024;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PastedImage {
+    data: String,
+}
+
+fn image_media_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+fn validate_images(images: Vec<PastedImage>) -> Result<Vec<super::llm::ChatImage>, String> {
+    if images.len() > MAX_PASTED_IMAGES {
+        return Err(format!(
+            "At most {MAX_PASTED_IMAGES} images can be sent at once."
+        ));
+    }
+    let mut total = 0usize;
+    images
+        .into_iter()
+        .map(|image| {
+            // A base64 string is roughly 4/3 of its decoded bytes. Reject before
+            // allocating when it plainly cannot fit the decoded budget.
+            if image.data.len() > (MAX_PASTED_IMAGE_BYTES * 4 / 3) + 4 {
+                return Err("The pasted images are too large to send in one request.".to_string());
+            }
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(image.data.as_bytes())
+                .map_err(|_| "A pasted image is not valid base64 data.".to_string())?;
+            total = total.saturating_add(bytes.len());
+            if total > MAX_PASTED_IMAGE_BYTES {
+                return Err("The pasted images are too large to send in one request.".to_string());
+            }
+            let media_type = image_media_type(&bytes)
+                .ok_or_else(|| "Only JPEG, PNG, GIF and WebP images are supported.".to_string())?;
+            Ok(super::llm::ChatImage {
+                media_type: media_type.into(),
+                data: image.data,
+            })
+        })
+        .collect()
+}
 
 /// Re-reads the config into every open panel.
 fn refresh_panels(panels: &Panels, store: &Store) -> Result<AppConfig, String> {
@@ -91,7 +151,9 @@ pub async fn ai_open(
     store: State<'_, Store>,
 ) -> Result<PanelBootstrap, String> {
     let config = load()?;
-    let server = config.find_server(&group_id, &server_id).ok_or("Server not found.")?;
+    let server = config
+        .find_server(&group_id, &server_id)
+        .ok_or("Server not found.")?;
     let name = if server.name.trim().is_empty() {
         server.host.clone()
     } else {
@@ -128,10 +190,12 @@ pub async fn ai_open(
 pub async fn ai_send(
     pane: String,
     text: String,
+    images: Vec<PastedImage>,
     panels: State<'_, SharedPanels>,
 ) -> Result<(), String> {
     let panel = panels.get(&pane).ok_or("That panel is not open.")?;
-    tauri::async_runtime::spawn(async move { panel.send(text).await });
+    let images = validate_images(images)?;
+    tauri::async_runtime::spawn(async move { panel.send(text, images).await });
     Ok(())
 }
 
@@ -171,7 +235,9 @@ pub fn ai_load_chat(
     panels: State<'_, SharedPanels>,
 ) -> Result<Value, String> {
     let panel = panels.get(&pane).ok_or("That panel is not open.")?;
-    panel.load(&id).ok_or_else(|| "That conversation is no longer there.".to_string())
+    panel
+        .load(&id)
+        .ok_or_else(|| "That conversation is no longer there.".to_string())
 }
 
 #[tauri::command]
@@ -233,13 +299,15 @@ pub fn ai_memory_edit(
     };
     let server = panel.server_id();
     let id = (scope == MemoryScope::Server).then_some(server.as_str());
-    Ok(match stores.memory.replace(scope, id, index, &was, &text, budget) {
-        EditOutcome::Ok => "ok",
-        EditOutcome::Full => "full",
-        EditOutcome::Missing => "missing",
-        EditOutcome::Failed => "failed",
-    }
-    .to_string())
+    Ok(
+        match stores.memory.replace(scope, id, index, &was, &text, budget) {
+            EditOutcome::Ok => "ok",
+            EditOutcome::Full => "full",
+            EditOutcome::Missing => "missing",
+            EditOutcome::Failed => "failed",
+        }
+        .to_string(),
+    )
 }
 
 #[tauri::command]
@@ -365,7 +433,9 @@ pub fn ai_model_add(
     panels: State<'_, SharedPanels>,
     store: State<'_, Store>,
 ) -> Result<(), String> {
-    let id = update_ai(&panels, &store, |settings| settings.add_model(&base_url, &model))?;
+    let id = update_ai(&panels, &store, |settings| {
+        settings.add_model(&base_url, &model)
+    })?;
     // Written after the row exists, and only when one was given: re-entering an
     // endpoint to correct its name must not wipe the key that was working.
     if !api_key.is_empty() {
@@ -409,7 +479,9 @@ pub fn ai_set_mode(
     panels: State<'_, SharedPanels>,
     store: State<'_, Store>,
 ) -> Result<(), String> {
-    update_ai(&panels, &store, |settings| settings.agent.mode = AgentMode::parse(&mode))
+    update_ai(&panels, &store, |settings| {
+        settings.agent.mode = AgentMode::parse(&mode)
+    })
 }
 
 #[tauri::command]
@@ -578,7 +650,9 @@ pub fn ai_log_list(
     panels: State<'_, SharedPanels>,
     stores: State<'_, SharedStores>,
 ) -> Vec<crate::ai::store::log::LogFile> {
-    let Some(panel) = panels.get(&pane) else { return Vec::new() };
+    let Some(panel) = panels.get(&pane) else {
+        return Vec::new();
+    };
     stores.logs.list(&panel.server_name())
 }
 
@@ -597,7 +671,10 @@ mod tests {
 
         assert_eq!(current["agent"]["maxSteps"], 12);
         assert_eq!(current["agent"]["mode"], "ask", "a sibling is not dropped");
-        assert_eq!(current["log"]["keep"], 20, "a section the patch never named is kept");
+        assert_eq!(
+            current["log"]["keep"], 20,
+            "a section the patch never named is kept"
+        );
         assert_eq!(current["enabled"], true);
     }
 
@@ -619,5 +696,16 @@ mod tests {
     #[test]
     fn removal_outcomes_cross_the_boundary_as_keys() {
         assert_eq!(removal_tag(RemoveOutcome::Ok), "ok");
+    }
+
+    #[test]
+    fn pasted_image_format_comes_from_bytes_and_not_a_declared_name() {
+        let data = base64::engine::general_purpose::STANDARD
+            .encode([0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+        let images = validate_images(vec![PastedImage { data }]).unwrap();
+        assert_eq!(images[0].media_type, "image/png");
+
+        let fake = base64::engine::general_purpose::STANDARD.encode(b"not an image");
+        assert!(validate_images(vec![PastedImage { data: fake }]).is_err());
     }
 }

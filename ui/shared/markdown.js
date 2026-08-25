@@ -242,16 +242,11 @@
 
   function renderCode(block, strings, options) {
     const wrap = element('div', 'md-block');
-    const head = element('div', 'md-block-head');
-    const label = element('span', 'md-block-lang');
-    label.textContent = block.lang || '';
-
     const copy = element('button', 'md-copy');
     copy.type = 'button';
     copy.textContent = strings.copy;
     const text = block.lines.join('\n');
     copy.onclick = () => copyText(text, copy, strings);
-    head.append(label, copy);
 
     const pre = element('pre', 'md-pre');
     const code = document.createElement('code');
@@ -282,7 +277,7 @@
     const scroll = element('div', 'md-scroll');
     scroll.append(code);
     pre.append(gutter, scroll);
-    wrap.append(head, pre);
+    wrap.append(pre, copy);
     return wrap;
   }
 

@@ -370,9 +370,9 @@
      * box, and at this size the two would be the same icon.
      */
     'think':
-      '<ellipse cx="9.1" cy="6.2" rx="4.8" ry="3.7"/>' +
-      '<circle cx="4.8" cy="11.6" r="1.15"/>' +
-      '<circle cx="2.5" cy="13.4" r="0.5"/>',
+      '<ellipse cx="8" cy="8" rx="6.1" ry="3.05" transform="rotate(38 8 8)"/>' +
+      '<ellipse cx="8" cy="8" rx="6.1" ry="3.05" transform="rotate(-38 8 8)"/>' +
+      '<circle cx="8" cy="8" r="1.05" fill="currentColor" stroke="none"/>',
 
     /*
      * The three modes, as three different shapes rather than one shape in three

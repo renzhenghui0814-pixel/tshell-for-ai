@@ -52,7 +52,12 @@ pub struct SkillRead {
 
 impl SkillRead {
     fn failed(outcome: SkillOutcome, file: Option<String>) -> Self {
-        Self { outcome, content: None, file, truncated: false }
+        Self {
+            outcome,
+            content: None,
+            file,
+            truncated: false,
+        }
     }
 }
 
@@ -64,7 +69,13 @@ impl SkillRead {
 fn safe_id(id: &str) -> String {
     let cleaned: String = id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(MAX_ID_LENGTH)
         .collect();
     cleaned.trim_start_matches('.').to_string()
@@ -95,7 +106,10 @@ fn safe_relative(file: &str) -> Option<String> {
     {
         return None;
     }
-    let parts: Vec<&str> = trimmed.split('/').filter(|part| !part.is_empty() && *part != ".").collect();
+    let parts: Vec<&str> = trimmed
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
     if parts.is_empty() || parts.iter().any(|part| *part == "..") {
         return None;
     }
@@ -111,7 +125,10 @@ pub fn parse_front_matter(text: &str) -> HashMap<String, String> {
     let mut fields = HashMap::new();
     // A byte order mark ahead of the fence is what a Windows editor leaves.
     let body = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let Some(rest) = body.strip_prefix("---\n").or_else(|| body.strip_prefix("---\r\n")) else {
+    let Some(rest) = body
+        .strip_prefix("---\n")
+        .or_else(|| body.strip_prefix("---\r\n"))
+    else {
         return fields;
     };
 
@@ -130,11 +147,15 @@ pub fn parse_front_matter(text: &str) -> HashMap<String, String> {
     };
 
     for line in block.lines() {
-        let Some((key, value)) = line.split_once(':') else { continue };
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
         let key = key.trim();
         if key.is_empty()
             || !key.starts_with(|c: char| c.is_ascii_alphabetic())
-            || !key.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '-'))
+            || !key
+                .chars()
+                .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-'))
         {
             continue;
         }
@@ -183,7 +204,9 @@ impl SkillStore {
     ///
     /// Every failure is an empty list. A setup with no skills is an ordinary setup.
     pub fn list(&self, disabled: &[String]) -> Vec<SkillSummary> {
-        let Ok(entries) = std::fs::read_dir(&self.dir) else { return Vec::new() };
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
         let off: Vec<String> = disabled.iter().map(|id| safe_id(id)).collect();
 
         let mut skills = Vec::new();
@@ -191,7 +214,9 @@ impl SkillStore {
             if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 continue;
             }
-            let Ok(name) = entry.file_name().into_string() else { continue };
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
             if name.starts_with('.') {
                 continue;
             }
@@ -202,7 +227,9 @@ impl SkillStore {
                 continue;
             }
 
-            let Ok(text) = std::fs::read_to_string(entry.path().join(MAIN_FILE)) else { continue };
+            let Ok(text) = std::fs::read_to_string(entry.path().join(MAIN_FILE)) else {
+                continue;
+            };
             let fields = parse_front_matter(&text);
             skills.push(SkillSummary {
                 name: fields.get("name").cloned().unwrap_or_else(|| id.clone()),
@@ -392,7 +419,10 @@ mod tests {
         let store = temp.store();
         let off = vec!["deploy".to_string()];
         assert!(store.manifest(&off).is_empty());
-        assert_eq!(store.read("deploy", None, 0, &off).outcome, SkillOutcome::Disabled);
+        assert_eq!(
+            store.read("deploy", None, 0, &off).outcome,
+            SkillOutcome::Disabled
+        );
         assert!(store.list(&off)[0].disabled);
     }
 
@@ -400,8 +430,14 @@ mod tests {
     fn a_skill_that_was_never_written_is_unknown() {
         let temp = Temp::new("unknown");
         let store = temp.store();
-        assert_eq!(store.read("nothing", None, 0, &[]).outcome, SkillOutcome::Unknown);
-        assert_eq!(store.read("...", None, 0, &[]).outcome, SkillOutcome::Unknown);
+        assert_eq!(
+            store.read("nothing", None, 0, &[]).outcome,
+            SkillOutcome::Unknown
+        );
+        assert_eq!(
+            store.read("...", None, 0, &[]).outcome,
+            SkillOutcome::Unknown
+        );
         assert!(store.list(&[]).is_empty());
     }
 
@@ -422,7 +458,12 @@ mod tests {
         std::fs::write(temp.0.join("secret.txt"), "not yours").unwrap();
         let store = temp.store();
 
-        for attempt in ["../secret.txt", "/etc/passwd", "C:/Windows/x", "a/../../secret.txt"] {
+        for attempt in [
+            "../secret.txt",
+            "/etc/passwd",
+            "C:/Windows/x",
+            "a/../../secret.txt",
+        ] {
             assert_eq!(
                 store.read("deploy", Some(attempt), 0, &[]).outcome,
                 SkillOutcome::Missing,
@@ -438,7 +479,9 @@ mod tests {
         std::fs::create_dir_all(temp.0.join("deploy/notes")).unwrap();
         std::fs::write(temp.0.join("deploy/notes/rollback.md"), "roll it back").unwrap();
 
-        let read = temp.store().read("deploy", Some("notes/rollback.md"), 0, &[]);
+        let read = temp
+            .store()
+            .read("deploy", Some("notes/rollback.md"), 0, &[]);
         assert_eq!(read.outcome, SkillOutcome::Ok);
         assert_eq!(read.file.as_deref(), Some("notes/rollback.md"));
         assert_eq!(read.content.as_deref(), Some("roll it back"));

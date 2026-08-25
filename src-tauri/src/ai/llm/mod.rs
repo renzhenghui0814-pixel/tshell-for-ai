@@ -4,8 +4,8 @@
 //! reasoned about on its own and a test can answer a request without a network.
 
 pub mod http;
-pub mod retry;
 pub mod prose;
+pub mod retry;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -18,20 +18,95 @@ use serde::{Deserialize, Serialize};
 pub enum ChatRole {
     User,
     Assistant,
+    Tool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatImage {
+    /// The image's real format, verified from its decoded bytes before it enters
+    /// the conversation. DeepSeek explicitly ignores filename extensions here.
+    pub media_type: String,
+    /// Raw base64, without a data-URL prefix. Keeping the two parts separate
+    /// makes the durable history small enough to inspect and hard to mis-project.
+    pub data: String,
+}
+
+impl ChatImage {
+    pub fn data_url(&self) -> String {
+        format!("data:{};base64,{}", self.media_type, self.data)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: ChatRole,
     pub content: String,
+    /// Vision inputs belong only to user turns. Old records omit the field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ChatImage>,
+    /// Native calls made by an assistant turn. Empty for ordinary prose and for
+    /// old records written before structured tool history was introduced.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
+    /// The call answered by a `tool` message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl ChatMessage {
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::User, content: content.into() }
+        Self {
+            role: ChatRole::User,
+            content: content.into(),
+            images: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
+    }
+    pub fn user_with_images(content: impl Into<String>, images: Vec<ChatImage>) -> Self {
+        Self {
+            role: ChatRole::User,
+            content: content.into(),
+            images,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: ChatRole::Assistant, content: content.into() }
+        Self {
+            role: ChatRole::Assistant,
+            content: content.into(),
+            images: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
+    }
+    pub fn assistant_calls(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
+        Self {
+            role: ChatRole::Assistant,
+            content: content.into(),
+            images: Vec::new(),
+            tool_calls,
+            tool_call_id: None,
+        }
+    }
+    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: ChatRole::Tool,
+            content: content.into(),
+            images: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_call_id: Some(tool_call_id.into()),
+        }
+    }
+    pub fn char_len(&self) -> usize {
+        self.content.chars().count()
+            + self
+                .tool_calls
+                .iter()
+                .map(|call| call.name.chars().count() + call.arguments.chars().count())
+                .sum::<usize>()
     }
 }
 
@@ -105,7 +180,7 @@ pub struct ToolSpec {
 }
 
 /// One call the model made.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCall {
     /// The endpoint's own id for it. Carried because a model that sees its own
     /// call echoed back reads the id as part of it; nothing here matches on it.
@@ -141,13 +216,20 @@ impl Reply {
     /// Prose and nothing else, which on either track is the answer and the end of
     /// the task.
     pub fn text(text: impl Into<String>) -> Self {
-        Self { text: text.into(), calls: Vec::new() }
+        Self {
+            text: text.into(),
+            calls: Vec::new(),
+        }
     }
 
     /// A reply that carried calls and nothing else, which is the ordinary shape
     /// of a working step on the tool track.
+    #[cfg(test)]
     pub fn calls(calls: Vec<ToolCall>) -> Self {
-        Self { text: String::new(), calls }
+        Self {
+            text: String::new(),
+            calls,
+        }
     }
 }
 
@@ -206,7 +288,10 @@ pub struct LlmError {
 
 impl LlmError {
     pub fn new(kind: LlmFailure, message: impl Into<String>) -> Self {
-        Self { kind, message: message.into() }
+        Self {
+            kind,
+            message: message.into(),
+        }
     }
 }
 
@@ -278,11 +363,17 @@ pub trait Watcher: Send + Sync {
 }
 
 /// A watcher that wants none of it. What a test uses when it only wants the text.
+#[cfg(test)]
 pub struct Silent;
+#[cfg(test)]
 impl Watcher for Silent {}
 
 pub struct CompletionRequest {
     pub system: String,
+    /// Used only after this endpoint has rejected native tools. Keeping it next
+    /// to the native prompt makes the retry atomic: no second session turn is
+    /// needed to change protocols.
+    pub fallback_system: String,
     /// The whole exchange so far. An agent step is only as good as what it can see.
     pub messages: Vec<ChatMessage>,
     /// How long the answer may go **silent** before it is abandoned. Not how long
@@ -302,8 +393,6 @@ pub struct CompletionRequest {
 pub type Completion<'a> = Pin<Box<dyn Future<Output = Result<Reply, LlmError>> + Send + 'a>>;
 
 pub trait LlmProvider: Send + Sync {
-    /// Shown in error messages so the user knows which path failed.
-    fn id(&self) -> &str;
     /// How the model should answer "what are you?". A model has no way of knowing
     /// which endpoint it is being served from, so it is told rather than left to
     /// guess and hedge.

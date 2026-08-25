@@ -57,7 +57,10 @@ pub fn normalize_path(path: &str) -> String {
 
 pub fn classify_path(path: &str) -> PathPolicyResult {
     let normalized = normalize_path(path);
-    let refuse = |reason| PathPolicyResult { verdict: PathVerdict::Refuse, reasons: vec![reason] };
+    let refuse = |reason| PathPolicyResult {
+        verdict: PathVerdict::Refuse,
+        reasons: vec![reason],
+    };
 
     // Device nodes are not files: writing one addresses hardware.
     if under(&normalized, "/dev") {
@@ -71,7 +74,10 @@ pub fn classify_path(path: &str) -> PathPolicyResult {
     if under(&normalized, "/boot") {
         return refuse(RiskReason::OverwritesSystemFile);
     }
-    PathPolicyResult { verdict: PathVerdict::Confirm, reasons: Vec::new() }
+    PathPolicyResult {
+        verdict: PathVerdict::Confirm,
+        reasons: Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -82,22 +88,37 @@ mod tests {
     fn hardware_and_the_kernel_are_refused() {
         assert_eq!(classify_path("/dev/sda").verdict, PathVerdict::Refuse);
         assert_eq!(classify_path("/dev").verdict, PathVerdict::Refuse);
-        assert_eq!(classify_path("/proc/sys/kernel/x").verdict, PathVerdict::Refuse);
+        assert_eq!(
+            classify_path("/proc/sys/kernel/x").verdict,
+            PathVerdict::Refuse
+        );
         assert_eq!(classify_path("/sys/class/x").verdict, PathVerdict::Refuse);
-        assert_eq!(classify_path("/boot/grub/grub.cfg").verdict, PathVerdict::Refuse);
+        assert_eq!(
+            classify_path("/boot/grub/grub.cfg").verdict,
+            PathVerdict::Refuse
+        );
     }
 
     #[test]
     fn an_ordinary_file_is_only_confirmed() {
         assert_eq!(classify_path("/etc/hosts").verdict, PathVerdict::Confirm);
-        assert_eq!(classify_path("/home/me/notes.txt").verdict, PathVerdict::Confirm);
+        assert_eq!(
+            classify_path("/home/me/notes.txt").verdict,
+            PathVerdict::Confirm
+        );
         assert_eq!(classify_path("relative/file").verdict, PathVerdict::Confirm);
     }
 
     #[test]
     fn dot_dot_cannot_be_used_to_climb_back_in() {
-        assert_eq!(classify_path("/tmp/../dev/sda").verdict, PathVerdict::Refuse);
-        assert_eq!(classify_path("/dev/../etc/hosts").verdict, PathVerdict::Confirm);
+        assert_eq!(
+            classify_path("/tmp/../dev/sda").verdict,
+            PathVerdict::Refuse
+        );
+        assert_eq!(
+            classify_path("/dev/../etc/hosts").verdict,
+            PathVerdict::Confirm
+        );
     }
 
     #[test]

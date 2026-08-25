@@ -213,8 +213,8 @@ details[open] > .group-head .chevron { transform: rotate(90deg); }
 
 .server {
   display: grid;
-  grid-template-columns: 12px 1fr;
-  gap: 10px;
+  grid-template-columns: 22px 1fr;
+  gap: 9px;
   align-items: center;
   padding: 9px 10px;
   border-radius: var(--r-sm);
@@ -245,13 +245,22 @@ details[open] > .group-head .chevron { transform: rotate(90deg); }
 
 .server-main { min-width: 0; cursor: pointer; }
 
-/* A small status dot reads faster in a dense list than an outlined box. */
+/* Every service belongs to the same tree, so every kind uses the same accent tile. */
 .server-icon {
   justify-self: center;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--ok);
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: var(--ac);
+  display: grid;
+  place-items: center;
+}
+
+.server-icon .server-glyph,
+.server-icon .local-term-glyph {
+  width: 15px;
+  height: 15px;
+  color: var(--ac-tx);
 }
 
 .server-name {

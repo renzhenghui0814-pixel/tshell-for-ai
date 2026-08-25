@@ -1,13 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the main window is allowed to reach. The core defaults, plus what an undecorated window needs to draw its own title bar and answer F11. The core defaults are the read half only -- isMaximized and isFullscreen come with them, minimize and setFullscreen do not -- so every operation that changes the window is named below, one at a time. A call that is missing here does not fail to build; it returns a rejected promise to a shell that catches its own promises, which is a key that appears to do nothing. scripts/capability-check.mjs holds this list to what shell.js actually calls.",
+  "description": "What the main window is allowed to reach. The core defaults, plus what an undecorated window needs to draw its own title bar and answer F11. The core defaults are the read half only -- isMaximized and isFullscreen come with them, minimize and setFullscreen do not -- so every operation that changes the window is named below, one at a time. The full screen transition is a chain, not a call: entering from a maximised window unmaximizes first and remembers to restore, so maximize and unmaximize are here for the F11 dance, not for the window buttons (which use toggleMaximize). A call that is missing here does not fail to build; it returns a rejected promise to a shell that catches its own promises, which is a key that appears to do nothing. scripts/capability-check.mjs holds this list to what shell.js actually calls.",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
     "core:window:allow-set-fullscreen",
     "core:window:allow-is-maximized",
     "core:window:allow-close",

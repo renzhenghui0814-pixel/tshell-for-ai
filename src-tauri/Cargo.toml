@@ -43,6 +43,16 @@ sha2 = "0.10.9"
 # stamps were silently UTC. `clock` is the only feature needed.
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
 fontdb = "0.24"
+# The local terminals: a real pseudo-terminal on this machine -- ConPTY on
+# Windows, openpty elsewhere.
+portable-pty = "0.9"
+
+# Vendored and patched: portable-pty 0.9.0 passes the ConPTY attribute through
+# an address of a stack handle rather than the HPCON value required by Windows.
+# The child then starts with an invalid pseudoconsole and exits with 0xC0000142.
+# See vendor/portable-pty/src/win/procthreadattr.rs.
+[patch.crates-io]
+portable-pty = { path = "vendor/portable-pty" }
 
 # Debug info is the single largest consumer of memory and disk in a dev build,
 # and nothing here is debugged through a native debugger yet.

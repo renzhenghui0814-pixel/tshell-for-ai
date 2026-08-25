@@ -273,7 +273,9 @@ pub struct TransferProgress {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AgentEvent {
     /// `step` counts from 1 within the task, so the panel can say how far along it is.
-    Thinking { step: u32 },
+    Thinking {
+        step: u32,
+    },
     #[serde(rename_all = "camelCase")]
     Command {
         command: String,
@@ -286,7 +288,17 @@ pub enum AgentEvent {
         unconfirmed: Option<Unconfirmed>,
     },
     #[serde(rename_all = "camelCase")]
-    Result { exit_code: i32, output: String, timed_out: bool, truncated: bool },
+    Result {
+        exit_code: i32,
+        output: String,
+        timed_out: bool,
+        truncated: bool,
+    },
+    /// A replace-in-place snapshot while the current command is still running.
+    /// Transient: the final `Result` is the durable conversation record.
+    CommandOutput {
+        output: String,
+    },
     /// The change a file action is about to make, drawn in the thread as well as
     /// the dialog.
     #[serde(rename_all = "camelCase")]
@@ -318,13 +330,19 @@ pub enum AgentEvent {
     },
     /// A transfer that is about to start, drawn in the card the step opened.
     #[serde(rename_all = "camelCase")]
-    Transfer { kind: TransferKind, sources: Vec<String>, target: String },
+    Transfer {
+        kind: TransferKind,
+        sources: Vec<String>,
+        target: String,
+    },
     /// Ticks while bytes move, several times a second. Deliberately not recorded
     /// with the rest of the thread: a finished transfer is described by its
     /// summary, and a replayed conversation showing a progress bar frozen at 43%
     /// would be reporting a moment rather than an outcome.
     #[serde(rename_all = "camelCase")]
-    TransferProgress { progress: TransferProgress },
+    TransferProgress {
+        progress: TransferProgress,
+    },
     /// A skill the model pulled into the conversation. Reported rather than
     /// asked about, like a memory write and for the same reason.
     #[serde(rename_all = "camelCase")]
@@ -342,17 +360,28 @@ pub enum AgentEvent {
     /// Reported the way a remembered line is, and for the same reason: it is a
     /// lasting change to how the assistant behaves, made in one keystroke, and
     /// the dialog that made it is gone a moment later.
-    Trusted { dir: String },
-    Refused { command: String, reasons: Vec<String> },
-    Declined { command: String },
+    Trusted {
+        dir: String,
+    },
+    Refused {
+        command: String,
+        reasons: Vec<String>,
+    },
+    Declined {
+        command: String,
+    },
     /// A fragment of an answer, as it arrives. Transient like `thinking`: the
     /// whole text follows in `reply` or `summary`, which is what a replayed
     /// thread draws.
-    Delta { text: String },
+    Delta {
+        text: String,
+    },
     /// The model's own thinking, as it arrives. Transient like `delta`, and for
     /// a stronger reason: it is the longest thing in a step and the least worth
     /// keeping, being the road to the answer rather than the answer.
-    Reasoning { text: String },
+    Reasoning {
+        text: String,
+    },
     /// What one request cost. `estimated` marks the counts as this client's own
     /// arithmetic rather than the endpoint's.
     #[serde(rename_all = "camelCase")]
@@ -364,15 +393,29 @@ pub enum AgentEvent {
     },
     /// How the answer arrived, so "is it streaming?" has an answer on screen.
     #[serde(rename_all = "camelCase")]
-    Transport { streamed: bool, frames: u32, first_ms: u64, total_ms: u64 },
+    Transport {
+        streamed: bool,
+        frames: u32,
+        first_ms: u64,
+        total_ms: u64,
+    },
     /// How much conversation is being carried, after any folding.
-    Context { chars: u32 },
+    Context {
+        chars: u32,
+    },
     /// A failed request about to be made again, so the pause has a reason on screen.
-    Retry { attempt: u32, kind: String },
+    Retry {
+        attempt: u32,
+        kind: String,
+    },
     /// The endpoint refused one of the optional request fields, so it was sent
     /// again without it.
-    Degraded { fields: Vec<String> },
-    Reply { text: String },
+    Degraded {
+        fields: Vec<String>,
+    },
+    Reply {
+        text: String,
+    },
     /// `message` is English and is what a consumer without a string table shows.
     /// `code` names the failure so the page can show it in the user's language,
     /// and so a stored transcript still reads correctly after the language changes.
@@ -381,7 +424,9 @@ pub enum AgentEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         code: Option<String>,
     },
-    StepLimit { steps: u32 },
+    StepLimit {
+        steps: u32,
+    },
     Stopped,
     Idle,
 }
@@ -450,7 +495,11 @@ mod tests {
         let event = AgentEvent::TransferProgress {
             progress: TransferProgress {
                 phase: TransferPhase::Scanning,
-                overall: TransferOverall { total_files: 9, total_bytes: 99, ..Default::default() },
+                overall: TransferOverall {
+                    total_files: 9,
+                    total_bytes: 99,
+                    ..Default::default()
+                },
                 current: TransferCurrent::default(),
             },
         };
@@ -472,6 +521,16 @@ mod tests {
         assert_eq!(json["exitCode"], 1);
         assert_eq!(json["timedOut"], false);
         assert_eq!(json["truncated"], true);
+    }
+
+    #[test]
+    fn live_command_output_uses_the_frontend_event_name() {
+        let json = serde_json::to_value(AgentEvent::CommandOutput {
+            output: "one\ntwo".into(),
+        })
+        .unwrap();
+        assert_eq!(json["type"], "commandOutput");
+        assert_eq!(json["output"], "one\ntwo");
     }
 
     #[test]
@@ -501,6 +560,9 @@ mod tests {
     #[test]
     fn risk_reasons_become_the_keys_the_table_is_written_in() {
         assert_eq!(risk_key(RiskReason::RemovesRoot), "riskRemovesRoot");
-        assert_eq!(risk_key(RiskReason::WritesKernelInterface), "riskWritesKernelInterface");
+        assert_eq!(
+            risk_key(RiskReason::WritesKernelInterface),
+            "riskWritesKernelInterface"
+        );
     }
 }

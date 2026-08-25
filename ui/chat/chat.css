@@ -201,12 +201,10 @@ button:disabled { opacity: .38; cursor: default; }
  * can never drift apart.
  */
 .step { position: relative; padding-left: 22px; --dot-top: 7px; }
-.step:has(> .card) { --dot-top: 14px; }
-.step:has(> .turn) { --dot-top: 15px; }
-.step:has(> .memory-row) { --dot-top: 11px; }
+/* The user card has real vertical padding; keep its point on the first text line. */
+.step:has(> .turn.user) { --dot-top: 13px; }
 
-.step::before {
-  content: '';
+.step-dot {
   position: absolute;
   left: 2px;
   top: var(--dot-top);
@@ -216,7 +214,29 @@ button:disabled { opacity: .38; cursor: default; }
   background: var(--step-dot, var(--vscode-descriptionForeground));
   /* Over the rail, so the line runs behind the dot and not through it. */
   z-index: 1;
+  cursor: default;
+  transition: transform .14s ease, box-shadow .14s ease;
 }
+
+.step-dot:hover { transform: scale(1.55); box-shadow: 0 0 0 3px color-mix(in srgb, var(--step-dot, var(--vscode-descriptionForeground)) 24%, transparent); }
+
+/* Conversation content is drawn directly on the panel ground.  Differentiation
+ * comes from type, colour, rails and borders, never from a second surface. */
+.thread .turn.assistant .bubble,
+.thread .card,
+.thread .command-detail,
+.thread .file-detail,
+.thread .file-detail-change,
+.thread .memory-row,
+.thread .command,
+.thread .output,
+.thread .file-view,
+.thread .file-body,
+.thread .transfer-view,
+.thread .md-block,
+.thread .md-code,
+.thread .md-table th,
+.thread .md-table tbody tr:hover td { background-color: transparent !important; }
 
 /*
  * The rail. Spanning the whole row and reaching past it by the thread's own gap
@@ -259,20 +279,21 @@ button:disabled { opacity: .38; cursor: default; }
  * what the eye follows down the rail -- so they should be the same green that
  * means "fine" and the same red that means "no" everywhere else in the window.
  */
-.step.sent { --step-dot: var(--ac); }
+.step.sent { --step-dot: var(--ok); }
+.step.response { --step-dot: var(--ac); }
 /* Waiting on the user. */
 .step.needs { --step-dot: var(--warn); }
 /* Turned down and never run. */
-.step.blocked { --step-dot: var(--err); }
 /* Ran on its own, because it could not change anything. */
 .step.ran { --step-dot: var(--ok); }
+/* A failure wins over every earlier success in the same model response. */
+.step.blocked { --step-dot: var(--err); }
 
 .turn { display: flex; }
-.turn.user { justify-content: flex-end; }
+.turn.user { display: block; }
 
 /*
- * The user's own message, and the one place in the product that keeps a solid
- * accent fill.
+ * The user's own message uses the editable user-message fill across the row.
  *
  * Set explicitly rather than through `list.activeSelectionBackground`, which is
  * what it used to borrow. That alias is a tint now -- deliberately, so that the
@@ -285,14 +306,6 @@ button:disabled { opacity: .38; cursor: default; }
   max-width: 88%;
   padding: 8px 12px;
   border-radius: var(--r-lg);
-  /* Square off the corner nearest the rail, so the bubble points at its own
-   * dot instead of floating free of it. */
-  border-top-right-radius: var(--r-sm);
-  /*
-   * Its own token, not the accent. The accent means "focused" everywhere else
-   * in the window, and a message the user sent an hour ago is not focused --
-   * it is just theirs. See `--chat-user` in theme.css.
-   */
   background: var(--chat-user);
   color: var(--chat-user-tx);
   white-space: pre-wrap;
@@ -397,53 +410,55 @@ button:disabled { opacity: .38; cursor: default; }
   padding: 1px 5px;
   border-radius: var(--r-sm);
   background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
-  font-family: var(--vscode-editor-font-family, monospace);
+  font-family: inherit;
   font-size: var(--fs-mono);
+  font-weight: 600;
+  color: var(--markdown);
   word-break: break-word;
 }
 
+.turn.user .bubble {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  padding: 9px 11px;
+  border-radius: var(--r-md);
+}
+
+/* Code in prose is supporting material, one quiet step below the answer text. */
+.turn.assistant .md-code,
+.turn.assistant .md-pre { font-size: calc(var(--fs-mono) - 1px); }
+
 /* -- fenced code block ---------------------------------------------------- */
 
-.md-block {
+.md-block,
+.command-detail,
+.file-detail,
+.transfer-detail {
   border: 1px solid var(--hairline);
   border-radius: var(--r-md);
   overflow: hidden;
-  background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+  background: transparent;
 }
 
-.md-block-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 6px 3px 10px;
-  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
-  border-bottom: 1px solid var(--hairline);
-}
-
-.md-block-lang {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--vscode-descriptionForeground);
-  font-size: var(--fs-xs);
-  text-transform: lowercase;
-}
+.md-block { position: relative; }
 
 /* Quiet until pointed at, so a wall of code blocks is not a wall of buttons. */
 .md-copy {
-  flex: none;
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 1;
   padding: 2px 8px;
   color: var(--vscode-descriptionForeground);
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--r-sm);
   font-size: var(--fs-xs);
-  opacity: .75;
+  opacity: 0;
 }
 
-.md-block:hover .md-copy { opacity: 1; border-color: var(--hairline); }
+.md-block:hover .md-copy, .md-copy:focus-visible { opacity: 1; border-color: var(--hairline); }
 .md-copy:hover { color: var(--vscode-foreground); background: var(--vscode-list-hoverBackground); }
 .md-copy.done { color: var(--syn-green); opacity: 1; }
 
@@ -554,19 +569,21 @@ button:disabled { opacity: .38; cursor: default; }
 .reason-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  column-gap: 6px;
   cursor: pointer;
   list-style: none;
   color: var(--vscode-descriptionForeground);
   font-size: var(--fs-sm);
-  padding: 1px 0;
+  padding: 1px 0 3px;
 }
 
 .reason-head::-webkit-details-marker { display: none; }
-.reason-label { font-style: italic; }
+.reason-icon, .card-icon { flex: 0 0 14px; width: 14px; height: 14px; margin: 0; color: var(--tx-dim); }
+.reason-label { flex: none; font-weight: 600; color: var(--tx); }
 .reason-count { font-variant-numeric: tabular-nums; opacity: .75; }
-/* Once the step has moved on there is nothing left ticking, so it recedes. */
-.reason.done .reason-head { opacity: .65; }
+.reason-preview { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--tx-dim); }
+/* A completed thought is still the same class of event as a completed command. */
+.reason.done .reason-head { opacity: 1; }
 
 /*
  * Rendered as markdown, like every other thing the model writes: a model that
@@ -582,6 +599,7 @@ button:disabled { opacity: .38; cursor: default; }
   font-size: var(--fs-sm);
   line-height: 1.55;
   color: var(--vscode-descriptionForeground);
+  white-space: pre-wrap;
 }
 
 .reason-body > :first-child { margin-top: 0; }
@@ -673,10 +691,8 @@ button:disabled { opacity: .38; cursor: default; }
 }
 
 .card-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  display: block;
+  padding: 6px 9px 7px;
   cursor: pointer;
   list-style: none;
   user-select: none;
@@ -684,8 +700,55 @@ button:disabled { opacity: .38; cursor: default; }
 
 .card-head::-webkit-details-marker { display: none; }
 .card-head:hover { background: var(--vscode-list-hoverBackground); }
-.card-why { flex: 1 1 auto; min-width: 0; color: var(--vscode-foreground); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.card[open] .card-why { white-space: normal; }
+.card-kind { color: var(--tx); font-size: var(--fs-sm); font-weight: 600; }
+.card-why { min-width: 0; color: var(--tx-dim); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-error { color: var(--err); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.card-preview { min-width: 0; overflow: hidden; color: var(--tx-dim); font-family: inherit; font-size: var(--fs-sm); text-overflow: ellipsis; white-space: nowrap; }
+
+.command-card { overflow: visible; background: transparent; border-color: transparent; }
+.command-card .card-head { padding: 0; background: transparent; }
+.command-card .card-head:hover { background: transparent; color: var(--tx); }
+.card-line { display: grid; grid-template-columns: 14px max-content minmax(0, 1fr) auto auto; align-items: center; column-gap: 6px; min-width: 0; }
+.card-primary { padding: 1px 0; cursor: pointer; }
+.card-trigger { grid-template-columns: 14px max-content minmax(0, 1fr); padding: 2px 0 3px; cursor: pointer; }
+.card-line:hover .card-why, .card-line:hover .card-preview { color: var(--tx); }
+.card-spacer { width: 14px; }
+.command-card[open] .card-trigger, .file-card[open] .card-trigger, .transfer-card[open] .card-trigger { display: none; }
+.command-detail { display: none; margin-top: 2px; }
+.command-card[open] .command-detail { display: block; }
+
+.linked-event { min-width: 0; cursor: pointer; outline: none; }
+.linked-event:focus-visible { border-radius: var(--r-sm); box-shadow: 0 0 0 2px var(--ac-ring); }
+
+.compact-event { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 1px 0; cursor: pointer; }
+.compact-event .card-kind { flex: none; }
+.compact-event .card-why { flex: none; max-width: 34%; }
+.compact-event .card-preview { flex: 1 1 auto; min-width: 0; }
+.compact-event:hover .card-why, .compact-event:hover .card-preview { color: var(--tx); }
+
+.file-card { overflow: visible; background: transparent; border-color: transparent; }
+.file-card .card-head { padding: 0; background: transparent; }
+.file-card .card-head:hover { background: transparent; color: var(--tx); }
+/* Match command output: a large diff stays one compact timeline item and
+ * scrolls inside its own frame instead of stretching the whole conversation. */
+.file-detail { display: none; max-height: 320px; margin-top: 2px; overflow: auto; }
+.file-card[open] .file-detail { display: block; }
+.file-detail-name { display: block; padding: 5px 7px; color: var(--tx-dim); font-family: var(--font-mono); font-size: var(--fs-sm); }
+.file-detail-change { border-top: 1px solid var(--hairline); font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 1.35; }
+.file-detail-line { display: grid; grid-template-columns: .8em calc(var(--line-digits, 2) * 1ch) minmax(0, 1fr); column-gap: 2px; min-width: 0; }
+.file-detail-line > span:first-child { padding: 1px 0; color: var(--tx-dim); text-align: center; user-select: none; }
+.file-detail-change.del .file-detail-line > span:first-child { color: var(--err); }
+.file-detail-change.add .file-detail-line > span:first-child { color: var(--ok); }
+.file-detail-change.del { background: color-mix(in srgb, var(--err) 12%, transparent); }
+.file-detail-change.add { background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.file-detail-lines { min-width: 0; padding: 1px 0; overflow: hidden; color: var(--tx-dim); text-align: right; font: inherit; opacity: .8; user-select: none; }
+.file-detail-line > code { min-width: 0; padding: 1px 5px; overflow: auto; color: var(--tx); font: inherit; white-space: pre-wrap; word-break: break-word; }
+
+.transfer-card { overflow: visible; background: transparent; border-color: transparent; }
+.transfer-card .card-head { padding: 0; background: transparent; }
+.transfer-card .card-head:hover { background: transparent; color: var(--tx); }
+.transfer-detail { display: none; margin-top: 2px; }
+.transfer-card[open] .transfer-detail { display: block; }
 
 /*
  * Why this one was not put to the user. Quiet -- it is a footnote on a step that
@@ -709,27 +772,20 @@ button:disabled { opacity: .38; cursor: default; }
   background: var(--bg-code);
   border-top: 1px solid var(--hairline);
   font-family: var(--font-mono);
-  font-size: var(--fs-mono);
+  font-size: var(--fs-sm);
   white-space: pre-wrap;
   word-break: break-all;
   user-select: text;
 }
 
+.card-input, .result-row { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: stretch; }
+.result-row { border-top: 1px solid var(--hairline); }
+.detail-label { padding: 8px 7px 8px 10px; color: var(--tx-dim); font-size: var(--fs-xs); letter-spacing: .04em; user-select: none; }
+.card-input .command, .result-row .output { min-width: 0; padding: 8px 10px 8px 0; border: 0; background: transparent; }
+.result-row .output { max-height: 320px; font-size: var(--fs-sm); }
+
 .card-actions { display: flex; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--hairline); }
 .card-actions .spacer { flex: 1 1 auto; }
-
-.result-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  border-top: 1px solid var(--hairline);
-  color: var(--vscode-descriptionForeground);
-  font-size: var(--fs-sm);
-}
-
-.result-head .exit { font-variant-numeric: tabular-nums; }
-.result-head .exit.bad { color: var(--err); }
 
 .output {
   margin: 0;
@@ -852,6 +908,123 @@ textarea::placeholder { color: var(--tx-dim); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Clipboard images form one quiet filmstrip above the prompt. It scrolls
+ * sideways instead of making the composer consume the conversation when many
+ * images are pasted, while every thumbnail remains reachable. */
+.composer-images {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  padding: 8px 8px 2px;
+  scrollbar-width: thin;
+}
+
+.composer-images[hidden] { display: none; }
+
+.composer-image {
+  position: relative;
+  flex: 0 0 58px;
+  width: 58px;
+  height: 58px;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  background: transparent;
+}
+
+.composer-image-open,
+.user-image-open {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: zoom-in;
+}
+
+.composer-image-open { width: 100%; height: 100%; }
+.composer-image-open img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.composer-image-open:focus-visible,
+.user-image-open:focus-visible { outline: 2px solid var(--ac); outline-offset: 2px; }
+
+.composer-image-remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--tx) 30%, transparent);
+  border-radius: 50%;
+  color: var(--tx);
+  background: color-mix(in srgb, var(--bg-input) 84%, transparent);
+  line-height: 1;
+}
+
+.composer-image-remove:hover { border-color: var(--err); color: var(--err); }
+.composer-image-remove:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--ac-ring); }
+
+.user-images { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 7px; }
+.user-image-open img {
+  display: block;
+  width: clamp(88px, 22vw, 150px);
+  height: clamp(72px, 18vw, 120px);
+  border-radius: var(--r-sm);
+  object-fit: cover;
+}
+.turn.user .bubble.image-only { padding: 7px; }
+.turn.user .bubble.image-only .user-images { margin-bottom: 0; }
+
+/* The image is the surface: no nested card or decorative chrome. The backdrop
+ * provides separation, while the close control remains reachable regardless of
+ * the image's aspect ratio. */
+.image-preview { z-index: 420; cursor: zoom-out; }
+.image-preview-stage {
+  position: relative;
+  display: grid;
+  place-items: center;
+  max-width: 100%;
+  max-height: 100%;
+  cursor: default;
+}
+.image-preview-stage > img {
+  display: block;
+  max-width: min(92vw, 1400px);
+  max-height: 86vh;
+  object-fit: contain;
+  border-radius: var(--r-sm);
+}
+.image-preview-close {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  color: var(--tx);
+  background: var(--bg-dialog);
+  box-shadow: 0 1px 8px color-mix(in srgb, black 24%, transparent);
+}
+.image-preview-caption {
+  max-width: min(86vw, 760px);
+  margin-top: 8px;
+  overflow: hidden;
+  color: var(--tx);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .composer-image-open img,
+  .user-image-open img { transition: transform 120ms ease, opacity 120ms ease; }
+  .composer-image-open:hover img,
+  .user-image-open:hover img { transform: scale(1.025); opacity: .92; }
+}
+
+/* Transport diagnostics belong in the transcript panel, not beside the prompt. */
+.composer-transport { display: none !important; }
 
 .composer-transport.warn {
   color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
@@ -1398,7 +1571,7 @@ textarea::placeholder { color: var(--tx-dim); }
 
 /* -- transfers ------------------------------------------------------------ */
 
-.card .transfer-view { padding: 8px 10px; border-top: 1px solid var(--hairline); }
+.card .transfer-view { padding: 8px 10px; }
 
 .transfer-meta {
   color: var(--vscode-descriptionForeground);

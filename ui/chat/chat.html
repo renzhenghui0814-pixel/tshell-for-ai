@@ -56,6 +56,7 @@
   -->
   <footer class="composer">
     <div class="composer-box" id="composerBox">
+      <div class="composer-images" id="composerImages" hidden aria-live="polite"></div>
       <textarea id="input" rows="1" spellcheck="false" data-i18n-placeholder="agentPlaceholder"></textarea>
       <!--
         Everything you do to a conversation, on one row under the thing you say
@@ -131,6 +132,19 @@
       </div>
     </div>
   </footer>
+
+  <!-- One shared viewer for both pending and already-sent images. It stays
+       visually subordinate to the image itself and leaves the transcript
+       untouched underneath. -->
+  <div class="backdrop image-preview" id="imagePreview" hidden>
+    <div class="image-preview-stage" role="dialog" aria-modal="true" aria-labelledby="imagePreviewCaption">
+      <button class="icon-button image-preview-close" id="imagePreviewClose" data-i18n-title="agentCloseImagePreview">
+        <svg class="icon"><use href="#i-close"/></svg>
+      </button>
+      <img id="imagePreviewImage" alt="">
+      <div class="image-preview-caption" id="imagePreviewCaption"></div>
+    </div>
+  </div>
 
   <!--
     The permission prompt. It is modal on purpose: a command that changes the

@@ -1,9 +1,9 @@
 /*
  * The window's palette, and what the user changed about it.
  *
- * `theme.css` is the palette that ships: two halves, of which eighteen tokens
+ * `theme.css` is the palette that ships: two halves, of which seventeen tokens
  * are decisions and eighteen more follow from them. The settings page lets the
- * eighteen decisions be edited; this file is what turns them into the eighteen
+ * seventeen decisions be edited; this file is what turns them into the eighteen
  * that follow and writes the result into a page.
  *
  * Three rules hold the whole design up.
@@ -33,29 +33,29 @@
   'use strict';
 
   /*
-   * The eighteen, in the order the settings page lists them, with the CSS name
+   * The seventeen, in the order the settings page lists them, with the CSS name
    * each one carries. `theme.rs` holds the same list and drops anything not in
    * it -- two copies, because one is the file format's guarantee and the other
    * is this file's, and neither can be the other's authority. They are checked
    * against each other by `scripts/palette-check.mjs`.
    *
    * `group` is which block of the settings page a token is drawn in, and the
-   * three blocks are not the three kinds of colour. The accent, the user's
-   * message and the progress bar sit with the surfaces because what they have
-   * in common with them is the question being asked: this is a fill, what
-   * colour is it. The block is titled for fills, not for grounds.
+   * three blocks are not the three kinds of colour. The accent, user message,
+   * Markdown emphasis and progress bar sit with the surfaces because this is
+   * the block where the user chooses grounds and content accents.
    */
   var TOKENS = [
-    { key: 'bgInput', css: '--bg-input', group: 'surface' },
-    { key: 'bgCode', css: '--bg-code', group: 'surface' },
-    { key: 'bgBase', css: '--bg-base', group: 'surface' },
+    // Two intentional columns in the settings page: five grounds, then five
+    // fills/content accents. CSS lays this sequence down each column.
     { key: 'bgElev', css: '--bg-elev', group: 'surface' },
-    { key: 'bgTab', css: '--bg-tab', group: 'surface' },
-    { key: 'bgCard', css: '--bg-card', group: 'surface' },
+    { key: 'bgBase', css: '--bg-base', group: 'surface' },
+    { key: 'bgInput', css: '--bg-input', group: 'surface' },
     { key: 'bgDialog', css: '--bg-dialog', group: 'surface' },
+    { key: 'bgTab', css: '--bg-tab', group: 'surface' },
     { key: 'bgMenu', css: '--bg-menu', group: 'surface' },
     { key: 'ac', css: '--ac', group: 'surface' },
     { key: 'chatUser', css: '--chat-user', group: 'surface' },
+    { key: 'markdown', css: '--markdown', group: 'surface' },
     { key: 'progress', css: '--progress', group: 'surface' },
     { key: 'tx', css: '--tx', group: 'text' },
     { key: 'txDim', css: '--tx-dim', group: 'text' },
@@ -73,17 +73,17 @@
    * A key this build does not know is dropped -- that is the closed set doing
    * its job -- but dropping `bgInset` from a file written last week would
    * throw away a colour the user picked, silently, on upgrade. So the old name
-   * is read once and handed to both halves of the split, which is exactly what
-   * it used to mean: the two ship at the same value, and someone who moved the
-   * old one wanted both of them moved.
+   * is read once and handed to every surviving heir. Roles that are no longer
+   * editable are deliberately absent; older choices still reach the live role
+   * they used to cover.
    *
    * `theme.rs` does the same on its side. Neither can be the other's
    * authority -- the file may be read by Rust before this ever runs -- and
    * `palette-check.mjs` holds the two tables to each other.
    */
   var SPLIT = {
-    bgInset: ['bgInput', 'bgCode'],
-    bgRaise: ['bgTab', 'bgCard'],
+    bgInset: ['bgInput'],
+    bgRaise: ['bgTab'],
     bgFloat: ['bgDialog', 'bgMenu']
   };
 
@@ -250,7 +250,7 @@
   /*
    * What the stylesheet says, read out of the stylesheet.
    *
-   * The settings page needs a value for every one of the eighteen even before
+   * The settings page needs a value for every one of the seventeen even before
    * anything is edited -- a colour input has to open on something -- and the
    * half being edited is not always the half being displayed, so
    * `getComputedStyle` cannot answer for both. The rules are same-origin, so
@@ -265,7 +265,7 @@
   function readShipped(doc) {
     /*
      * `css` holds the derived names as written; the rest of the map is the
-     * eighteen, keyed the way the file and the settings page key them. One
+     * seventeen, keyed the way the file and the settings page key them. One
      * object because they are read out of the same two rules in one pass.
      */
     var out = { dark: { css: {} }, light: { css: {} } };
@@ -294,7 +294,7 @@
         });
         /*
          * The derived names as the stylesheet spells them, kept beside the
-         * eighteen. `resolved` shows these rather than recomputing them, which
+         * eighteen derived values. `resolved` shows these rather than recomputing them, which
          * is rule TWO seen from the preview's side: the shipped `--ac-tx` was
          * measured, and drawing an approximation of it next to the real window
          * would make the preview quietly wrong about the case where nothing

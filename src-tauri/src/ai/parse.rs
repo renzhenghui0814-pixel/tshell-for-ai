@@ -97,7 +97,9 @@ fn repair_json(candidate: &str) -> Option<String> {
             let next = chars.get(index + 1).copied();
             if next == Some('u')
                 && chars.len() >= index + 6
-                && chars[index + 2..index + 6].iter().all(|c| c.is_ascii_hexdigit())
+                && chars[index + 2..index + 6]
+                    .iter()
+                    .all(|c| c.is_ascii_hexdigit())
             {
                 out.extend(&chars[index..index + 6]);
                 index += 6;
@@ -246,10 +248,15 @@ pub fn action_from_object(record: serde_json::Map<String, Value>) -> Option<Agen
         // Anything but a plain "global" is the current server. Filing a fact too
         // narrowly costs one machine a repeated lookup; filing it too widely tells
         // the model something untrue about every other machine the user owns.
-        scope: Some(match text_of(record.get("scope")).map(|s| s.to_lowercase()).as_deref() {
-            Some("global") => MemoryScope::Global,
-            _ => MemoryScope::Server,
-        }),
+        scope: Some(
+            match text_of(record.get("scope"))
+                .map(|s| s.to_lowercase())
+                .as_deref()
+            {
+                Some("global") => MemoryScope::Global,
+                _ => MemoryScope::Server,
+            },
+        ),
         // A transfer takes one item or several, because moving three logs is one
         // intention and should not cost three round trips to the model.
         paths: path_list(record.get("path")),
@@ -348,10 +355,16 @@ pub fn parse_actions(reply: &str) -> ParsedReply {
     // before it, so it goes with the object rather than being shown as speech.
     let prose_before = |start: usize| {
         let head: String = chars[..start].iter().collect();
-        TRAILING_FENCE.replace(head.trim_end(), "").trim().to_string()
+        TRAILING_FENCE
+            .replace(head.trim_end(), "")
+            .trim()
+            .to_string()
     };
-    let prose_only =
-        || ParsedReply { actions: Vec::new(), unreadable: false, prose: reply.trim().to_string() };
+    let prose_only = || ParsedReply {
+        actions: Vec::new(),
+        unreadable: false,
+        prose: reply.trim().to_string(),
+    };
 
     let starts = trailing_starts(&chars);
     let mut wreck = None;
@@ -378,9 +391,11 @@ pub fn parse_actions(reply: &str) -> ParsedReply {
     }
 
     match wreck {
-        Some(start) => {
-            ParsedReply { actions: Vec::new(), unreadable: true, prose: prose_before(start) }
-        }
+        Some(start) => ParsedReply {
+            actions: Vec::new(),
+            unreadable: true,
+            prose: prose_before(start),
+        },
         None => prose_only(),
     }
 }
@@ -400,7 +415,11 @@ mod tests {
 
     fn one(reply: &str) -> AgentAction {
         let parsed = parse_actions(reply);
-        assert_eq!(parsed.actions.len(), 1, "expected exactly one action in {reply:?}");
+        assert_eq!(
+            parsed.actions.len(),
+            1,
+            "expected exactly one action in {reply:?}"
+        );
         parsed.actions.into_iter().next().unwrap()
     }
 
@@ -437,7 +456,10 @@ mod tests {
     fn a_reply_that_is_all_prose_is_the_answer() {
         let parsed = none("The disk is nearly full. You should clear /var/log.");
         assert!(!parsed.unreadable);
-        assert_eq!(parsed.prose, "The disk is nearly full. You should clear /var/log.");
+        assert_eq!(
+            parsed.prose,
+            "The disk is nearly full. You should clear /var/log."
+        );
     }
 
     #[test]
@@ -496,7 +518,9 @@ mod tests {
     /// Naming nothing is how the user is shown a file picker.
     #[test]
     fn an_upload_needs_no_path_but_a_download_does() {
-        assert!(one(r#"{"action":"upload","to":"/tmp","why":"x"}"#).paths.is_empty());
+        assert!(one(r#"{"action":"upload","to":"/tmp","why":"x"}"#)
+            .paths
+            .is_empty());
         none(r#"{"action":"download","to":"/tmp","why":"x"}"#);
     }
 
@@ -549,7 +573,10 @@ mod tests {
             one(r#"{"action":"remember","text":"x","scope":"GLOBAL"}"#).scope,
             Some(MemoryScope::Global)
         );
-        assert_eq!(one(r#"{"action":"remember","text":"x"}"#).scope, Some(MemoryScope::Server));
+        assert_eq!(
+            one(r#"{"action":"remember","text":"x"}"#).scope,
+            Some(MemoryScope::Server)
+        );
         assert_eq!(
             one(r#"{"action":"remember","text":"x","scope":"everywhere"}"#).scope,
             Some(MemoryScope::Server)
@@ -558,7 +585,10 @@ mod tests {
 
     #[test]
     fn a_transfer_takes_one_path_or_several() {
-        assert_eq!(one(r#"{"action":"upload","path":"a.txt","to":"/tmp"}"#).paths, vec!["a.txt"]);
+        assert_eq!(
+            one(r#"{"action":"upload","path":"a.txt","to":"/tmp"}"#).paths,
+            vec!["a.txt"]
+        );
         assert_eq!(
             one(r#"{"action":"download","path":["a","b"," "],"to":"/tmp"}"#).paths,
             vec!["a", "b"]
@@ -567,9 +597,16 @@ mod tests {
 
     #[test]
     fn the_skill_key_is_accepted_alongside_name() {
-        assert_eq!(one(r#"{"action":"skill","skill":"deploy"}"#).name.as_deref(), Some("deploy"));
         assert_eq!(
-            one(r#"{"action":"skill","name":"deploy","skill":"other"}"#).name.as_deref(),
+            one(r#"{"action":"skill","skill":"deploy"}"#)
+                .name
+                .as_deref(),
+            Some("deploy")
+        );
+        assert_eq!(
+            one(r#"{"action":"skill","name":"deploy","skill":"other"}"#)
+                .name
+                .as_deref(),
             Some("deploy")
         );
     }
@@ -613,8 +650,10 @@ mod tests {
     /// is still waiting.
     #[test]
     fn a_reply_cut_off_inside_its_action_is_not_shown_as_an_answer() {
-        let parsed = none("I will look.
-{\"action\":\"run\",\"command\":\"tail -n 200 /var/log/mes");
+        let parsed = none(
+            "I will look.
+{\"action\":\"run\",\"command\":\"tail -n 200 /var/log/mes",
+        );
         assert!(parsed.unreadable);
         assert_eq!(parsed.prose, "I will look.");
     }
@@ -629,7 +668,9 @@ mod tests {
 
     #[test]
     fn reasoning_that_carries_an_action_is_told_apart_from_reasoning_that_does_not() {
-        assert!(carries_action(r#"I should look. {"action":"run","command":"ls"}"#));
+        assert!(carries_action(
+            r#"I should look. {"action":"run","command":"ls"}"#
+        ));
         assert!(!carries_action("I should look at the disk next."));
     }
 }
