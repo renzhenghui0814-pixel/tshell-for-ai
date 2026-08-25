@@ -101,7 +101,10 @@ pub enum Status {
 
 enum Command {
     Input(Vec<u8>),
-    Resize { cols: u32, rows: u32 },
+    Resize {
+        cols: u32,
+        rows: u32,
+    },
     /// Read the stream as something else from here on.
     Encoding(&'static Encoding),
 }
@@ -157,7 +160,10 @@ impl Sessions {
     /// waits for an end marker that can no longer reach it.
     pub fn detach(&self, pane: &str, agent: &Arc<crate::ai::shell::AgentShell>) {
         let mut agents = self.agents.lock().unwrap();
-        if agents.get(pane).is_some_and(|held| Arc::ptr_eq(held, agent)) {
+        if agents
+            .get(pane)
+            .is_some_and(|held| Arc::ptr_eq(held, agent))
+        {
             agents.remove(pane);
         }
     }
@@ -191,6 +197,28 @@ impl Sessions {
     pub fn close(&self, pane: &str) {
         self.live.lock().unwrap().remove(pane);
         self.agents.lock().unwrap().remove(pane);
+    }
+
+    /// Forgets one connection after its output pump ends, without closing the
+    /// terminal tab that owned it.
+    ///
+    /// The assistant belongs to the tab, not to one SSH connection. Keeping its
+    /// observer here is what lets Enter reconnect the terminal and have the
+    /// already-open chat carry on through the new shell. Removing it made the
+    /// assistant's wrapper appear literally on screen and left every command
+    /// waiting for markers that nobody was observing.
+    ///
+    /// The sender identifies the connection whose pump is ending. An older pump
+    /// may finish after a replacement has already been installed; in that case
+    /// it must not remove the new live sender.
+    fn disconnected(&self, pane: &str, connection: &mpsc::UnboundedSender<Command>) {
+        let mut live = self.live.lock().unwrap();
+        if live
+            .get(pane)
+            .is_some_and(|current| current.same_channel(connection))
+        {
+            live.remove(pane);
+        }
     }
 
     fn send(&self, pane: &str, command: Command) -> bool {
@@ -275,18 +303,28 @@ pub async fn open(
     say(&out, Status::Opened);
 
     let (tx, rx) = mpsc::unbounded_channel();
-    sessions.live.lock().unwrap().insert(pane.clone(), tx);
+    sessions
+        .live
+        .lock()
+        .unwrap()
+        .insert(pane.clone(), tx.clone());
 
     let sessions_for_pump = Arc::clone(&sessions);
     tauri::async_runtime::spawn(async move {
-        pump(channel, rx, target.encoding, out.clone(), &sessions_for_pump, &pane).await;
+        pump(
+            channel,
+            rx,
+            target.encoding,
+            out.clone(),
+            &sessions_for_pump,
+            &pane,
+        )
+        .await;
         // The connection is gone; the tab is not. Clearing the entry is what
         // makes the next Enter reconnect rather than write into nothing.
-        sessions_for_pump.close(&pane);
+        sessions_for_pump.disconnected(&pane, &tx);
         say(&out, Status::Closed);
-        let _ = handle
-            .disconnect(Disconnect::ByApplication, "", "en")
-            .await;
+        let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
     });
 
     Ok(())
@@ -342,10 +380,7 @@ pub async fn connect(target: &Target) -> Result<client::Handle<Client>, String> 
     Ok(handle)
 }
 
-async fn authenticate(
-    handle: &mut client::Handle<Client>,
-    target: &Target,
-) -> Result<(), String> {
+async fn authenticate(handle: &mut client::Handle<Client>, target: &Target) -> Result<(), String> {
     let accepted = match &target.credential {
         Credential::Password(password) => handle
             .authenticate_password(&target.username, password)
@@ -572,7 +607,9 @@ mod tests {
         // The close for the panel that has already gone, arriving after the open.
         sessions.detach("term-1", &leaving);
 
-        let held = sessions.agent("term-1").expect("the new assistant is still watching");
+        let held = sessions
+            .agent("term-1")
+            .expect("the new assistant is still watching");
         assert!(Arc::ptr_eq(&held, &arriving));
     }
 
@@ -582,6 +619,68 @@ mod tests {
         let only = agent();
         sessions.attach("term-1", only.clone());
         sessions.detach("term-1", &only);
+        assert!(sessions.agent("term-1").is_none());
+    }
+
+    /// A network loss ends one SSH connection, not the terminal tab or the chat
+    /// panel attached to it. Enter may create a fresh connection for that same
+    /// tab, and the existing assistant must still receive its output.
+    #[test]
+    fn a_disconnection_keeps_the_assistant_attached_for_reconnect() {
+        let sessions = Sessions::default();
+        let watching = agent();
+        let (connection, _rx) = mpsc::unbounded_channel();
+        sessions
+            .live
+            .lock()
+            .unwrap()
+            .insert("term-1".into(), connection.clone());
+        sessions.attach("term-1", watching.clone());
+
+        sessions.disconnected("term-1", &connection);
+
+        assert!(!sessions.is_live("term-1"));
+        let held = sessions
+            .agent("term-1")
+            .expect("the chat keeps watching across a reconnect");
+        assert!(Arc::ptr_eq(&held, &watching));
+    }
+
+    /// Cleanup from an old pump can arrive after a replacement connection has
+    /// entered the map. Connection identity keeps that stale cleanup from making
+    /// a successfully reconnected terminal look dead again.
+    #[test]
+    fn an_old_pump_cannot_remove_the_reconnected_session() {
+        let sessions = Sessions::default();
+        let (old, _old_rx) = mpsc::unbounded_channel();
+        let (replacement, _replacement_rx) = mpsc::unbounded_channel();
+        sessions
+            .live
+            .lock()
+            .unwrap()
+            .insert("term-1".into(), replacement);
+
+        sessions.disconnected("term-1", &old);
+
+        assert!(sessions.is_live("term-1"));
+    }
+
+    /// Closing the tab is different from losing its current connection: both the
+    /// sender and the assistant really do belong to a tab that no longer exists.
+    #[test]
+    fn closing_the_terminal_removes_its_assistant() {
+        let sessions = Sessions::default();
+        let (connection, _rx) = mpsc::unbounded_channel();
+        sessions
+            .live
+            .lock()
+            .unwrap()
+            .insert("term-1".into(), connection);
+        sessions.attach("term-1", agent());
+
+        sessions.close("term-1");
+
+        assert!(!sessions.is_live("term-1"));
         assert!(sessions.agent("term-1").is_none());
     }
 }

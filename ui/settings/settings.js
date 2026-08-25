@@ -49,7 +49,7 @@
       resetAccept: '恢复',
       schemeBroken: '方案文件读不了，现在用的是内置方案。在你修好它之前这里不会写入，以免覆盖掉里面的东西。{0}',
       palette: '窗口配色',
-      paletteHint: '深浅两套各十八个颜色，其余的（悬停、描边、填充上的文字、焦点环）由它们算出来。没改过的颜色不写进文件，跟随产品更新',
+      paletteHint: '深浅两套各十七个颜色，其余的（悬停、描边、填充上的文字、焦点环）由它们算出来。没改过的颜色不写进文件，跟随产品更新',
       paletteSurface: '底色与填充',
       paletteInk: '文字',
       paletteMeaning: '语义色',
@@ -67,17 +67,16 @@
       paletteOn: '{0} 压在 {1} 上',
       paletteSample: '示例文字 Aa 0123',
       paletteSampleDim: '次一级的说明文字',
-      paletteBgInput: '输入框',
-      paletteBgCode: '代码块与命令输出',
-      paletteBgBase: '面板底色（也是终端的）',
-      paletteBgElev: '窗口底色（标题栏与缝隙）',
-      paletteBgTab: '当前标签',
-      paletteBgCard: '卡片',
+      paletteBgElev: '窗口底色',
+      paletteBgBase: '面板底色',
+      paletteBgInput: '输入框底色',
       paletteBgDialog: '对话框',
-      paletteBgMenu: '菜单',
+      paletteBgTab: '当前标签',
+      paletteBgMenu: '菜单色',
       paletteAc: '强调色',
       paletteChatUser: '用户消息',
-      paletteProgress: '传输进度条',
+      paletteMarkdown: 'Markdown',
+      paletteProgress: '进度条',
       paletteTx: '正文',
       paletteTxDim: '次级文字',
       paletteTxFaint: '极淡（只画线，不承载文字）',
@@ -147,7 +146,7 @@
       resetAccept: 'Restore',
       schemeBroken: 'The schemes file could not be read, so the built-in schemes are what you are looking at. Nothing here is saved until you fix it, so that whatever is in there is not written over. {0}',
       palette: 'Window palette',
-      paletteHint: 'Eighteen colours per half. The rest -- hovers, hairlines, the ink on a fill, the focus ring -- follow from them. A colour you never change is not stored, so it keeps up with the product',
+      paletteHint: 'Seventeen colours per half. The rest -- hovers, hairlines, the ink on a fill, the focus ring -- follow from them. A colour you never change is not stored, so it keeps up with the product',
       paletteSurface: 'Surfaces and fills',
       paletteInk: 'Text',
       paletteMeaning: 'Meanings',
@@ -165,17 +164,16 @@
       paletteOn: '{0} on {1}',
       paletteSample: 'Sample text Aa 0123',
       paletteSampleDim: 'the line under it',
-      paletteBgInput: 'Input fields',
-      paletteBgCode: 'Code blocks and command output',
-      paletteBgBase: 'Panel surface (and the terminal)',
-      paletteBgElev: 'Window ground (title bar and the gaps)',
-      paletteBgTab: 'The tab in front',
-      paletteBgCard: 'Cards',
+      paletteBgElev: 'Window ground',
+      paletteBgBase: 'Panel ground',
+      paletteBgInput: 'Input ground',
       paletteBgDialog: 'Dialogs',
+      paletteBgTab: 'The tab in front',
       paletteBgMenu: 'Menus',
       paletteAc: 'Accent',
       paletteChatUser: 'User message',
-      paletteProgress: 'Transfer progress bar',
+      paletteMarkdown: 'Markdown',
+      paletteProgress: 'Progress bar',
       paletteTx: 'Text',
       paletteTxDim: 'Secondary text',
       paletteTxFaint: 'Faint (hairlines only, never words)',
@@ -576,7 +574,7 @@
   }
 
   /*
-   * The window's palette: eighteen colours per half, and what they add up to.
+   * The window's palette: seventeen colours per half, and what they add up to.
    *
    * The other thirty tokens theme.css defines are not here, because they are
    * not decisions -- `palette.js` computes them from these, and it computes
@@ -589,25 +587,6 @@
    * no file; a colour let go is sent as `themeSave`, and what comes back is the
    * normalized file, which replaces the working copy.
    */
-  /*
-   * Which folds the user left open, so the page does not shut them again every
-   * time it is drawn. Kept out of the config file on purpose: it is where the
-   * scroll position was, not a preference, and it has no business travelling
-   * between machines with the servers and the keys.
-   */
-  function rememberFolds() {
-    document.querySelectorAll('details.fold[id]').forEach(function (fold) {
-      var slot = 'tshell.fold.' + fold.id;
-      try {
-        if (localStorage.getItem(slot) === '1') fold.open = true;
-      } catch (error) { /* private mode, or no storage: it stays shut. */ }
-      fold.addEventListener('toggle', function () {
-        try { localStorage.setItem(slot, fold.open ? '1' : '0'); }
-        catch (error) { /* nothing to do: the fold still works. */ }
-      });
-    });
-  }
-
   (function paletteEditor() {
     var api = window.tshellPalette;
     var row = document.querySelector('.palette-row');
@@ -853,23 +832,17 @@
      * Checking it would produce a warning that is always up, and a warning that
      * is always up is furniture.
      */
-    var SURFACES = [
-      'bgInput', 'bgCode', 'bgBase', 'bgElev',
-      'bgTab', 'bgCard', 'bgDialog', 'bgMenu'
-    ];
+    var SURFACES = ['bgElev', 'bgBase', 'bgInput', 'bgDialog', 'bgTab', 'bgMenu'];
 
     /*
-     * Both levels of readable text on every surface, and not on the four that
-     * were listed back when there were six surfaces and four of them could not
-     * be reached separately anyway. Every one of the eight is its own decision
-     * now, which means every one of them can be taken somewhere `--tx-dim`
-     * cannot be read.
+     * Both levels of readable text on every editable ground. Markdown is text
+     * too, so its independent emphasis colour is checked on the answer surface.
      */
     var PAIRS = SURFACES.map(function (ground) { return ['tx', ground]; })
       .concat(SURFACES.map(function (ground) { return ['txDim', ground]; }))
       .concat([
         ['ac', 'bgBase'], ['ok', 'bgBase'], ['warn', 'bgBase'],
-        ['err', 'bgBase'], ['info', 'bgBase']
+        ['err', 'bgBase'], ['info', 'bgBase'], ['markdown', 'bgBase']
       ]);
 
     function drawContrast() {
@@ -917,7 +890,7 @@
      *
      * They looked the same and they are not the same thing. The theme switch
      * two rows above is a segmented control because pressing it changes the
-     * window; this one changes which eighteen swatches are on screen and nothing
+     * window; this one changes which seventeen swatches are on screen and nothing
      * else -- press "light" while working in the dark theme and the window
      * stays dark, which is the whole point of it being a separate control. Worn
      * as the same filled pill, it read as a second theme switch that had failed
@@ -2125,6 +2098,5 @@
   wireNumbers();
   // After both editors have drawn: opening a fold whose contents do not exist
   // yet is a fold that opens onto nothing.
-  rememberFolds();
   vscode.postMessage({ type: 'aiRead' });
 })();

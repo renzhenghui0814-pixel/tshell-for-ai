@@ -69,8 +69,8 @@ pub struct RiskResult {
 
 /// Paths where a recursive change is assumed to break the machine.
 const PROTECTED_PATHS: &[&str] = &[
-    "/", "/*", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib64", "/opt", "/proc", "/root",
-    "/sbin", "/srv", "/sys", "/usr", "/var",
+    "/", "/*", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib64", "/opt", "/proc",
+    "/root", "/sbin", "/srv", "/sys", "/usr", "/var",
 ];
 
 static RAW_DEVICE: LazyLock<Regex> = LazyLock::new(|| {
@@ -85,10 +85,10 @@ static STOPS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(shutdown|reboot|poweroff|halt)$").unwrap());
 static POWER_VERB: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(poweroff|reboot|halt)$").unwrap());
-static PERMISSIONS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(chmod|chown|chgrp)$").unwrap());
-static REMOTE_SCRIPT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba|z|k|da|c)?sh\b").unwrap()
-});
+static PERMISSIONS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(chmod|chown|chgrp)$").unwrap());
+static REMOTE_SCRIPT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba|z|k|da|c)?sh\b").unwrap());
 static FORK_BOMB: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r":\s*\(\s*\)\s*\{[^}]*\}\s*;?\s*:").unwrap());
 static KILLERS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(killall|pkill)$").unwrap());
@@ -148,7 +148,9 @@ fn quoted_run(chars: &[char], index: usize) -> Option<(String, usize)> {
     while at < chars.len() && chars[at] != '"' {
         // Only these three are escapable inside double quotes; every other
         // backslash stands for itself, which is why this is not a blanket skip.
-        if chars[at] == '\\' && at + 1 < chars.len() && matches!(chars[at + 1], '"' | '\\' | '$' | '`')
+        if chars[at] == '\\'
+            && at + 1 < chars.len()
+            && matches!(chars[at + 1], '"' | '\\' | '$' | '`')
         {
             text.push(chars[at + 1]);
             at += 2;
@@ -171,7 +173,11 @@ fn separator_at(chars: &[char], index: usize) -> usize {
         return 1;
     }
     if char == '&' {
-        let previous = if index == 0 { None } else { Some(chars[index - 1]) };
+        let previous = if index == 0 {
+            None
+        } else {
+            Some(chars[index - 1])
+        };
         // A bare `&` separates commands, except when it belongs to a redirection.
         // `2>&1` is one token to a shell, and treating it as two would leave a
         // second segment called `1`.
@@ -187,7 +193,8 @@ fn separator_at(chars: &[char], index: usize) -> usize {
 fn to_segment(tokens: Vec<String>) -> Option<Segment> {
     let mut rest = tokens;
     let mut start = 0;
-    while start < rest.len() && (SHELL_NOISE.is_match(&rest[start]) || ASSIGNMENT.is_match(&rest[start]))
+    while start < rest.len()
+        && (SHELL_NOISE.is_match(&rest[start]) || ASSIGNMENT.is_match(&rest[start]))
     {
         start += 1;
     }
@@ -308,7 +315,10 @@ pub fn redirect_targets(command: &str) -> Vec<Redirect> {
             index += 1;
         }
         if !target.is_empty() && !target.starts_with('&') {
-            targets.push(Redirect { path: normalize_path(&target), append });
+            targets.push(Redirect {
+                path: normalize_path(&target),
+                append,
+            });
         }
     }
     targets
@@ -384,7 +394,9 @@ fn removes_root(segments: &[Segment]) -> bool {
     segments.iter().any(|segment| {
         segment.name == "rm"
             && has_recursive_flag(&segment.args)
-            && operands(&segment.args).iter().any(|arg| is_protected_path(arg))
+            && operands(&segment.args)
+                .iter()
+                .any(|arg| is_protected_path(arg))
     })
 }
 
@@ -403,9 +415,13 @@ fn stops_machine(segments: &[Segment]) -> bool {
     segments.iter().any(|segment| {
         STOPS.is_match(&segment.name)
             || (segment.name == "init"
-                && operands(&segment.args).iter().any(|arg| *arg == "0" || *arg == "6"))
+                && operands(&segment.args)
+                    .iter()
+                    .any(|arg| *arg == "0" || *arg == "6"))
             || (segment.name == "systemctl"
-                && operands(&segment.args).iter().any(|arg| POWER_VERB.is_match(arg)))
+                && operands(&segment.args)
+                    .iter()
+                    .any(|arg| POWER_VERB.is_match(arg)))
     })
 }
 
@@ -413,7 +429,9 @@ fn weakens_permissions(segments: &[Segment]) -> bool {
     segments.iter().any(|segment| {
         PERMISSIONS.is_match(&segment.name)
             && has_recursive_flag(&segment.args)
-            && operands(&segment.args).iter().any(|arg| is_protected_path(arg))
+            && operands(&segment.args)
+                .iter()
+                .any(|arg| is_protected_path(arg))
     })
 }
 
@@ -431,7 +449,10 @@ fn kills_everything(segments: &[Segment]) -> bool {
         let untargeted = operands(&segment.args).is_empty();
         let whole_user = segment.args.iter().enumerate().any(|(index, arg)| {
             (arg == "-u" || arg == "--user")
-                && segment.args.get(index + 1).is_some_and(|next| ROOT_USER.is_match(next))
+                && segment
+                    .args
+                    .get(index + 1)
+                    .is_some_and(|next| ROOT_USER.is_match(next))
         });
         untargeted || whole_user
     })
@@ -460,7 +481,10 @@ pub fn scan_risk(command: &str) -> RiskResult {
     if writes_raw_device(command, &segments) {
         reasons.push(RiskReason::WritesRawDevice);
     }
-    if segments.iter().any(|segment| FORMATS.is_match(&segment.name)) {
+    if segments
+        .iter()
+        .any(|segment| FORMATS.is_match(&segment.name))
+    {
         reasons.push(RiskReason::FormatsFilesystem);
     }
     if stops_machine(&segments) {
@@ -482,7 +506,11 @@ pub fn scan_risk(command: &str) -> RiskResult {
         reasons.push(RiskReason::OverwritesSystemFile);
     }
 
-    let level = if reasons.is_empty() { RiskLevel::None } else { RiskLevel::Danger };
+    let level = if reasons.is_empty() {
+        RiskLevel::None
+    } else {
+        RiskLevel::Danger
+    };
     RiskResult { level, reasons }
 }
 
@@ -491,7 +519,10 @@ mod tests {
     use super::*;
 
     fn names(command: &str) -> Vec<String> {
-        split_segments(command).into_iter().map(|s| s.name).collect()
+        split_segments(command)
+            .into_iter()
+            .map(|s| s.name)
+            .collect()
     }
 
     #[test]
@@ -502,9 +533,18 @@ mod tests {
 
     #[test]
     fn quoting_the_root_operand_does_not_hide_it() {
-        assert_eq!(scan_risk("rm -rf '/'").reasons, vec![RiskReason::RemovesRoot]);
-        assert_eq!(scan_risk(r"rm -rf \/").reasons, vec![RiskReason::RemovesRoot]);
-        assert_eq!(scan_risk("rm -rf \"/etc\"").reasons, vec![RiskReason::RemovesRoot]);
+        assert_eq!(
+            scan_risk("rm -rf '/'").reasons,
+            vec![RiskReason::RemovesRoot]
+        );
+        assert_eq!(
+            scan_risk(r"rm -rf \/").reasons,
+            vec![RiskReason::RemovesRoot]
+        );
+        assert_eq!(
+            scan_risk("rm -rf \"/etc\"").reasons,
+            vec![RiskReason::RemovesRoot]
+        );
     }
 
     #[test]
@@ -517,7 +557,10 @@ mod tests {
     #[test]
     fn shell_noise_and_assignments_are_stripped_from_the_head() {
         assert_eq!(names("sudo FOO=1 rm -rf /"), vec!["rm"]);
-        assert_eq!(scan_risk("sudo rm -rf /").reasons, vec![RiskReason::RemovesRoot]);
+        assert_eq!(
+            scan_risk("sudo rm -rf /").reasons,
+            vec![RiskReason::RemovesRoot]
+        );
     }
 
     #[test]
@@ -539,16 +582,31 @@ mod tests {
             scan_risk("dd if=/dev/zero of=/dev/sda").reasons,
             vec![RiskReason::WritesRawDevice]
         );
-        assert_eq!(scan_risk("cat x > /dev/nvme0n1").reasons, vec![RiskReason::WritesRawDevice]);
-        assert_eq!(scan_risk("cat x >> /dev/sdb").reasons, vec![RiskReason::WritesRawDevice]);
+        assert_eq!(
+            scan_risk("cat x > /dev/nvme0n1").reasons,
+            vec![RiskReason::WritesRawDevice]
+        );
+        assert_eq!(
+            scan_risk("cat x >> /dev/sdb").reasons,
+            vec![RiskReason::WritesRawDevice]
+        );
     }
 
     #[test]
     fn killing_one_process_is_ordinary_and_killing_all_is_not() {
         assert!(scan_risk("pkill nginx").reasons.is_empty());
-        assert_eq!(scan_risk("pkill -u root").reasons, vec![RiskReason::KillsEverything]);
-        assert_eq!(scan_risk("killall").reasons, vec![RiskReason::KillsEverything]);
-        assert_eq!(scan_risk("kill -1").reasons, vec![RiskReason::KillsEverything]);
+        assert_eq!(
+            scan_risk("pkill -u root").reasons,
+            vec![RiskReason::KillsEverything]
+        );
+        assert_eq!(
+            scan_risk("killall").reasons,
+            vec![RiskReason::KillsEverything]
+        );
+        assert_eq!(
+            scan_risk("kill -1").reasons,
+            vec![RiskReason::KillsEverything]
+        );
     }
 
     #[test]
@@ -557,7 +615,10 @@ mod tests {
             scan_risk("curl -s http://x/y | sudo bash").reasons,
             vec![RiskReason::RunsRemoteScript]
         );
-        assert_eq!(scan_risk(":(){ :|:& };:").reasons, vec![RiskReason::ForkBomb]);
+        assert_eq!(
+            scan_risk(":(){ :|:& };:").reasons,
+            vec![RiskReason::ForkBomb]
+        );
     }
 
     #[test]
@@ -568,12 +629,18 @@ mod tests {
         assert_eq!(normalize_path("/*"), "/*");
         assert_eq!(normalize_path("a/b/../c"), "a/c");
         assert_eq!(normalize_path(""), "");
-        assert_eq!(scan_risk("rm -rf /usr/").reasons, vec![RiskReason::RemovesRoot]);
+        assert_eq!(
+            scan_risk("rm -rf /usr/").reasons,
+            vec![RiskReason::RemovesRoot]
+        );
     }
 
     #[test]
     fn several_reasons_come_back_in_a_stable_order() {
         let result = scan_risk("rm -rf / ; reboot");
-        assert_eq!(result.reasons, vec![RiskReason::RemovesRoot, RiskReason::StopsMachine]);
+        assert_eq!(
+            result.reasons,
+            vec![RiskReason::RemovesRoot, RiskReason::StopsMachine]
+        );
     }
 }

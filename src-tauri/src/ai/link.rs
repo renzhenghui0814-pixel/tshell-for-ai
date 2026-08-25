@@ -158,11 +158,15 @@ impl Link {
             )
             .await
             .map_err(|error| LinkError::Failed(error.to_string()))?;
-        file.write_all(bytes).await.map_err(|error| LinkError::Failed(error.to_string()))?;
+        file.write_all(bytes)
+            .await
+            .map_err(|error| LinkError::Failed(error.to_string()))?;
         // Flushed explicitly rather than left to the drop: a drop cannot report a
         // failure, and a short write that nobody noticed becomes a truncated file
         // that the commit then moves into place over a good one.
-        file.flush().await.map_err(|error| LinkError::Failed(error.to_string()))?;
+        file.flush()
+            .await
+            .map_err(|error| LinkError::Failed(error.to_string()))?;
         Ok(())
     }
 
@@ -212,7 +216,10 @@ impl Link {
         // A handle that has closed under us -- the network dropped, the server
         // restarted -- is worth nothing, and a caller that got an error from it
         // would have no way to ask for a fresh one.
-        if live.as_ref().is_some_and(|session| session.handle.is_closed()) {
+        if live
+            .as_ref()
+            .is_some_and(|session| session.handle.is_closed())
+        {
             *live = None;
         }
 

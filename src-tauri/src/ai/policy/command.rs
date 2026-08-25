@@ -34,7 +34,11 @@ pub struct PolicyResult {
 
 impl PolicyResult {
     fn auto() -> Self {
-        Self { verdict: Verdict::Auto, reasons: Vec::new(), blocker: None }
+        Self {
+            verdict: Verdict::Auto,
+            reasons: Vec::new(),
+            blocker: None,
+        }
     }
     fn confirm(blocker: &str) -> Self {
         Self {
@@ -44,7 +48,11 @@ impl PolicyResult {
         }
     }
     fn refuse(reasons: Vec<RiskReason>) -> Self {
-        Self { verdict: Verdict::Refuse, reasons, blocker: None }
+        Self {
+            verdict: Verdict::Refuse,
+            reasons,
+            blocker: None,
+        }
     }
 }
 
@@ -56,32 +64,113 @@ struct ReadOnlyRule {
     deny_tokens: Option<&'static [&'static str]>,
 }
 
-const BARE: ReadOnlyRule = ReadOnlyRule { subcommands: None, deny_tokens: None };
+const BARE: ReadOnlyRule = ReadOnlyRule {
+    subcommands: None,
+    deny_tokens: None,
+};
 
 /// Commands that only ever read, in every shape they take.
 const BARE_COMMANDS: &[&str] = &[
-    "ls", "dir", "vdir", "cat", "tac", "nl", "head", "wc", "stat", "file", "readlink", "realpath",
-    "dirname", "basename", "pwd", "echo", "printf", "du", "df", "free", "uptime", "uname",
-    "hostname", "whoami", "id", "groups", "date", "env", "printenv", "which", "type", "whereis",
-    "locale", "grep", "egrep", "fgrep", "rg", "ag", "sort", "uniq", "cut", "tr", "column", "diff",
-    "cmp", "md5sum", "sha1sum", "sha256sum", "cksum", "ps", "pgrep", "lsof", "netstat", "ss",
-    "dmesg", "lsblk", "lscpu", "lsusb", "zcat", "zgrep", "getent", "nproc", "arch", "dmidecode",
+    "ls",
+    "dir",
+    "vdir",
+    "cat",
+    "tac",
+    "nl",
+    "head",
+    "wc",
+    "stat",
+    "file",
+    "readlink",
+    "realpath",
+    "dirname",
+    "basename",
+    "pwd",
+    "echo",
+    "printf",
+    "du",
+    "df",
+    "free",
+    "uptime",
+    "uname",
+    "hostname",
+    "whoami",
+    "id",
+    "groups",
+    "date",
+    "env",
+    "printenv",
+    "which",
+    "type",
+    "whereis",
+    "locale",
+    "grep",
+    "egrep",
+    "fgrep",
+    "rg",
+    "ag",
+    "sort",
+    "uniq",
+    "cut",
+    "tr",
+    "column",
+    "diff",
+    "cmp",
+    "md5sum",
+    "sha1sum",
+    "sha256sum",
+    "cksum",
+    "ps",
+    "pgrep",
+    "lsof",
+    "netstat",
+    "ss",
+    "dmesg",
+    "lsblk",
+    "lscpu",
+    "lsusb",
+    "zcat",
+    "zgrep",
+    "getent",
+    "nproc",
+    "arch",
+    "dmidecode",
 ];
 
 /// The ones that read only in some shapes, with the constraint that makes it so.
 const CONSTRAINED: &[(&str, ReadOnlyRule)] = &[
     // Following a stream never returns, which would hang the step until it times out.
-    ("tail", ReadOnlyRule { subcommands: None, deny_tokens: Some(&["-f", "-F", "--follow"]) }),
-    ("journalctl", ReadOnlyRule { subcommands: None, deny_tokens: Some(&["-f", "--follow"]) }),
+    (
+        "tail",
+        ReadOnlyRule {
+            subcommands: None,
+            deny_tokens: Some(&["-f", "-F", "--follow"]),
+        },
+    ),
+    (
+        "journalctl",
+        ReadOnlyRule {
+            subcommands: None,
+            deny_tokens: Some(&["-f", "--follow"]),
+        },
+    ),
     // find can delete and execute, which is exactly what an allowlist must not wave through.
     (
         "find",
         ReadOnlyRule {
             subcommands: None,
-            deny_tokens: Some(&["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprintf"]),
+            deny_tokens: Some(&[
+                "-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprintf",
+            ]),
         },
     ),
-    ("sed", ReadOnlyRule { subcommands: None, deny_tokens: Some(&["-i", "--in-place"]) }),
+    (
+        "sed",
+        ReadOnlyRule {
+            subcommands: None,
+            deny_tokens: Some(&["-i", "--in-place"]),
+        },
+    ),
     (
         "tar",
         ReadOnlyRule {
@@ -116,7 +205,9 @@ const CONSTRAINED: &[(&str, ReadOnlyRule)] = &[
     (
         "docker",
         ReadOnlyRule {
-            subcommands: Some(&["ps", "logs", "inspect", "images", "version", "info", "stats", "top"]),
+            subcommands: Some(&[
+                "ps", "logs", "inspect", "images", "version", "info", "stats", "top",
+            ]),
             deny_tokens: Some(&["-f", "--follow"]),
         },
     ),
@@ -131,7 +222,15 @@ const CONSTRAINED: &[(&str, ReadOnlyRule)] = &[
         "git",
         ReadOnlyRule {
             subcommands: Some(&[
-                "status", "log", "diff", "show", "branch", "remote", "tag", "blame", "describe",
+                "status",
+                "log",
+                "diff",
+                "show",
+                "branch",
+                "remote",
+                "tag",
+                "blame",
+                "describe",
                 "rev-parse",
             ]),
             deny_tokens: None,
@@ -169,7 +268,10 @@ static STRUCTURAL_BLOCKERS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new
         ("redirect", Regex::new(r">&\s*[^\s0-9]").unwrap()),
         ("commandSubstitution", Regex::new(r"\$\(|`").unwrap()),
         ("processSubstitution", Regex::new(r"<\(").unwrap()),
-        ("privilege", Regex::new(r"(^|[\s|;&(])(sudo|doas|su)\b").unwrap()),
+        (
+            "privilege",
+            Regex::new(r"(^|[\s|;&(])(sudo|doas|su)\b").unwrap(),
+        ),
         ("background", Regex::new(r"&\s*$").unwrap()),
     ]
 });
@@ -182,7 +284,10 @@ fn rule_for(name: &str) -> Option<&'static ReadOnlyRule> {
     if BARE_COMMANDS.contains(&name) {
         return Some(&BARE);
     }
-    CONSTRAINED.iter().find(|(key, _)| *key == name).map(|(_, rule)| rule)
+    CONSTRAINED
+        .iter()
+        .find(|(key, _)| *key == name)
+        .map(|(_, rule)| rule)
 }
 
 /// The reason this segment is not allowed through unasked, or `None` when it is.
@@ -229,7 +334,10 @@ pub fn classify_command(command: &str, extra_read_only: &[String]) -> PolicyResu
         return PolicyResult::refuse(risk.reasons);
     }
 
-    if let Some((token, _)) = STRUCTURAL_BLOCKERS.iter().find(|(_, test)| test.is_match(text)) {
+    if let Some((token, _)) = STRUCTURAL_BLOCKERS
+        .iter()
+        .find(|(_, test)| test.is_match(text))
+    {
         return PolicyResult::confirm(token);
     }
 
@@ -238,8 +346,11 @@ pub fn classify_command(command: &str, extra_read_only: &[String]) -> PolicyResu
         return PolicyResult::confirm("empty");
     }
 
-    let extra: HashSet<&str> =
-        extra_read_only.iter().map(|name| name.trim()).filter(|name| !name.is_empty()).collect();
+    let extra: HashSet<&str> = extra_read_only
+        .iter()
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .collect();
     for segment in &segments {
         if let Some(blocker) = allows_segment(segment, &extra) {
             return PolicyResult::confirm(&blocker);
@@ -274,8 +385,14 @@ mod tests {
 
     #[test]
     fn the_user_can_widen_the_allowlist() {
-        assert_eq!(classify_command("frobnicate --all", &["frobnicate".into()]).verdict, Verdict::Auto);
-        assert_eq!(classify_command("frobnicate", &["  ".into()]).verdict, Verdict::Confirm);
+        assert_eq!(
+            classify_command("frobnicate --all", &["frobnicate".into()]).verdict,
+            Verdict::Auto
+        );
+        assert_eq!(
+            classify_command("frobnicate", &["  ".into()]).verdict,
+            Verdict::Confirm
+        );
     }
 
     #[test]

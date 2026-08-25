@@ -121,7 +121,11 @@ async fn resolve_sources<C: TransferContext>(
         .paths
         .iter()
         .map(|candidate| {
-            expand_home(&context.normalize_source(candidate), &home, separator_of(&home))
+            expand_home(
+                &context.normalize_source(candidate),
+                &home,
+                separator_of(&home),
+            )
         })
         .filter(|candidate| !candidate.is_empty())
         .collect();
@@ -141,8 +145,10 @@ async fn resolve_sources<C: TransferContext>(
      * goes unnoticed until it is needed.
      */
     let roots = probe_all(&asked, context).await;
-    let missing: Vec<&String> =
-        asked.iter().filter(|candidate| !roots.iter().any(|root| root.path == **candidate)).collect();
+    let missing: Vec<&String> = asked
+        .iter()
+        .filter(|candidate| !roots.iter().any(|root| root.path == **candidate))
+        .collect();
     if missing.is_empty() {
         return Ok(roots);
     }
@@ -171,9 +177,7 @@ async fn picked_sources<C: TransferContext>(
     context: &C,
 ) -> Result<Vec<TransferRoot>, TransferOpError> {
     if request.kind == TransferKind::Download {
-        return fail(
-            "The download action needs a \"path\" -- the file or folder on the server.",
-        );
+        return fail("The download action needs a \"path\" -- the file or folder on the server.");
     }
     let picked = context.pick_sources().await;
     if picked.is_empty() {
@@ -196,7 +200,11 @@ async fn resolve_target<C: TransferContext>(
     let named = request.to.trim();
     if !named.is_empty() {
         let home = context.home_target();
-        return Ok(expand_home(&context.normalize_target(named), &home, separator_of(&home)));
+        return Ok(expand_home(
+            &context.normalize_target(named),
+            &home,
+            separator_of(&home),
+        ));
     }
 
     /*
@@ -261,13 +269,19 @@ pub async fn plan_transfer<C: TransferContext>(
                 "Send the action with no \"to\" and the user is shown a folder picker, where they \
                  can make a new folder if they want one -- or name a directory that already exists."
             };
-            fail(format!("Nothing was transferred. {target} does not exist. {next}"))
+            fail(format!(
+                "Nothing was transferred. {target} does not exist. {next}"
+            ))
         }
         Some(PathKind::File) => fail(format!(
             "{target} is a file, not a directory. \"to\" is the folder the items are put in, not \
              the name to give them."
         )),
-        Some(PathKind::Directory) => Ok(TransferPlan { kind: request.kind, roots, target }),
+        Some(PathKind::Directory) => Ok(TransferPlan {
+            kind: request.kind,
+            roots,
+            target,
+        }),
     }
 }
 
@@ -296,8 +310,10 @@ pub fn describe_transfer(
         TransferKind::Upload => "Uploaded",
         TransferKind::Download => "Downloaded",
     };
-    let mut lines =
-        vec![format!("{direction} {} file(s) to {}.", summary.completed, plan.target)];
+    let mut lines = vec![format!(
+        "{direction} {} file(s) to {}.",
+        summary.completed, plan.target
+    )];
 
     if summary.cancelled {
         lines.push(
@@ -313,7 +329,12 @@ pub fn describe_transfer(
             summary.skipped
         ));
         lines.push("destination. Nothing there was overwritten.".to_string());
-        lines.extend(skipped.iter().take(MAX_FAILURE_LINES).map(|path| format!("  {path}")));
+        lines.extend(
+            skipped
+                .iter()
+                .take(MAX_FAILURE_LINES)
+                .map(|path| format!("  {path}")),
+        );
         lines.push(
             "If those files are the point of the task, put them somewhere else, or rename or \
              remove what is"
@@ -324,7 +345,12 @@ pub fn describe_transfer(
     if summary.failed > 0 {
         lines.push(String::new());
         lines.push(format!("{} item(s) failed:", summary.failed));
-        lines.extend(failures.iter().take(MAX_FAILURE_LINES).map(|line| format!("  {line}")));
+        lines.extend(
+            failures
+                .iter()
+                .take(MAX_FAILURE_LINES)
+                .map(|line| format!("  {line}")),
+        );
     }
 
     // Nothing moved and something went wrong is a failed step; a clean run in
@@ -350,10 +376,15 @@ pub fn describe_transfer(
 /// worse than no Desktop at all: the transfer would create the folder and put the
 /// file somewhere the user does not look.
 pub fn describe_local_places(last_used: &str) -> Vec<String> {
-    let Some(home) = dirs::home_dir() else { return Vec::new() };
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
     let mut lines = vec![format!("  home: {}", home.display())];
 
-    for (label, dir) in [("desktop", dirs::desktop_dir()), ("downloads", dirs::download_dir())] {
+    for (label, dir) in [
+        ("desktop", dirs::desktop_dir()),
+        ("downloads", dirs::download_dir()),
+    ] {
         // `dirs` reads the platform's own answer, which is what knows that
         // Desktop is called 桌面 on this account and that OneDrive has moved it.
         if let Some(found) = dir.filter(|path| path.is_dir()) {
@@ -362,7 +393,9 @@ pub fn describe_local_places(last_used: &str) -> Vec<String> {
     }
 
     if !last_used.is_empty() && std::path::Path::new(last_used).is_dir() {
-        lines.push(format!("  where they last put a downloaded file: {last_used}"));
+        lines.push(format!(
+            "  where they last put a downloaded file: {last_used}"
+        ));
     }
     lines
 }
@@ -432,7 +465,10 @@ mod tests {
     fn a_tilde_becomes_the_home_of_the_side_being_addressed() {
         assert_eq!(expand_home("~", "/home/me", '/'), "/home/me");
         assert_eq!(expand_home("~/logs", "/home/me", '/'), "/home/me/logs");
-        assert_eq!(expand_home("~\\logs", "C:\\Users\\me", '\\'), "C:\\Users\\me\\logs");
+        assert_eq!(
+            expand_home("~\\logs", "C:\\Users\\me", '\\'),
+            "C:\\Users\\me\\logs"
+        );
         assert_eq!(expand_home("/absolute", "/home/me", '/'), "/absolute");
         assert_eq!(expand_home("~notuser", "/home/me", '/'), "~notuser");
     }
@@ -443,8 +479,16 @@ mod tests {
         fake.source.insert("/var/log/a".into(), PathKind::File);
         fake.target.insert("/tmp".into(), PathKind::Directory);
 
-        let plan = plan_transfer(&download(&["/var/log/a"], "/tmp"), &fake).await.unwrap();
-        assert_eq!(plan.roots, vec![TransferRoot { path: "/var/log/a".into(), is_directory: false }]);
+        let plan = plan_transfer(&download(&["/var/log/a"], "/tmp"), &fake)
+            .await
+            .unwrap();
+        assert_eq!(
+            plan.roots,
+            vec![TransferRoot {
+                path: "/var/log/a".into(),
+                is_directory: false
+            }]
+        );
         assert_eq!(plan.target, "/tmp");
     }
 
@@ -459,14 +503,19 @@ mod tests {
             .unwrap_err();
         assert!(error.0.contains("Nothing was transferred"));
         assert!(error.0.contains("/var/log/gone"));
-        assert!(!error.0.contains("/var/log/a,"), "the one that exists is not listed as missing");
+        assert!(
+            !error.0.contains("/var/log/a,"),
+            "the one that exists is not listed as missing"
+        );
     }
 
     #[tokio::test]
     async fn a_destination_that_is_not_there_is_refused_rather_than_created() {
         let mut fake = Fake::default();
         fake.source.insert("/a".into(), PathKind::File);
-        let error = plan_transfer(&download(&["/a"], "/nowhere"), &fake).await.unwrap_err();
+        let error = plan_transfer(&download(&["/a"], "/nowhere"), &fake)
+            .await
+            .unwrap_err();
         assert!(error.0.contains("/nowhere does not exist"));
         assert!(error.0.contains("folder picker"));
     }
@@ -476,7 +525,9 @@ mod tests {
         let mut fake = Fake::default();
         fake.source.insert("/a".into(), PathKind::File);
         fake.target.insert("/tmp/x".into(), PathKind::File);
-        let error = plan_transfer(&download(&["/a"], "/tmp/x"), &fake).await.unwrap_err();
+        let error = plan_transfer(&download(&["/a"], "/tmp/x"), &fake)
+            .await
+            .unwrap_err();
         assert!(error.0.contains("is a file, not a directory"));
         assert!(error.0.contains("not the name to give them"));
     }
@@ -488,7 +539,9 @@ mod tests {
         fake.target.insert("/srv/app".into(), PathKind::Directory);
         fake.default_target = "/srv/app".into();
 
-        let plan = plan_transfer(&upload(&["/local/a"], ""), &fake).await.unwrap();
+        let plan = plan_transfer(&upload(&["/local/a"], ""), &fake)
+            .await
+            .unwrap();
         assert_eq!(plan.target, "/srv/app");
     }
 
@@ -507,7 +560,9 @@ mod tests {
     async fn a_dismissed_folder_picker_transfers_nothing() {
         let mut fake = Fake::default();
         fake.source.insert("/a".into(), PathKind::File);
-        let error = plan_transfer(&download(&["/a"], ""), &fake).await.unwrap_err();
+        let error = plan_transfer(&download(&["/a"], ""), &fake)
+            .await
+            .unwrap_err();
         assert!(error.0.contains("closed the folder picker"));
     }
 
@@ -525,28 +580,38 @@ mod tests {
     #[tokio::test]
     async fn a_download_with_no_path_has_nothing_to_pick_from() {
         let fake = Fake::default();
-        let error = plan_transfer(&download(&[], "/tmp"), &fake).await.unwrap_err();
+        let error = plan_transfer(&download(&[], "/tmp"), &fake)
+            .await
+            .unwrap_err();
         assert!(error.0.contains("needs a \"path\""));
     }
 
     #[tokio::test]
     async fn a_dismissed_file_picker_uploads_nothing() {
         let fake = Fake::default();
-        let error = plan_transfer(&upload(&[], "/srv"), &fake).await.unwrap_err();
+        let error = plan_transfer(&upload(&[], "/srv"), &fake)
+            .await
+            .unwrap_err();
         assert!(error.0.contains("closed the file picker"));
     }
 
     fn plan() -> TransferPlan {
         TransferPlan {
             kind: TransferKind::Download,
-            roots: vec![TransferRoot { path: "/a".into(), is_directory: false }],
+            roots: vec![TransferRoot {
+                path: "/a".into(),
+                is_directory: false,
+            }],
             target: "/tmp".into(),
         }
     }
 
     #[test]
     fn a_clean_transfer_reports_what_moved() {
-        let summary = TransferSummary { completed: 3, ..Default::default() };
+        let summary = TransferSummary {
+            completed: 3,
+            ..Default::default()
+        };
         let result = describe_transfer(&plan(), &summary, &[], &[]);
         assert_eq!(result.output, "Downloaded 3 file(s) to /tmp.");
         assert_eq!(result.exit_code, 0);
@@ -554,7 +619,11 @@ mod tests {
 
     #[test]
     fn skips_are_spelled_out_with_what_to_do_about_them() {
-        let summary = TransferSummary { completed: 1, skipped: 2, ..Default::default() };
+        let summary = TransferSummary {
+            completed: 1,
+            skipped: 2,
+            ..Default::default()
+        };
         let result = describe_transfer(&plan(), &summary, &["/tmp/a".into(), "/tmp/b".into()], &[]);
         assert!(result.output.contains("2 item(s) were NOT transferred"));
         assert!(result.output.contains("Nothing there was overwritten."));
@@ -564,18 +633,30 @@ mod tests {
 
     #[test]
     fn nothing_moved_and_something_failed_is_a_failed_step() {
-        let summary = TransferSummary { completed: 0, failed: 2, ..Default::default() };
+        let summary = TransferSummary {
+            completed: 0,
+            failed: 2,
+            ..Default::default()
+        };
         let result = describe_transfer(&plan(), &summary, &[], &["FAILED /a".into()]);
         assert_eq!(result.exit_code, 1);
         assert!(result.output.contains("2 item(s) failed:"));
 
-        let partial = TransferSummary { completed: 1, failed: 1, ..Default::default() };
+        let partial = TransferSummary {
+            completed: 1,
+            failed: 1,
+            ..Default::default()
+        };
         assert_eq!(describe_transfer(&plan(), &partial, &[], &[]).exit_code, 0);
     }
 
     #[test]
     fn a_cancelled_transfer_says_not_to_start_it_again() {
-        let summary = TransferSummary { completed: 1, cancelled: true, ..Default::default() };
+        let summary = TransferSummary {
+            completed: 1,
+            cancelled: true,
+            ..Default::default()
+        };
         let result = describe_transfer(&plan(), &summary, &[], &[]);
         assert!(result.output.contains("The user stopped the transfer"));
     }
@@ -584,6 +665,8 @@ mod tests {
     fn the_local_places_always_name_home_at_least() {
         let lines = describe_local_places("");
         assert!(lines.iter().any(|line| line.starts_with("  home: ")));
-        assert!(!lines.iter().any(|line| line.contains("where they last put")));
+        assert!(!lines
+            .iter()
+            .any(|line| line.contains("where they last put")));
     }
 }

@@ -254,7 +254,11 @@ pub fn without_split_character(data: &[u8]) -> &[u8] {
         } else {
             2
         };
-        return if width > back { &data[..data.len() - back] } else { data };
+        return if width > back {
+            &data[..data.len() - back]
+        } else {
+            data
+        };
     }
     data
 }
@@ -263,7 +267,11 @@ pub fn without_split_character(data: &[u8]) -> &[u8] {
 /// utf8 and a new file never gets here at all -- gb18030 is only ever the answer
 /// for bytes that cannot be anything else.
 pub fn detect_encoding(data: &[u8], partial: bool) -> FileEncoding {
-    let sample = if partial { without_split_character(data) } else { data };
+    let sample = if partial {
+        without_split_character(data)
+    } else {
+        data
+    };
     if is_utf8(sample) {
         FileEncoding::Utf8
     } else {
@@ -295,7 +303,9 @@ pub fn read_encoding_probe(output: &str) -> FileEncoding {
         return FileEncoding::Gb18030;
     }
     let packed: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-    let data = base64::engine::general_purpose::STANDARD.decode(&packed).unwrap_or_default();
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(&packed)
+        .unwrap_or_default();
     detect_encoding(&data, true)
 }
 
@@ -313,7 +323,11 @@ pub fn build_chunk_commands(payload: &[u8], target: &str, append: bool) -> Vec<S
     let file = quote(target);
     let chunks = base64_chunks(payload, CHUNK_CHARS);
     if chunks.is_empty() {
-        return if append { Vec::new() } else { vec![format!(": > {file}")] };
+        return if append {
+            Vec::new()
+        } else {
+            vec![format!(": > {file}")]
+        };
     }
     chunks
         .iter()
@@ -333,8 +347,11 @@ pub fn build_chunk_commands(payload: &[u8], target: &str, append: bool) -> Vec<S
 pub fn build_commit(path: &str, temp: &str, exists: bool) -> String {
     let file = quote(path);
     let staged = quote(temp);
-    let keep_mode =
-        if exists { format!("chmod --reference={file} {staged} 2>/dev/null; ") } else { String::new() };
+    let keep_mode = if exists {
+        format!("chmod --reference={file} {staged} 2>/dev/null; ")
+    } else {
+        String::new()
+    };
     format!("{keep_mode}mv -f -- {staged} {file}")
 }
 
@@ -348,13 +365,19 @@ pub fn build_commit(path: &str, temp: &str, exists: bool) -> String {
 pub fn build_append_commit(path: &str, temp: &str) -> String {
     let file = quote(path);
     let staged = quote(temp);
-    format!("cat -- {staged} >> {file}; status=$?; rm -f -- {staged}; exit $status")
+    // This command is evaluated by the user's interactive shell. A bare `exit`
+    // here logs that shell out before the command runner can print its closing
+    // marker. The subshell preserves `cat`'s exact status as the status of the
+    // whole command without terminating the terminal session that hosts it.
+    format!("cat -- {staged} >> {file}; status=$?; rm -f -- {staged}; (exit \"$status\")")
 }
 
 /// Size and digest in one step, digest optional: not every box has sha256sum.
 pub fn build_verify(path: &str) -> String {
     let file = quote(path);
-    format!("wc -c < {file} | tr -d ' \\n'; printf ' '; sha256sum {file} 2>/dev/null | cut -d' ' -f1")
+    format!(
+        "wc -c < {file} | tr -d ' \\n'; printf ' '; sha256sum {file} 2>/dev/null | cut -d' ' -f1"
+    )
 }
 
 pub fn count_occurrences(haystack: &str, needle: &str) -> usize {
@@ -391,11 +414,18 @@ pub fn format_bytes(bytes: usize) -> String {
 }
 
 fn silent() -> RunOptions {
-    RunOptions { silent: true, ..Default::default() }
+    RunOptions {
+        silent: true,
+        ..Default::default()
+    }
 }
 
 fn silent_raw() -> RunOptions {
-    RunOptions { silent: true, raw_output: true, ..Default::default() }
+    RunOptions {
+        silent: true,
+        raw_output: true,
+        ..Default::default()
+    }
 }
 
 /// Checks the request against the machine and works out exactly what will land.
@@ -411,7 +441,9 @@ pub async fn plan_file_op(
         return fail("The path is empty. Give an absolute path to the file.");
     }
     if path.ends_with('/') {
-        return fail(format!("{path} names a directory. Give the path of a file."));
+        return fail(format!(
+            "{path} names a directory. Give the path of a file."
+        ));
     }
 
     // One `stat` where there is a channel to ask on; the shell's `[ -d ]` where
@@ -424,12 +456,24 @@ pub async fn plan_file_op(
         None => {
             let probe = run.run(build_probe(&path), silent()).await;
             if probe.timed_out {
-                return fail(format!("Checking {path} was interrupted before it answered."));
+                return fail(format!(
+                    "Checking {path} was interrupted before it answered."
+                ));
             }
-            let state =
-                probe.output.trim().lines().next_back().unwrap_or_default().trim().to_string();
+            let state = probe
+                .output
+                .trim()
+                .lines()
+                .next_back()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
             if state != "dir" && state != "file" && state != "none" {
-                let said = if probe.output.is_empty() { "no output" } else { &probe.output };
+                let said = if probe.output.is_empty() {
+                    "no output"
+                } else {
+                    &probe.output
+                };
                 return fail(format!("Could not tell what {path} is: {said}"));
             }
             state
@@ -483,7 +527,11 @@ async fn plan_content(
      * channel they are two questions about the same bytes, and the bytes are one
      * read, so they are answered together rather than asked twice.
      */
-    let fetched = if exists { run.fetch(path.to_string()).await } else { None };
+    let fetched = if exists {
+        run.fetch(path.to_string()).await
+    } else {
+        None
+    };
     let (encoding, known_lines) = match &fetched {
         Some(Ok(data)) => {
             let encoding = detect_encoding(data, false);
@@ -648,15 +696,26 @@ async fn read_file(
         None => {
             let result = run.run(build_read(path), silent_raw()).await;
             if result.timed_out {
-                return fail(format!("Reading {path} was interrupted before it finished."));
+                return fail(format!(
+                    "Reading {path} was interrupted before it finished."
+                ));
             }
             if result.exit_code != 0 {
-                let said = if result.output.is_empty() { "no output" } else { &result.output };
+                let said = if result.output.is_empty() {
+                    "no output"
+                } else {
+                    &result.output
+                };
                 return fail(format!("Could not read {path}: {said}"));
             }
-            let packed: String =
-                result.output.chars().filter(|c| !c.is_whitespace()).collect();
-            base64::engine::general_purpose::STANDARD.decode(&packed).unwrap_or_default()
+            let packed: String = result
+                .output
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            base64::engine::general_purpose::STANDARD
+                .decode(&packed)
+                .unwrap_or_default()
         }
     };
     if data.len() > MAX_FILE_BYTES {
@@ -669,7 +728,9 @@ async fn read_file(
     // than probed. What must still be refused is a file that is not text at all:
     // decoding an executable produces something an edit could appear to succeed on.
     if looks_binary(&data) {
-        return fail(format!("{path} is not a text file, so it cannot be edited this way."));
+        return fail(format!(
+            "{path} is not a text file, so it cannot be edited this way."
+        ));
     }
     let encoding = detect_encoding(&data, false);
     let (text, had_errors) = decode_content(&data, encoding);
@@ -691,7 +752,12 @@ pub async fn apply_file_op(plan: &FilePlan, run: &dyn FileRunner) -> CommandResu
     let append = plan.kind == FileOpKind::Append;
     let nonce = format!("{:x}", now_nanos());
     let temp = temp_path_for(&plan.path, &nonce);
-    let label = format!("# tshell {} {} ({})", plan.kind.tag(), plan.path, format_bytes(plan.bytes));
+    let label = format!(
+        "# tshell {} {} ({})",
+        plan.kind.tag(),
+        plan.path,
+        format_bytes(plan.bytes)
+    );
 
     let bytes = encode_content(&plan.payload, plan.encoding);
 
@@ -726,7 +792,11 @@ pub async fn apply_file_op(plan: &FilePlan, run: &dyn FileRunner) -> CommandResu
         // at a time -- and an append still lands straight on the target, because
         // staging it would buy nothing without a single write to stage.
         None => {
-            let target = if append { plan.path.clone() } else { temp.clone() };
+            let target = if append {
+                plan.path.clone()
+            } else {
+                temp.clone()
+            };
             let mut commands = build_chunk_commands(&bytes, &target, append);
             if !append {
                 commands.push(build_commit(&plan.path, &temp, plan.exists));
@@ -739,7 +809,10 @@ pub async fn apply_file_op(plan: &FilePlan, run: &dyn FileRunner) -> CommandResu
         // The first step carries the label, so the terminal shows the intent once
         // rather than a column of base64 the user cannot read anyway.
         let options = if index == 0 {
-            RunOptions { display: Some(label.clone()), ..Default::default() }
+            RunOptions {
+                display: Some(label.clone()),
+                ..Default::default()
+            }
         } else {
             silent()
         };
@@ -748,10 +821,14 @@ pub async fn apply_file_op(plan: &FilePlan, run: &dyn FileRunner) -> CommandResu
             continue;
         }
         if !append {
-            run.run(format!("rm -f -- {}", quote(&temp)), silent()).await;
+            run.run(format!("rm -f -- {}", quote(&temp)), silent())
+                .await;
         }
-        let interrupted =
-            if result.timed_out { "The step was interrupted after the timeout.\n" } else { "" };
+        let interrupted = if result.timed_out {
+            "The step was interrupted after the timeout.\n"
+        } else {
+            ""
+        };
         return CommandResult {
             output: format!(
                 "{} of {} failed and nothing was changed.\n{interrupted}{}",
@@ -822,7 +899,11 @@ async fn verify(plan: &FilePlan, run: &dyn FileRunner) -> CommandResult {
             )
         }
         FileOpKind::Write => {
-            let replacing = if plan.exists { ", replacing what was there" } else { "" };
+            let replacing = if plan.exists {
+                ", replacing what was there"
+            } else {
+                ""
+            };
             format!("Wrote {} bytes to {}{replacing}.", plan.bytes, plan.path)
         }
     };
@@ -839,13 +920,22 @@ async fn verify(plan: &FilePlan, run: &dyn FileRunner) -> CommandResult {
     } else {
         ""
     };
-    let sized = if size.is_empty() { String::new() } else { format!("The file is now {size} bytes.") };
+    let sized = if size.is_empty() {
+        String::new()
+    } else {
+        format!("The file is now {size} bytes.")
+    };
     let output = [wrote.as_str(), sized.as_str(), encoded]
         .into_iter()
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    CommandResult { output, exit_code: 0, timed_out: false, truncated: false }
+    CommandResult {
+        output,
+        exit_code: 0,
+        timed_out: false,
+        truncated: false,
+    }
 }
 
 fn now_nanos() -> u128 {
@@ -870,10 +960,16 @@ mod tests {
 
     impl Fake {
         fn with(answers: Vec<CommandResult>) -> Self {
-            Self { answers: Mutex::new(answers), seen: Mutex::new(Vec::new()) }
+            Self {
+                answers: Mutex::new(answers),
+                seen: Mutex::new(Vec::new()),
+            }
         }
         fn ok(output: &str) -> CommandResult {
-            CommandResult { output: output.into(), ..Default::default() }
+            CommandResult {
+                output: output.into(),
+                ..Default::default()
+            }
         }
         fn commands(&self) -> Vec<String> {
             self.seen.lock().unwrap().clone()
@@ -888,8 +984,11 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = CommandResult> + Send + 'a>> {
             self.seen.lock().unwrap().push(command);
             let mut answers = self.answers.lock().unwrap();
-            let answer =
-                if answers.is_empty() { CommandResult::default() } else { answers.remove(0) };
+            let answer = if answers.is_empty() {
+                CommandResult::default()
+            } else {
+                answers.remove(0)
+            };
             Box::pin(async move { answer })
         }
     }
@@ -911,7 +1010,10 @@ mod tests {
             Self {
                 shell: Fake::default(),
                 files: Mutex::new(
-                    files.iter().map(|(p, b)| (p.to_string(), b.to_vec())).collect(),
+                    files
+                        .iter()
+                        .map(|(p, b)| (p.to_string(), b.to_vec()))
+                        .collect(),
                 ),
                 refuse: false,
             }
@@ -969,7 +1071,11 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Option<Presence>> + Send + 'a>> {
             let here = self.files.lock().unwrap().contains_key(&path);
             Box::pin(async move {
-                Some(if here { Presence::File } else { Presence::Absent })
+                Some(if here {
+                    Presence::File
+                } else {
+                    Presence::Absent
+                })
             })
         }
     }
@@ -1003,7 +1109,11 @@ mod tests {
         let payload = "x".repeat(5000);
         let chunks = base64_chunks(payload.as_bytes(), CHUNK_CHARS);
         assert!(chunks.len() > 1);
-        assert_eq!(chunks[0].len() % 4, 0, "a chunk boundary must be a base64 boundary");
+        assert_eq!(
+            chunks[0].len() % 4,
+            0,
+            "a chunk boundary must be a base64 boundary"
+        );
 
         let commands = build_chunk_commands(payload.as_bytes(), "/tmp/x", false);
         assert!(commands[0].contains("base64 -d > '/tmp/x'"));
@@ -1013,7 +1123,10 @@ mod tests {
     #[test]
     fn an_append_of_nothing_writes_nothing_and_a_write_of_nothing_truncates() {
         assert!(build_chunk_commands(b"", "/tmp/x", true).is_empty());
-        assert_eq!(build_chunk_commands(b"", "/tmp/x", false), vec![": > '/tmp/x'"]);
+        assert_eq!(
+            build_chunk_commands(b"", "/tmp/x", false),
+            vec![": > '/tmp/x'"]
+        );
     }
 
     #[test]
@@ -1034,14 +1147,28 @@ mod tests {
     fn a_sample_cut_through_a_character_is_not_read_as_another_encoding() {
         let full = "你好".as_bytes();
         let cut = &full[..full.len() - 1];
-        assert_eq!(detect_encoding(cut, false), FileEncoding::Gb18030, "the raw sample lies");
-        assert_eq!(detect_encoding(cut, true), FileEncoding::Utf8, "trimming it tells the truth");
+        assert_eq!(
+            detect_encoding(cut, false),
+            FileEncoding::Gb18030,
+            "the raw sample lies"
+        );
+        assert_eq!(
+            detect_encoding(cut, true),
+            FileEncoding::Utf8,
+            "trimming it tells the truth"
+        );
     }
 
     #[test]
     fn the_encoding_probe_reads_both_of_its_answers() {
-        assert_eq!(read_encoding_probe(&format!("noise\n{UTF8_MARKER}")), FileEncoding::Utf8);
-        assert_eq!(read_encoding_probe(&format!("noise\n{OTHER_MARKER}")), FileEncoding::Gb18030);
+        assert_eq!(
+            read_encoding_probe(&format!("noise\n{UTF8_MARKER}")),
+            FileEncoding::Utf8
+        );
+        assert_eq!(
+            read_encoding_probe(&format!("noise\n{OTHER_MARKER}")),
+            FileEncoding::Gb18030
+        );
         assert_eq!(read_encoding_probe(&base64_of("plain")), FileEncoding::Utf8);
 
         let gbk = base64::engine::general_purpose::STANDARD
@@ -1059,13 +1186,18 @@ mod tests {
     #[test]
     fn a_commit_keeps_the_mode_of_the_file_it_replaces() {
         assert!(build_commit("/etc/x", "/etc/.t", true).starts_with("chmod --reference="));
-        assert_eq!(build_commit("/etc/x", "/etc/.t", false), "mv -f -- '/etc/.t' '/etc/x'");
+        assert_eq!(
+            build_commit("/etc/x", "/etc/.t", false),
+            "mv -f -- '/etc/.t' '/etc/x'"
+        );
     }
 
     #[tokio::test]
     async fn a_write_to_a_new_file_is_utf8_and_starts_at_line_one() {
         let fake = Fake::with(vec![Fake::ok("none")]);
-        let plan = plan_file_op(&write_request("/tmp/new.txt", "hello"), &fake).await.unwrap();
+        let plan = plan_file_op(&write_request("/tmp/new.txt", "hello"), &fake)
+            .await
+            .unwrap();
         assert!(!plan.exists);
         assert_eq!(plan.encoding, FileEncoding::Utf8);
         assert_eq!(plan.payload, "hello\n", "a text file ends in a newline");
@@ -1076,7 +1208,9 @@ mod tests {
     #[tokio::test]
     async fn a_write_over_an_existing_file_keeps_the_encoding_it_had() {
         let fake = Fake::with(vec![Fake::ok("file"), Fake::ok(OTHER_MARKER)]);
-        let plan = plan_file_op(&write_request("/tmp/old.txt", "你好"), &fake).await.unwrap();
+        let plan = plan_file_op(&write_request("/tmp/old.txt", "你好"), &fake)
+            .await
+            .unwrap();
         assert!(plan.exists);
         assert_eq!(plan.encoding, FileEncoding::Gb18030);
     }
@@ -1084,18 +1218,29 @@ mod tests {
     #[tokio::test]
     async fn a_directory_is_refused_before_anything_is_read() {
         let fake = Fake::with(vec![Fake::ok("dir")]);
-        let error = plan_file_op(&write_request("/tmp", "x"), &fake).await.unwrap_err();
+        let error = plan_file_op(&write_request("/tmp", "x"), &fake)
+            .await
+            .unwrap_err();
         assert!(error.0.contains("is a directory"));
 
         let fake = Fake::default();
-        let error = plan_file_op(&write_request("/tmp/", "x"), &fake).await.unwrap_err();
+        let error = plan_file_op(&write_request("/tmp/", "x"), &fake)
+            .await
+            .unwrap_err();
         assert!(error.0.contains("names a directory"));
-        assert!(fake.commands().is_empty(), "nothing is asked of the machine");
+        assert!(
+            fake.commands().is_empty(),
+            "nothing is asked of the machine"
+        );
     }
 
     #[tokio::test]
     async fn an_append_is_numbered_on_from_where_the_file_ends() {
-        let fake = Fake::with(vec![Fake::ok("file"), Fake::ok(UTF8_MARKER), Fake::ok("12")]);
+        let fake = Fake::with(vec![
+            Fake::ok("file"),
+            Fake::ok(UTF8_MARKER),
+            Fake::ok("12"),
+        ]);
         let request = FileRequest {
             kind: FileOpKind::Append,
             path: "/tmp/log".into(),
@@ -1194,7 +1339,9 @@ mod tests {
     async fn something_too_big_to_paste_is_refused_with_the_limit() {
         let fake = Fake::with(vec![Fake::ok("none")]);
         let huge = "x".repeat(MAX_FILE_BYTES + 1);
-        let error = plan_file_op(&write_request("/tmp/x", &huge), &fake).await.unwrap_err();
+        let error = plan_file_op(&write_request("/tmp/x", &huge), &fake)
+            .await
+            .unwrap_err();
         assert!(error.0.contains(&MAX_FILE_BYTES.to_string()));
         assert!(error.0.contains("append"));
     }
@@ -1214,11 +1361,17 @@ mod tests {
             encoding: FileEncoding::Utf8,
         };
         let digest = sha256(b"hello\n");
-        let fake = Fake::with(vec![Fake::ok(""), Fake::ok(""), Fake::ok(&format!("6 {digest}"))]);
+        let fake = Fake::with(vec![
+            Fake::ok(""),
+            Fake::ok(""),
+            Fake::ok(&format!("6 {digest}")),
+        ]);
 
         let result = apply_file_op(&plan, &fake).await;
         assert_eq!(result.exit_code, 0);
-        assert!(result.output.starts_with("Wrote 6 bytes to /tmp/x, replacing what was there."));
+        assert!(result
+            .output
+            .starts_with("Wrote 6 bytes to /tmp/x, replacing what was there."));
         assert!(result.output.contains("The file is now 6 bytes."));
 
         let commands = fake.commands();
@@ -1261,14 +1414,22 @@ mod tests {
             payload: "hello\n".into(),
             encoding: FileEncoding::Utf8,
         };
-        let broken =
-            CommandResult { output: "no space".into(), exit_code: 1, ..Default::default() };
+        let broken = CommandResult {
+            output: "no space".into(),
+            exit_code: 1,
+            ..Default::default()
+        };
         let fake = Fake::with(vec![broken]);
 
         let result = apply_file_op(&plan, &fake).await;
         assert_eq!(result.exit_code, 1);
-        assert!(result.output.starts_with("write of /tmp/x failed and nothing was changed."));
-        assert!(fake.commands().iter().any(|command| command.starts_with("rm -f --")));
+        assert!(result
+            .output
+            .starts_with("write of /tmp/x failed and nothing was changed."));
+        assert!(fake
+            .commands()
+            .iter()
+            .any(|command| command.starts_with("rm -f --")));
     }
 
     #[tokio::test]
@@ -1286,11 +1447,19 @@ mod tests {
             encoding: FileEncoding::Utf8,
         };
         let digest = sha256(b"whole file");
-        let fake = Fake::with(vec![Fake::ok(""), Fake::ok(""), Fake::ok(&format!("3000 {digest}"))]);
+        let fake = Fake::with(vec![
+            Fake::ok(""),
+            Fake::ok(""),
+            Fake::ok(&format!("3000 {digest}")),
+        ]);
 
         let result = apply_file_op(&plan, &fake).await;
-        assert!(result.output.contains("replaced 3 bytes with 16 at line 42"));
-        assert!(result.output.contains("Nothing else in the file was touched."));
+        assert!(result
+            .output
+            .contains("replaced 3 bytes with 16 at line 42"));
+        assert!(result
+            .output
+            .contains("Nothing else in the file was touched."));
         assert!(!result.output.contains("3000 bytes to"));
     }
 
@@ -1311,7 +1480,11 @@ mod tests {
             encoding: FileEncoding::Gb18030,
         };
         let digest = sha256(&bytes);
-        let fake = Fake::with(vec![Fake::ok(""), Fake::ok(""), Fake::ok(&format!("5 {digest}"))]);
+        let fake = Fake::with(vec![
+            Fake::ok(""),
+            Fake::ok(""),
+            Fake::ok(&format!("5 {digest}")),
+        ]);
 
         let result = apply_file_op(&plan, &fake).await;
         assert!(result.output.contains("GBK/GB18030"));
@@ -1361,8 +1534,11 @@ mod tests {
         let request = FileRequest {
             kind: FileOpKind::Write,
             path: "/srv/x.conf".into(),
-            content: Some("hello
-".into()),
+            content: Some(
+                "hello
+"
+                .into(),
+            ),
             old_text: None,
             new_text: None,
         };
@@ -1378,21 +1554,30 @@ mod tests {
                 Some(commit[start..end].to_string())
             })
             .expect("the commit names the temporary");
-        assert_eq!(wired.written(&staged).unwrap(), b"hello
-");
+        assert_eq!(
+            wired.written(&staged).unwrap(),
+            b"hello
+"
+        );
     }
 
     /// An append stages too, and commits with `cat` rather than a move: there is
     /// a file to land at the end of, and a move would replace it.
     #[tokio::test]
     async fn an_append_over_the_channel_lands_at_the_end() {
-        let wired = Wired::with(&[("/var/log/notes", b"first
-")]);
+        let wired = Wired::with(&[(
+            "/var/log/notes",
+            b"first
+",
+        )]);
         let request = FileRequest {
             kind: FileOpKind::Append,
             path: "/var/log/notes".into(),
-            content: Some("second
-".into()),
+            content: Some(
+                "second
+"
+                .into(),
+            ),
             old_text: None,
             new_text: None,
         };
@@ -1404,9 +1589,18 @@ mod tests {
         let commands = wired.commands();
         assert_eq!(commands.len(), 2, "commands were: {commands:#?}");
         let commit = &commands[0];
-        assert!(commit.contains(">> '/var/log/notes'"), "commit was: {commit}");
-        assert!(commit.contains("rm -f --"), "the staged bytes are cleaned up");
-        assert!(!commit.contains("mv -f"), "an append must not replace the file");
+        assert!(
+            commit.contains(">> '/var/log/notes'"),
+            "commit was: {commit}"
+        );
+        assert!(
+            commit.contains("rm -f --"),
+            "the staged bytes are cleaned up"
+        );
+        assert!(
+            !commit.contains("mv -f"),
+            "an append must not replace the file"
+        );
     }
 
     /// The fallback is not a broken path, it is the path a host without a second
@@ -1417,8 +1611,11 @@ mod tests {
         let request = FileRequest {
             kind: FileOpKind::Write,
             path: "/tmp/a.conf".into(),
-            content: Some("hello
-".into()),
+            content: Some(
+                "hello
+"
+                .into(),
+            ),
             old_text: None,
             new_text: None,
         };
@@ -1426,7 +1623,9 @@ mod tests {
         apply_file_op(&plan, &fake).await;
 
         let commands = fake.commands();
-        assert!(commands.iter().any(|command| command.contains("base64 -d >")));
+        assert!(commands
+            .iter()
+            .any(|command| command.contains("base64 -d >")));
         assert!(commands.iter().any(|command| command.contains("mv -f --")));
     }
 
@@ -1435,8 +1634,11 @@ mod tests {
     /// machine's refusal.
     #[tokio::test]
     async fn a_refusal_from_the_channel_is_not_retried_through_the_shell() {
-        let mut wired = Wired::with(&[("/etc/shadow", b"root:x
-")]);
+        let mut wired = Wired::with(&[(
+            "/etc/shadow",
+            b"root:x
+",
+        )]);
         wired.refuse = true;
         let request = FileRequest {
             kind: FileOpKind::Edit,
@@ -1447,9 +1649,16 @@ mod tests {
         };
 
         let failure = plan_file_op(&request, &wired).await.unwrap_err();
-        assert!(failure.0.contains("permission denied"), "said: {}", failure.0);
         assert!(
-            !wired.commands().iter().any(|command| command.starts_with("base64 ")),
+            failure.0.contains("permission denied"),
+            "said: {}",
+            failure.0
+        );
+        assert!(
+            !wired
+                .commands()
+                .iter()
+                .any(|command| command.starts_with("base64 ")),
             "the shell must not have been asked to read it too"
         );
     }
@@ -1469,9 +1678,16 @@ mod tests {
         };
 
         let plan = plan_file_op(&request, &wired).await.unwrap();
-        assert_eq!(plan.encoding, FileEncoding::Gb18030, "the file keeps what it had");
+        assert_eq!(
+            plan.encoding,
+            FileEncoding::Gb18030,
+            "the file keeps what it had"
+        );
         assert!(
-            !wired.commands().iter().any(|command| command.contains("iconv")),
+            !wired
+                .commands()
+                .iter()
+                .any(|command| command.contains("iconv")),
             "nothing needed probing"
         );
     }
@@ -1485,6 +1701,10 @@ mod tests {
         let status = commit.find("status=$?").unwrap();
         let remove = commit.find("rm -f --").unwrap();
         assert!(cat < status && status < remove);
-        assert!(commit.ends_with("exit $status"));
+        assert!(commit.ends_with("(exit \"$status\")"));
+        assert!(
+            !commit.ends_with("; exit $status"),
+            "a bare exit would log out the interactive terminal: {commit}"
+        );
     }
 }

@@ -43,7 +43,9 @@ pub fn strip_ansi(text: &str) -> String {
 pub fn redact(text: &str) -> String {
     let text = PRIVATE_KEY_BLOCK.replace_all(text, "[REDACTED PRIVATE KEY]");
     let text = BEARER_HEADER.replace_all(&text, "${1}[REDACTED]");
-    SECRET_KEY.replace_all(&text, "${1}${2}[REDACTED]").into_owned()
+    SECRET_KEY
+        .replace_all(&text, "${1}${2}[REDACTED]")
+        .into_owned()
 }
 
 #[cfg(test)]
@@ -68,18 +70,25 @@ mod tests {
         assert_eq!(redact("PASSWORD=hunter2"), "PASSWORD=[REDACTED]");
         assert_eq!(redact("api_key: abc123"), "api_key: [REDACTED]");
         assert_eq!(redact("MY_ACCESS_KEY = zzz"), "MY_ACCESS_KEY = [REDACTED]");
-        assert_eq!(redact("Authorization: Bearer xyz"), "Authorization: [REDACTED]");
+        assert_eq!(
+            redact("Authorization: Bearer xyz"),
+            "Authorization: [REDACTED]"
+        );
     }
 
     #[test]
     fn a_private_key_goes_whole() {
-        let text = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\ndef\n-----END OPENSSH PRIVATE KEY-----";
+        let text =
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\ndef\n-----END OPENSSH PRIVATE KEY-----";
         assert_eq!(redact(text), "[REDACTED PRIVATE KEY]");
     }
 
     #[test]
     fn ordinary_prose_is_left_alone() {
-        assert_eq!(redact("the token bucket is full"), "the token bucket is full");
+        assert_eq!(
+            redact("the token bucket is full"),
+            "the token bucket is full"
+        );
         assert_eq!(redact("total 48"), "total 48");
     }
 }

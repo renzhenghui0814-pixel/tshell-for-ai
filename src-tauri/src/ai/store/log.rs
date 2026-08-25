@@ -75,7 +75,11 @@ pub struct LogSession {
 impl LogSession {
     /// The session handed out when logging is off. Costs a branch per call.
     pub fn inactive() -> Self {
-        Self { plan: None, file: Mutex::new(None), progress: Mutex::new(Progress::default()) }
+        Self {
+            plan: None,
+            file: Mutex::new(None),
+            progress: Mutex::new(Progress::default()),
+        }
     }
 
     /// Whether anything would be written, not whether anything has been.
@@ -85,6 +89,7 @@ impl LogSession {
 
     /// Where it is being written, once it is. `None` before the first record --
     /// which is the honest answer, because until then there is no file.
+    #[cfg(test)]
     pub fn file(&self) -> Option<PathBuf> {
         self.file.lock().unwrap().clone()
     }
@@ -178,8 +183,15 @@ impl LogSession {
     /// this is to read a prompt or an answer that did not do what they expected.
     fn append(&self, kind: &str, head: &str, content: &str) {
         let Some(file) = self.ensure() else { return };
-        let spaced = if head.is_empty() { String::new() } else { format!(" {head}") };
-        let record = format!("time:{} type:{kind}{spaced} content:{content}\n\n", stamp_ms());
+        let spaced = if head.is_empty() {
+            String::new()
+        } else {
+            format!(" {head}")
+        };
+        let record = format!(
+            "time:{} type:{kind}{spaced} content:{content}\n\n",
+            stamp_ms()
+        );
         // Opened per record rather than held: the write is rare, and a handle
         // kept open is a handle to close on every path out of a panel.
         let written = std::fs::OpenOptions::new()
@@ -202,7 +214,9 @@ fn plain(value: &Value) -> String {
 
 /// `20260709-12:00:00.212`, in local time, to the millisecond.
 fn stamp_ms() -> String {
-    chrono::Local::now().format("%Y%m%d-%H:%M:%S%.3f").to_string()
+    chrono::Local::now()
+        .format("%Y%m%d-%H:%M:%S%.3f")
+        .to_string()
 }
 
 /// `2026-07-09_12-00-00`, for a filename.
@@ -241,8 +255,11 @@ fn slug(name: &str) -> String {
             }
         })
         .collect();
-    let trimmed: String =
-        mapped.trim_start_matches(['.', '_']).chars().take(40).collect();
+    let trimmed: String = mapped
+        .trim_start_matches(['.', '_'])
+        .chars()
+        .take(40)
+        .collect();
     let trimmed = trimmed.trim_end_matches('.');
     if trimmed.is_empty() {
         "server".to_string()
@@ -292,12 +309,31 @@ impl LogStore {
     /// `chat_id` is the conversation's own id -- the same one the chat store
     /// files it under -- so a transcript and the conversation it describes can be
     /// put side by side without guessing from timestamps.
-    pub fn open(
+    pub fn open(&self, enabled: bool, keep: usize, server_name: &str, chat_id: &str) -> LogSession {
+        self.open_with_progress(enabled, keep, server_name, chat_id, None)
+    }
+
+    /// Reopens a conversation's existing transcript, if it has one. The count
+    /// comes from its durable chat history, so the next request appends only the
+    /// new turn rather than rewriting the context already present in the file.
+    pub fn resume(
         &self,
         enabled: bool,
         keep: usize,
         server_name: &str,
         chat_id: &str,
+        logged_messages: usize,
+    ) -> LogSession {
+        self.open_with_progress(enabled, keep, server_name, chat_id, Some(logged_messages))
+    }
+
+    fn open_with_progress(
+        &self,
+        enabled: bool,
+        keep: usize,
+        server_name: &str,
+        chat_id: &str,
+        resume_messages: Option<usize>,
     ) -> LogSession {
         if !enabled {
             return LogSession::inactive();
@@ -317,11 +353,40 @@ impl LogStore {
         // someone scanning the directory is looking for, and the id is what they
         // match against a chat they still have open.
         let base = format!("{}_{}_{}", slug(server_name), slug(chat_id), stamp_file());
+        let resumed = resume_messages.and_then(|logged| {
+            self.latest_for_chat(server_name, chat_id)
+                .map(|file| (file, logged))
+        });
         LogSession {
             plan: Some((self.clone(), Plan { base, header, keep })),
-            file: Mutex::new(None),
-            progress: Mutex::new(Progress::default()),
+            file: Mutex::new(resumed.as_ref().map(|(file, _)| file.clone())),
+            progress: Mutex::new(Progress {
+                logged_system: String::new(),
+                logged: resumed.map(|(_, logged)| logged).unwrap_or(0),
+            }),
         }
+    }
+
+    /// Finds the newest transcript for exactly this server/chat pair. Older
+    /// versions could create more than one while reopening a chat; choosing the
+    /// newest preserves continuity without merging unrelated files.
+    fn latest_for_chat(&self, server_name: &str, chat_id: &str) -> Option<PathBuf> {
+        let prefix = format!("{}_{}_", slug(server_name), slug(chat_id));
+        std::fs::read_dir(&self.dir)
+            .ok()?
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension().is_some_and(|extension| extension == "log")
+                    && path
+                        .file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+            })
+            .max_by_key(|path| {
+                std::fs::metadata(path)
+                    .and_then(|meta| meta.modified())
+                    .ok()
+            })
     }
 
     /// Creates a file nobody else is writing to, and puts the header in it.
@@ -354,7 +419,11 @@ impl LogStore {
                 format!("{base}-{}.log", attempt + 1)
             };
             let path = self.dir.join(name);
-            match std::fs::OpenOptions::new().create_new(true).write(true).open(&path) {
+            match std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&path)
+            {
                 Ok(mut handle) => {
                     return handle.write_all(header.as_bytes()).ok().map(|()| path);
                 }
@@ -386,12 +455,17 @@ impl LogStore {
     /// between two identical calls is a list the eye cannot keep its place in.
     pub fn list(&self, server_name: &str) -> Vec<LogFile> {
         let prefix = format!("{}_", slug(server_name));
-        let Ok(entries) = std::fs::read_dir(&self.dir) else { return Vec::new() };
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
 
         let mut files: Vec<LogFile> = entries
             .flatten()
             .filter(|entry| {
-                entry.path().extension().is_some_and(|extension| extension == "log")
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "log")
             })
             .filter_map(|entry| {
                 let name = entry.file_name().to_string_lossy().into_owned();
@@ -413,7 +487,10 @@ impl LogStore {
             .collect();
 
         files.sort_by(|left, right| {
-            right.modified.cmp(&left.modified).then_with(|| right.name.cmp(&left.name))
+            right
+                .modified
+                .cmp(&left.modified)
+                .then_with(|| right.name.cmp(&left.name))
         });
         files
     }
@@ -430,19 +507,28 @@ impl LogStore {
     /// False for anything refused or already gone. There is nothing for the
     /// panel to do about either, and both end with the file not being there.
     pub fn remove(&self, path: &str) -> bool {
-        let Ok(target) = std::fs::canonicalize(path) else { return false };
-        let Ok(dir) = std::fs::canonicalize(&self.dir) else { return false };
+        let Ok(target) = std::fs::canonicalize(path) else {
+            return false;
+        };
+        let Ok(dir) = std::fs::canonicalize(&self.dir) else {
+            return false;
+        };
         if target.parent() != Some(dir.as_path()) {
             return false;
         }
-        if target.extension().is_none_or(|extension| extension != "log") {
+        if target
+            .extension()
+            .is_none_or(|extension| extension != "log")
+        {
             return false;
         }
         std::fs::remove_file(&target).is_ok()
     }
 
     fn prune(&self, keep: usize) {
-        let Ok(entries) = std::fs::read_dir(&self.dir) else { return };
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
         let mut names: Vec<PathBuf> = entries
             .flatten()
             .map(|entry| entry.path())
@@ -451,7 +537,9 @@ impl LogStore {
         // A file whose time cannot be read sorts oldest, so it is the first to go
         // rather than something that survives every sweep by being unreadable.
         names.sort_by_key(|path| {
-            std::fs::metadata(path).and_then(|meta| meta.modified()).ok()
+            std::fs::metadata(path)
+                .and_then(|meta| meta.modified())
+                .ok()
         });
         let over = names.len().saturating_sub(keep);
         for path in names.into_iter().take(over) {
@@ -469,7 +557,8 @@ mod tests {
     struct Temp(PathBuf);
     impl Temp {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("tshell-log-{name}-{}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("tshell-log-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             Self(dir)
@@ -496,13 +585,20 @@ mod tests {
         let store = temp.store();
         // Written to, because a transcript that was never spoken to has no file
         // and so is not in any listing -- which is the point of it.
-        for (host, id) in [("10.0.1.168", "chat-a"), ("10.0.1.168", "chat-b"), ("10.0.1.216", "chat-c")] {
+        for (host, id) in [
+            ("10.0.1.168", "chat-a"),
+            ("10.0.1.168", "chat-b"),
+            ("10.0.1.216", "chat-c"),
+        ] {
             store.open(true, 9, host, id).response("anything");
         }
 
         let mine = store.list("10.0.1.168");
         assert_eq!(mine.len(), 2);
-        assert!(mine.iter().all(|file| file.name.starts_with("10.0.1.168_")), "{mine:?}");
+        assert!(
+            mine.iter().all(|file| file.name.starts_with("10.0.1.168_")),
+            "{mine:?}"
+        );
         assert_eq!(store.list("10.0.1.216").len(), 1);
         assert_eq!(store.list("10.0.1.99").len(), 0);
     }
@@ -514,7 +610,9 @@ mod tests {
     fn a_name_that_was_slugged_still_finds_its_files() {
         let temp = Temp::new("list-slug");
         let store = temp.store();
-        store.open(true, 9, "prod box", "chat-a").response("anything");
+        store
+            .open(true, 9, "prod box", "chat-a")
+            .response("anything");
         assert_eq!(store.list("prod box").len(), 1);
     }
 
@@ -570,12 +668,20 @@ mod tests {
         let outside = std::env::temp_dir().join("tshell-not-a-log.log");
         std::fs::write(&outside, "x").unwrap();
 
-        assert!(!store.remove(&outside.display().to_string()), "outside the directory");
+        assert!(
+            !store.remove(&outside.display().to_string()),
+            "outside the directory"
+        );
         assert!(outside.exists(), "and it is still there");
 
         // Climbing out and back in is the same refusal: the check is on where
         // the path resolves to, not on what it looks like.
-        let climbed = temp.0.join("..").join("tshell-not-a-log.log").display().to_string();
+        let climbed = temp
+            .0
+            .join("..")
+            .join("tshell-not-a-log.log")
+            .display()
+            .to_string();
         assert!(!store.remove(&climbed));
         assert!(outside.exists());
 
@@ -643,8 +749,43 @@ mod tests {
         assert_eq!(store.list("host").len(), 1);
 
         let text = read(&session);
-        assert!(text.contains("# tshell AI transcript"), "the header is still first");
+        assert!(
+            text.contains("# tshell AI transcript"),
+            "the header is still first"
+        );
         assert!(text.contains("hello"), "and the request follows it");
+    }
+
+    #[test]
+    fn reopening_a_chat_reuses_its_existing_transcript() {
+        let temp = Temp::new("resume");
+        let store = temp.store();
+        let first = store.open(true, 9, "host", "chat-a");
+        first.request(&LogRequest {
+            endpoint: "https://example.invalid/v1/chat/completions",
+            params: &json!({ "model": "m" }),
+            system: "system prompt",
+            messages: vec![("user".into(), "first".into())],
+        });
+        let file = first.file().unwrap();
+
+        let resumed = store.resume(true, 9, "host", "chat-a", 1);
+        resumed.request(&LogRequest {
+            endpoint: "https://example.invalid/v1/chat/completions",
+            params: &json!({ "model": "m" }),
+            system: "system prompt",
+            messages: vec![
+                ("user".into(), "first".into()),
+                ("assistant".into(), "working".into()),
+                ("user".into(), "continue".into()),
+            ],
+        });
+
+        assert_eq!(resumed.file().as_deref(), Some(file.as_path()));
+        assert_eq!(store.list("host").len(), 1);
+        let text = read(&resumed);
+        assert_eq!(text.matches("[user]\nfirst").count(), 1);
+        assert_eq!(text.matches("[user]\ncontinue").count(), 1);
     }
 
     /// Pruning counts what has been written, and it happens when a file is
@@ -658,7 +799,12 @@ mod tests {
         for id in ["a", "b"] {
             let session = store.open(true, 2, "host", id);
             session.response("an answer");
-            real.push(session.file().expect("a transcript that was written to").to_path_buf());
+            real.push(
+                session
+                    .file()
+                    .expect("a transcript that was written to")
+                    .to_path_buf(),
+            );
         }
         assert_eq!(store.list("host").len(), 2);
 
@@ -669,9 +815,16 @@ mod tests {
 
         // By identity, not by count: eager creation kept the count at two as
         // well, by replacing both transcripts with empty ones.
-        let left: Vec<String> = store.list("host").into_iter().map(|file| file.path).collect();
+        let left: Vec<String> = store
+            .list("host")
+            .into_iter()
+            .map(|file| file.path)
+            .collect();
         for path in real {
-            assert!(left.contains(&path.display().to_string()), "{path:?} survived");
+            assert!(
+                left.contains(&path.display().to_string()),
+                "{path:?} survived"
+            );
         }
     }
 
@@ -726,8 +879,16 @@ mod tests {
         });
 
         let text = read(&session);
-        assert_eq!(text.matches("SYSTEM ONE").count(), 1, "the prompt is written once");
-        assert_eq!(text.matches("first").count(), 1, "an old turn is not repeated");
+        assert_eq!(
+            text.matches("SYSTEM ONE").count(),
+            1,
+            "the prompt is written once"
+        );
+        assert_eq!(
+            text.matches("first").count(),
+            1,
+            "an old turn is not repeated"
+        );
         assert_eq!(text.matches("second").count(), 1);
         assert_eq!(
             text.matches("an answer").count(),
@@ -879,8 +1040,7 @@ mod tests {
         let path = dir.join(name);
         let mut file = std::fs::File::create(&path).unwrap();
         file.write_all(b"old").unwrap();
-        let when =
-            std::time::SystemTime::now() - std::time::Duration::from_secs(hours_ago * 3600);
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(hours_ago * 3600);
         file.set_modified(when).unwrap();
     }
 
@@ -921,7 +1081,10 @@ mod tests {
         assert_eq!(plain(&json!(0)), "0");
         assert_eq!(plain(&json!(true)), "true");
         assert_eq!(plain(&json!("high")), "high");
-        assert_eq!(plain(&json!({ "type": "disabled" })), "{\"type\":\"disabled\"}");
+        assert_eq!(
+            plain(&json!({ "type": "disabled" })),
+            "{\"type\":\"disabled\"}"
+        );
     }
 
     #[test]
@@ -932,5 +1095,4 @@ mod tests {
         let file = stamp_file();
         assert_eq!(file.len(), "2026-07-09_12-00-00".len(), "{file}");
     }
-
 }

@@ -9,7 +9,7 @@
 //! absent from this file, produces no CSS, and lands on whatever the stylesheet
 //! says today -- which means a later build may retune the default palette and
 //! everyone who never opened this panel comes along. A file that stored all
-//! eighteen would freeze the first version of the palette into every install
+//! seventeen would freeze the first version of the palette into every install
 //! that ever saved once.
 //!
 //! Eighteen tokens per half, not the whole stylesheet. The rest
@@ -49,52 +49,35 @@ const MAX_FONT_LEN: usize = 200;
  * wrote a rule for. The names are the stylesheet's own, minus the leading
  * dashes and in the camel case the front end reads them by.
  *
- * The order is the order the settings page lists them in: the fills, surfaces
- * bottom to top and then the three that are not surfaces, then text, then the
- * four meanings.
+ * The order is the order the settings page lists them in: two columns of five
+ * grounds/fills, then text, then the four meanings.
  */
-const TOKENS: [&str; 18] = [
-    "bgInput",
-    "bgCode",
-    "bgBase",
-    "bgElev",
-    "bgTab",
-    "bgCard",
-    "bgDialog",
-    "bgMenu",
-    "ac",
-    "chatUser",
-    "progress",
-    "tx",
-    "txDim",
-    "txFaint",
-    "ok",
-    "warn",
-    "err",
-    "info",
+const TOKENS: [&str; 17] = [
+    "bgElev", "bgBase", "bgInput", "bgDialog", "bgTab", "bgMenu", "ac", "chatUser", "markdown",
+    "progress", "tx", "txDim", "txFaint", "ok", "warn", "err", "info",
 ];
 
 /*
- * What an older file called a token that has since been split into two.
+ * What an older file called a token that has since been split.
  *
  * Dropping an unknown key is this file's rule and it is the right one, but
  * applied to `bgInset` in a file written by an earlier build it would throw
  * away a colour the user chose -- silently, on upgrade, which is the shape of
  * loss this module exists to refuse elsewhere. So the old name is read once and
- * given to both of its heirs, which is precisely what it meant: the pair ships
- * at one value, and whoever moved the old token wanted both moved.
+ * given to its surviving heirs. Some former heirs are no longer editable, but
+ * an older choice still reaches every live role it used to cover.
  *
  * `ui/shared/palette.js` carries the same table for the same reason the token
  * list is duplicated -- either side may be the first to read a given file --
  * and `scripts/palette-check.mjs` holds the two to each other.
  */
-const SPLIT: [(&str, [&str; 2]); 3] = [
-    ("bgInset", ["bgInput", "bgCode"]),
-    ("bgRaise", ["bgTab", "bgCard"]),
-    ("bgFloat", ["bgDialog", "bgMenu"]),
+const SPLIT: [(&str, &[&str]); 3] = [
+    ("bgInset", &["bgInput"]),
+    ("bgRaise", &["bgTab"]),
+    ("bgFloat", &["bgDialog", "bgMenu"]),
 ];
 
-/// Whether a name is one of the eighteen. Public so the command layer can say
+/// Whether a name is one of the seventeen. Public so the command layer can say
 /// what it accepts without repeating the list.
 pub fn is_token(name: &str) -> bool {
     TOKENS.contains(&name)
@@ -103,10 +86,10 @@ pub fn is_token(name: &str) -> bool {
 /*
  * One half of the palette: the tokens this user changed, keyed by name.
  *
- * A map and not a struct of eighteen `Option`s, which is what the schemes file
+ * A map and not a struct of seventeen `Option`s, which is what the schemes file
  * uses. The difference is that a scheme's twenty slots are a protocol with
  * xterm -- every one of them means something specific to a consumer that is not
- * this program -- while these eighteen are only ever handed back to the
+ * this program -- while these seventeen are only ever handed back to the
  * stylesheet that named them. A map keeps this file, the front end's edit map
  * and the settings page's controls all reading the same keys, and a `BTreeMap`
  * keeps the JSON in one order so that saving twice does not rewrite the file.
@@ -117,9 +100,12 @@ fn normalize_half(half: &mut Half) {
     // Before the closed set drops it: a name this build split is still a
     // choice the user made, and it is worth two values rather than none.
     for (was, heirs) in SPLIT {
-        let Some(value) = half.get(was).cloned() else { continue };
+        let Some(value) = half.get(was).cloned() else {
+            continue;
+        };
         for heir in heirs {
-            half.entry(heir.to_string()).or_insert_with(|| value.clone());
+            half.entry(heir.to_string())
+                .or_insert_with(|| value.clone());
         }
     }
     half.retain(|name, _| is_token(name));
@@ -304,14 +290,12 @@ mod tests {
      * heirs get it, because the old name meant both of them.
      */
     #[test]
-    fn a_split_token_reaches_both_of_its_heirs() {
+    fn a_split_token_reaches_each_surviving_heir() {
         let raw = r##"{"version": 1, "dark": {"bgInset": "#111111", "bgRaise": "#222", "bgFloat": "#333333"}}"##;
         let file = parse_ok(raw);
         let dark = &file.dark;
         assert_eq!(dark.get("bgInput").map(String::as_str), Some("#111111"));
-        assert_eq!(dark.get("bgCode").map(String::as_str), Some("#111111"));
         assert_eq!(dark.get("bgTab").map(String::as_str), Some("#222222"));
-        assert_eq!(dark.get("bgCard").map(String::as_str), Some("#222222"));
         assert_eq!(dark.get("bgDialog").map(String::as_str), Some("#333333"));
         assert_eq!(dark.get("bgMenu").map(String::as_str), Some("#333333"));
         // The name it arrived under is not a token and does not survive.
@@ -324,19 +308,20 @@ mod tests {
     /// anyone saves on this build and then opens the file with an older one.
     #[test]
     fn the_new_name_wins_over_the_one_it_replaced() {
-        let raw = r##"{"version": 1, "dark": {"bgInset": "#111111", "bgCode": "#ABCDEF"}}"##;
+        let raw = r##"{"version": 1, "dark": {"bgInset": "#111111", "bgInput": "#ABCDEF"}}"##;
         let dark = parse_ok(raw).dark;
-        assert_eq!(dark.get("bgCode").map(String::as_str), Some("#ABCDEF"));
-        assert_eq!(dark.get("bgInput").map(String::as_str), Some("#111111"));
+        assert_eq!(dark.get("bgInput").map(String::as_str), Some("#ABCDEF"));
     }
 
     /// Deleted outright rather than split: they named nothing any rule drew.
     #[test]
     fn a_deleted_token_is_dropped() {
-        let raw = r##"{"version": 1, "dark": {"ai": "#F97316", "bgRaiseHi": "#444444", "ac": "#00FF00"}}"##;
+        let raw = r##"{"version": 1, "dark": {"ai": "#F97316", "bgRaiseHi": "#444444", "bgCode": "#111111", "bgCard": "#222222", "ac": "#00FF00"}}"##;
         let dark = parse_ok(raw).dark;
         assert!(!dark.contains_key("ai"));
         assert!(!dark.contains_key("bgRaiseHi"));
+        assert!(!dark.contains_key("bgCode"));
+        assert!(!dark.contains_key("bgCard"));
         assert_eq!(dark.get("ac").map(String::as_str), Some("#00FF00"));
     }
 

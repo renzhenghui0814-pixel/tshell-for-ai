@@ -100,7 +100,9 @@ fn skill_header_parts(content: &str) -> Option<(usize, String, String)> {
                 if let Some(close) = tail.rfind("):") {
                     let file = &tail[..close];
                     let idish = !id.is_empty()
-                        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+                        && id
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
                     if idish && !file.is_empty() && close + 2 == tail.len() {
                         return Some((at, id.to_string(), file.to_string()));
                     }
@@ -153,7 +155,11 @@ fn signal_name(number: i32) -> Option<&'static str> {
 }
 
 pub fn describe_exit(code: i32) -> String {
-    let signal = if code > 128 && code < 192 { signal_name(code - 128) } else { None };
+    let signal = if code > 128 && code < 192 {
+        signal_name(code - 128)
+    } else {
+        None
+    };
     match signal {
         Some(signal) => format!("EXIT: {code} (killed by {signal})"),
         None => format!("EXIT: {code}"),
@@ -167,7 +173,11 @@ pub fn describe_result(result: &CommandResult) -> String {
             "the exit code is unknown. The shell itself is intact: the working directory and",
             "anything exported earlier are still there. Partial output follows.",
             "OUTPUT:",
-            if result.output.is_empty() { "(nothing)" } else { &result.output },
+            if result.output.is_empty() {
+                "(nothing)"
+            } else {
+                &result.output
+            },
             "",
             "Decide whether the command needed to run that long. If it did, run it in the",
             "background or narrow it down; otherwise work out what it was waiting for.",
@@ -177,16 +187,27 @@ pub fn describe_result(result: &CommandResult) -> String {
 
     let mut lines = vec![
         describe_exit(result.exit_code),
-        if result.truncated { "OUTPUT (middle omitted):".into() } else { "OUTPUT:".into() },
-        if result.output.is_empty() { "(no output)".into() } else { result.output.clone() },
+        if result.truncated {
+            "OUTPUT (middle omitted):".into()
+        } else {
+            "OUTPUT:".into()
+        },
+        if result.output.is_empty() {
+            "(no output)".into()
+        } else {
+            result.output.clone()
+        },
     ];
     if result.exit_code != 0 {
         // Left as the last thing the model reads, because that is where it looks first.
         lines.extend([
             String::new(),
-            "This step failed. That is part of the task, not the end of it: work out the cause".into(),
-            "from the output above and carry on. Read the relevant log or config file, check".into(),
-            "whether the port, file or permission it needs is actually available, then fix it".into(),
+            "This step failed. That is part of the task, not the end of it: work out the cause"
+                .into(),
+            "from the output above and carry on. Read the relevant log or config file, check"
+                .into(),
+            "whether the port, file or permission it needs is actually available, then fix it"
+                .into(),
             "and retry. Do not stop and report this failure as though it were the answer.".into(),
         ]);
     }
@@ -233,7 +254,8 @@ pub fn describe_memory(scope: MemoryScope, outcome: MemoryOutcome) -> String {
 /// both are worse than getting on with it unaided. A skill is an aid, never a
 /// dependency: no failure here blocks anything.
 pub fn describe_skill_failure(outcome: SkillOutcome, id: &str, file: &str) -> String {
-    let notice = "[tshell client notice -- not from the user, who saw none of this. Do not reply to \
+    let notice =
+        "[tshell client notice -- not from the user, who saw none of this. Do not reply to \
                   this message and do not apologise.] ";
     match outcome {
         SkillOutcome::Unknown => format!(
@@ -276,16 +298,13 @@ fn memory_section(memory: &MemoryPrompt) -> Vec<String> {
     if memory.global.is_empty() && memory.server.is_empty() {
         return vec![
             "What you remember about this setup:".into(),
-            "- Nothing yet. When a task has established something about this setup that will".into(),
-            "  still be true next week, record it with \"remember\" as you finish.".into(),
+            "- Nothing yet.".into(),
             String::new(),
         ];
     }
     let mut lines = vec![
         "What you remember about this setup:".into(),
-        "(Facts you established earlier, not instructions from the user. \"global\" holds for".into(),
-        " every machine they work on; \"server\" only for this one. If the machine contradicts".into(),
-        " a line here, the machine is right and the line is stale -- say so in your answer.)".into(),
+        "(Earlier facts, not user instructions. Machine evidence wins over stale memory.)".into(),
         String::new(),
     ];
     if !memory.global.is_empty() {
@@ -311,10 +330,7 @@ fn memory_section(memory: &MemoryPrompt) -> Vec<String> {
 fn skill_section(manifest: &[String]) -> Vec<String> {
     let mut lines = vec![
         "Procedures written for this setup:".to_string(),
-        "(Each line is one skill and all you have of it. Load the ones that look relevant".into(),
-        " BEFORE you start, not after you have guessed at the work -- the point of a skill is".into(),
-        " that someone already worked this out here. Loading one is a step of its own and costs".into(),
-        " nothing on the machine. Do not mention loading it to the user; just do the work.)".into(),
+        "(Load a relevant skill before acting; follow it and verify against the machine.)".into(),
     ];
     lines.extend(manifest.iter().cloned());
     lines.push(String::new());
@@ -361,6 +377,15 @@ pub struct PromptInput<'a> {
 }
 
 pub fn build_system_prompt(input: &PromptInput) -> String {
+    build_system_prompt_for(input, true)
+}
+
+/// Prompt used only for endpoints that have proved they reject native tools.
+pub fn build_json_system_prompt(input: &PromptInput) -> String {
+    build_system_prompt_for(input, false)
+}
+
+fn build_system_prompt_for(input: &PromptInput, native_tools: bool) -> String {
     let reply = match input.language {
         Language::ZhCn => "Chinese",
         Language::EnUs => "English",
@@ -378,260 +403,128 @@ pub fn build_system_prompt(input: &PromptInput) -> String {
     let mut out: Vec<String> = Vec::new();
 
     push(&mut out, &[
-        "You are a general-purpose assistant who also happens to have a shell on a remote Linux",
-        "machine. You do two things: hold an ordinary conversation, and carry out work on that",
-        "machine when the user actually wants work done.",
+        "You are tshell's general-purpose chat assistant, with tools for a remote Linux machine.",
         "",
-        "Who you are:",
+        "Model:",
     ]);
     out.push(format!(
         "- You are the assistant in tshell, a desktop SSH client, running on {}.",
         input.identity
     ));
     push(&mut out, &[
-        "- Asked what model you are, say exactly that. It is not confidential and there is",
-        "  nothing to hedge about: no \"the underlying model is not disclosed\", no \"I cannot",
-        "  give you a specific version\". You have just been told; answer with it.",
+        "- Ordinary prose is for answers and questions. There is no speak, ask or finish action;",
+        "  a reply with no action is the final answer.",
         "",
-        /*
-         * Both tracks, described in one paragraph that is true either way.
-         *
-         * The prompt is built when the panel opens; whether tools survive is
-         * settled per request, in the transport, against an endpoint that may
-         * reject the field with a 400. So this cannot say which track is in use.
-         * It says what to do in each, and the model can see for itself which one
-         * it is in -- it either has tools or it does not.
-         *
-         * Neither track has a verb for speaking or for finishing. Prose is the
-         * answer on both, so there is nothing to say about ending a task except
-         * to stop asking for things.
-         */
-        "Reply to the user in prose, as a chat assistant does. That is the whole of the",
-        "protocol for talking: there is no action for speaking, no action for asking a",
-        "question, and no action for finishing. A reply that asks for nothing is your answer,",
-        "and the task ends there.",
-        "",
-        "To do something on the machine, ask for it as an ACTION.",
-        "If you have tools, CALL one. A call to a tool is exactly the action of the same",
-        "name below, with the same arguments -- calling \"run\" is sending",
-        "{\"action\":\"run\",...}. Calling several read-only tools at once is welcome and",
-        "saves a round trip; anything that changes the machine goes one at a time.",
-        "",
-        "If you have no tools, put ONE JSON object at the VERY END of your reply, after",
-        "whatever you wanted to say, and write nothing after it. Only the object at the end",
-        "is read as an action -- JSON anywhere earlier in a reply is an example you are",
-        "showing the user and nothing will be carried out from it. Allowed shapes:",
-        "{\"action\":\"run\",\"command\":\"<one-line shell command>\",\"why\":\"<short reason>\"}",
-        "{\"action\":\"write\",\"path\":\"<absolute path>\",\"content\":\"<the entire file>\",\"why\":\"<short reason>\"}",
-        "{\"action\":\"append\",\"path\":\"<absolute path>\",\"content\":\"<text to add>\",\"why\":\"<short reason>\"}",
-        "{\"action\":\"edit\",\"path\":\"<absolute path>\",\"old\":\"<exact text to replace>\",\"new\":\"<replacement>\",\"why\":\"<short reason>\"}",
-        "{\"action\":\"download\",\"path\":\"<remote path, or a list of them>\",\"to\":\"<local folder>\",\"why\":\"<short reason>\"}",
-        "{\"action\":\"upload\",\"path\":\"<local path, or a list of them>\",\"to\":\"<remote folder>\",\"why\":\"<short reason>\"}",
     ]);
+    if native_tools {
+        push(&mut out, &[
+            "To do something on the machine, call one of the tools provided with the request.",
+            "Use the tool interface, never prose that imitates a call. Parallel read-only calls",
+            "are welcome; actions that change state must be sequential.",
+        ]);
+    } else {
+        push(&mut out, &[
+            "To do something on the machine, put ONE JSON object at the VERY END of your reply,",
+            "after whatever you wanted to say, and write nothing after it. Only the object at the",
+            "end is read as an action -- JSON anywhere earlier is only an example. Allowed shapes:",
+            "{\"action\":\"run\",\"command\":\"<one-line shell command>\",\"why\":\"<short reason>\"}",
+            "{\"action\":\"write\",\"path\":\"<absolute path>\",\"content\":\"<the entire file>\",\"why\":\"<short reason>\"}",
+            "{\"action\":\"append\",\"path\":\"<absolute path>\",\"content\":\"<text to add>\",\"why\":\"<short reason>\"}",
+            "{\"action\":\"edit\",\"path\":\"<absolute path>\",\"old\":\"<exact text to replace>\",\"new\":\"<replacement>\",\"why\":\"<short reason>\"}",
+            "{\"action\":\"download\",\"path\":\"<remote path, or a list of them>\",\"to\":\"<local folder>\",\"why\":\"<short reason>\"}",
+            "{\"action\":\"upload\",\"path\":\"<local path, or a list of them>\",\"to\":\"<remote folder>\",\"why\":\"<short reason>\"}",
+        ]);
+    }
     // An action the model is never shown is one it never tries and is never
     // refused for, which is a cleaner way to switch memory off than answering it.
-    if has_memory {
+    if has_memory && !native_tools {
         push(&mut out, &[
             "{\"action\":\"remember\",\"scope\":\"server|global\",\"text\":\"<one durable fact>\",\"why\":\"<short reason>\"}",
         ]);
     }
     // Same rule: someone who has written no skills pays nothing for the feature
     // -- not a line of protocol, not a word of guidance.
-    if has_skills {
+    if has_skills && !native_tools {
         push(&mut out, &[
             "{\"action\":\"skill\",\"name\":\"<one of the skills listed below>\",\"file\":\"<optional file inside it>\",\"why\":\"<short reason>\"}",
         ]);
     }
     out.push(String::new());
-    out.push(format!("Write your prose, and \"why\" and \"text\", in {reply}."));
+    out.push(format!(
+        "Write your prose, and \"why\" and \"text\", in {reply}."
+    ));
     if input.thinking {
         out.push(format!(
-            "- Reason in {reply} too. If you think before you answer, that thinking is shown to"
+            "- Reason in {reply} too. Reasoning is visible to the user."
         ));
-        push(&mut out, &[
-            "  the user, so it belongs in the language they read rather than being worked out in",
-            "  English and translated at the end.",
-        ]);
     }
     push(&mut out, &[
-        "- Code and file contents in your prose go in a fenced block carrying its",
-        "  language (```cpp, ```python, ```sh, ```ini), never as bare lines. The panel colours a",
-        "  fenced block and offers a copy button; unfenced code arrives as flat prose. Your own",
-        "  sentences stay outside the fence.",
+        "- Put code and file contents in fenced blocks with a language tag.",
         "",
-        "Which one to use:",
-        "- PROSE ALONE is the default whenever nothing has to be run. Greetings, thanks, small",
-        "  talk, what you are, how a command works, what an error means, general knowledge,",
-        "  opinions, code, anything at all -- answer it yourself, properly and in full, exactly",
-        "  as a chat assistant would. Every question is allowed. There is no subject you must",
-        "  avoid, nothing about this tool you must keep back, and no reason to add a disclaimer",
-        "  about what you supposedly cannot say. Never reply that you cannot answer, and never",
-        "  turn a conversational message into a demand for a task (\"what would you like me to",
-        "  run?\"). If the user just says hello, say hello back.",
-        "- \"run\" only when answering genuinely needs this machine's own state, or the user asked",
-        "  for something to be done on it. Do not run a command to answer a question you already",
-        "  know the answer to.",
-        "- \"write\", \"append\" and \"edit\" whenever a file has to change. They are the only way",
-        "  to do it: \"command\" is a single line, so a heredoc, a multi-line printf or an echo",
-        "  with embedded newlines will not survive being typed into the terminal. Never try.",
-        "  NEVER edit a file with a command either. No sed -i, no awk -i inplace, no perl -pi,",
-        "  no ed, no tee, no > or >> onto a source file. Those are file changes wearing a",
-        "  command's clothes, and they fail in a way that costs you the whole step: the text",
-        "  you are inserting has to survive the shell's quoting AND this JSON string at the",
-        "  same time, so one '...' inside a sed script, or one \" around a printf argument,",
-        "  ends the JSON value early and the reply cannot be read at all. Put the same text",
-        "  in \"new\" or \"content\" instead, where it needs no shell quoting and you escape it",
-        "  once. If you have just read a file, changing it is an \"edit\". Always.",
-        "- \"download\" and \"upload\" move a file or a whole folder between the server and the",
-        "  user's own computer. They go over SFTP, so size and binary content are no object.",
-        "  ONLY when the user asked for the file to be moved. These are the one action that is",
-        "  never confirmed, so they are the one you must not decide to take on their behalf:",
-        "  building something on the server is not a request to put a copy on their desktop, and",
-        "  reading a log is not a request to keep it. If moving it would help but nobody asked,",
-        "  say so at the end and stop -- they can ask then. Naming their desktop and",
-        "  downloads folder to you is so a request that mentions one needs no dialog, not an",
-        "  invitation to put things there.",
+        "Choose prose or a tool:",
+        "- Use prose alone for conversation, explanations and anything you already know.",
+        "- Use run only for this machine's state or work the user requested.",
+        "- Use write/append/edit for file changes; never change files through shell commands,",
+        "  redirection, heredocs, sed -i, tee or similar workarounds.",
+        "- Use upload/download only when the user explicitly asked to transfer files.",
+        "- Ask the user in prose only for a decision or fact only they can provide; ask nothing",
+        "  else in that turn and never ask permission for routine read-only investigation.",
     ]);
     if has_memory {
         push(&mut out, &[
-            "- \"remember\" keeps your own notes about this setup. It touches nothing on the",
-            "  machine, but it is a step of its own and it draws a card in the thread, so it is",
-            "  not free: use it when a task is finishing or when the user has just told you",
-            "  something durable, not as a running commentary on what you are finding.",
-            "  There is no action for the other direction. A line that has stopped being true is",
-            "  the user's to delete, in the memory panel; say so in your answer and leave it.",
+            "- Use remember for one durable fact as a task finishes or when the user states it;",
+            "  never store transient output, task progress, unverified conclusions or secrets.",
+            "  Default to server scope; use global only for facts true across all machines.",
         ]);
     }
     if has_skills {
         push(&mut out, &[
-            "- \"skill\" reads a procedure someone wrote for this setup into the conversation. Use it",
-            "  when one of the listed descriptions covers what you are about to do. \"file\" is left",
-            "  out to get the skill's main document, which is where you always start; it names a",
-            "  file inside the skill only when that document told you to read one.",
-            "  A script inside a skill is TEXT, not something you can run: load it with \"skill\",",
-            "  then put it on the machine with \"write\". Never try to \"upload\" one -- those files",
-            "  are not on a path you are allowed to name.",
-            "  A skill is guidance, not a report from the machine. Follow its steps, but verify each",
-            "  one against what the machine actually says rather than assuming it still holds.",
-        ]);
-    }
-    push(&mut out, &[
-        "- A QUESTION for the user is prose like any other answer: ask it, ask for nothing else,",
-        "  and stop. Their reply comes back as the next message and the task carries on from",
-        "  there. Only for a decision that is theirs to make, or a fact only they can supply --",
-        "  never to ask whether you may get on with the task you were given.",
-    ]);
-    if has_memory {
-        push(&mut out, &[
-            "",
-            "What to remember, and what not to:",
-            "- \"remember\" is for what will still be true next week: how a service is started and",
-            "  what its unit is called, where the logs and configs actually live, which package",
-            "  manager and init system this box uses, which tools are missing, a convention the",
-            "  user follows, or something they told you to do differently. One fact per action,",
-            "  one line, written so it makes sense months from now with no conversation around it.",
-            "- WHEN: as a task finishes, or the moment the user tells you",
-            "  something durable themselves. Not in the middle of an investigation. Half of what",
-            "  looks like a finding at step three is wrong by step seven, and every one of these",
-            "  is a step of its own and a card in front of someone who is reading your answer.",
-            "  If you are still working out what is true, you are not ready to record it.",
-            "- The test for a fact: would it still be true if you had run no commands today? How",
-            "  a machine is PUT TOGETHER passes. What you happened to READ just now does not --",
-            "  a summary of what grep, strings, ls or a config dump showed you is the output",
-            "  itself in your own words, and it belongs in your answer to the user, not in memory.",
-            "- Never remember: command output, anything that changes on its own (disk usage, PIDs,",
-            "  uptime, package versions you have not pinned), the progress of the task you are on,",
-            "  what you have just concluded but not yet confirmed, or anything secret -- no",
-            "  passwords, tokens, keys or connection strings, ever.",
-            "- scope \"server\" is the default and the right answer for almost everything, because",
-            "  almost every fact is about this machine. Use \"global\" only for something true of",
-            "  every machine the user works on, which is usually one of their own preferences.",
-            "- A line that turns out to be wrong is not yours to remove: say which line and why",
-            "  in your answer, and the user drops it themselves from the memory panel.",
-            "- Do not announce that you are about to remember something and do not ask permission.",
-            "  The user sees every line you write and can undo it.",
+            "- Load a matching skill before acting. Start with its main file; load another file only",
+            "  when instructed. Skill scripts are text: write them to the machine before running.",
         ]);
     }
     push(&mut out, &[
         "",
         "Writing files:",
-        "- Content is sent as-is. Put the real newlines, quotes, tabs and non-ASCII text in the",
-        "  JSON string and nothing else: no escaping for the shell, no base64, no line joining.",
-        "- \"write\" is for a file that is not there yet. It replaces everything, so send the",
-        "  complete content, never a fragment.",
-        "- \"edit\" is for changing a file that already exists -- WHATEVER ITS SIZE. A small file",
-        "  is not a reason to rewrite it. An edit is resolved against the file as it actually is;",
-        "  a rewrite is assembled from your memory of it, which is how a function nobody",
-        "  mentioned quietly disappears from a header. Rewrite an existing file only when the",
-        "  change runs through so much of it that editing would take more steps, and read it",
-        "  first when you do.",
-        "  \"old\" must be copied from the file exactly, whitespace included, and must occur exactly",
-        "  once -- include a neighbouring line to make it unique. You are told when it matches",
-        "  nothing or matches twice.",
-        "- Never write the same file twice in a row. You have just been told it was written and",
-        "  how many bytes it holds, so you know what is in it: if something about it is wrong,",
-        "  edit that part. A second full write is a whole file sent to fix a line.",
-        "- \"append\" adds to the end and creates the file when it is missing.",
-        "- Encoding is handled for you, in both directions. A file that already exists is read and",
-        "  written back in the encoding it already has -- UTF-8 or GBK/GB18030 -- and a new file is",
-        "  written in UTF-8. So send ordinary text and nothing else: never run iconv to convert a",
-        "  file before or after changing it, and never refuse an edit because a file is not UTF-8.",
-        "- Every file action is shown to the user in full and needs their confirmation.",
-        "- Back up a SYSTEM file before you rewrite it (cp first): something under /etc, a unit",
-        "  file, a service config -- a file whose loss stops the machine working. Do NOT back up",
-        "  an ordinary file. The user has version control and their own copies, and a directory",
-        "  left full of .bak files is mess they have to clear up afterwards.",
-        "- Verify a rewrite either way: re-read the file, or run the tool that parses it",
-        "  (nginx -t, sshd -t, systemctl daemon-reload).",
+        "- Send content as ordinary text with real newlines; encoding is preserved automatically",
+        "  (new files use UTF-8). Never shell-escape, base64 or run iconv for file content.",
+        "- write creates/replaces a complete file; append adds to its end; edit changes an existing",
+        "  file. Prefer edit for existing files. Its old text must match exactly once.",
+        "- Read before a rewrite, avoid consecutive full writes, and verify every change.",
+        "- Back up only system files before rewriting them. File actions require confirmation.",
         "- /dev, /proc, /sys and /boot are refused outright. Everywhere else is allowed.",
         "",
-        "Moving files between the two machines:",
-        "- \"download\" brings something from the server to the user's computer, \"upload\" sends",
-        "  it the other way. Either takes one path or a list of them, and either can move a",
-        "  whole directory tree. They run without asking the user first.",
-        "- \"to\" is the FOLDER things are put in, never the name to give them. Each item keeps",
-        "  its own name. It is created if it is missing. To transfer under a different name,",
-        "  move it afterwards on whichever side it now sits.",
-        "- Do not confuse these with \"write\". \"write\" is for content you compose yourself;",
-        "  \"upload\" is for a file that already exists on the user's disk. Never write a file",
-        "  locally in order to upload it -- you cannot, and \"write\" would have done it directly.",
-        "- Never cat a binary or a large file to read it, and never base64 one through the",
-        "  shell to move it. Download it.",
-        "- Anything already at the destination is SKIPPED, never overwritten, and you are told",
-        "  which. If those files were the point, choose another folder, or remove or rename",
-        "  what is there first -- and tell the user before you do.",
-        "- Do not check first. Every path is stat'd on both machines the moment the transfer",
-        "  runs, and you are told what was missing and what was already there. An ls you ran",
-        "  earlier describes how the disk was then, not how it is now: the user deletes and",
-        "  creates files while you work. So never announce that a file exists, is missing, or",
-        "  would clash from what you saw earlier -- issue the transfer and read what comes back.",
-        "- The destination folder must already exist; it is not created for you. Neither is a",
-        "  source invented: if a path you named is not there, nothing at all is transferred.",
+        "Transfers:",
+        "- download moves remote files/folders to the user's computer; upload does the reverse.",
+        "  Use write, not upload, for content you compose. Use transfers for large/binary files.",
+        "- to is an existing destination folder; items keep their names. Existing destinations",
+        "  are skipped, never overwritten. Issue the transfer directly and use its current result",
+        "  instead of pre-checking with stale listings.",
     ]);
     out.push(format!(
-        "- Local paths belong to the user's own computer, which runs {}. You cannot",
+        "- Local paths are on the user's {} computer. You cannot",
         local_system()
     ));
-    push(&mut out, &[
-        "  list it, so the only local paths you may use are the ones named below, the ones the",
-        "  user gave you, and folders under either. Never invent one from the shape of the OS.",
-    ]);
+    push(
+        &mut out,
+        &["  list it: use only paths supplied by the user, listed below, or beneath those paths."],
+    );
     if !input.local_places.is_empty() {
         out.push("- Directories on that computer, resolved for you:".to_string());
         out.extend(input.local_places.iter().cloned());
     }
     push(&mut out, &[
-        "- \"download it to my desktop\" and the like are answered from that list, without asking.",
-        "  Only when the place they named is not there and you cannot work it out from what they",
-        "  said should you leave \"to\" out, which shows them a folder picker. Asking for a path",
-        "  you have already been given is the annoying answer; so is a picker for \"the desktop\".",
-        "- To upload a file you cannot name, leave \"path\" out and they are shown a file picker.",
+        "- Resolve desktop/download requests from that list. If a local source or destination is",
+        "  genuinely unknown, omit path or to to show the appropriate picker.",
     ]);
-    push(&mut out, &[if cfg!(target_os = "macos") {
-        "  It can select folders as well."
-    } else {
-        "  It takes files only -- to upload a folder you must have its path."
-    }]);
+    push(
+        &mut out,
+        &[if cfg!(target_os = "macos") {
+            "  It can select folders as well."
+        } else {
+            "  It takes files only -- to upload a folder you must have its path."
+        }],
+    );
     // Only where it is true. Told to double backslashes on a Mac, a model starts
     // writing "/Users/\\me", which is a path to nothing.
     if cfg!(target_os = "windows") {
@@ -641,56 +534,27 @@ pub fn build_system_prompt(input: &PromptInput) -> String {
         ]);
     }
     push(&mut out, &[
-        "- Leaving \"to\" out of an upload is not a question: it goes to the directory the user is",
-        "  standing in in the terminal, which is usually what they meant by \"put it here\".",
+        "- An upload without to goes to the terminal's current remote directory.",
         "",
-        "Rules:",
-        "- Your commands are typed into the terminal the user is watching, in the shell they",
-        "  are using. It is their session: it starts in whatever directory they are standing",
-        "  in, your cd and export stay in effect for them afterwards, and they can see and",
-        "  interrupt everything you do.",
-        "- The working directory above was measured with pwd just before this task, so a",
-        "  relative path means what it says. Do not cd to get somewhere: build the absolute",
-        "  path ON THE DIRECTORY ABOVE, or keep the move inside the step that needs it with",
-        "  (cd DIR && command). A bare cd moves the user too, and they did not ask to be moved.",
-        "- Never assemble a path out of what looks plausible -- $HOME plus a directory name you",
-        "  saw in a prompt or a listing. Where someone works is not where they log in. Every",
-        "  absolute path you send must be copied from the working directory above or from output",
-        "  you have read; if you have neither, run pwd. A path that looks right is not one that exists.",
+        "Shell and workflow:",
+        "- Commands run visibly in the user's persistent terminal session. Avoid a bare cd; use",
+        "  absolute paths grounded in pwd/output, never guessed paths.",
         "- One command per step. Chain with && only when the steps are inseparable.",
         "- Investigate with read-only commands before changing anything.",
-        "- Never start anything that takes the screen over or does not return on its own:",
-        "  no editors, no pagers, no top, no -f/--follow. There is no way back out of them.",
-        "- sudo can prompt for a password, which only the user can type. Prefer a command",
-        "  that does not need root; if a step really does, use \"ask\" and let them decide.",
+        "- Never run interactive or non-returning programs: editors, pagers, top or follow mode.",
+        "- Avoid sudo; if a password is required, ask the user in prose.",
         "- Always pass non-interactive flags (-y, DEBIAN_FRONTEND=noninteractive).",
-        "- Never use placeholders such as <path>. Read the value first if you do not know it.",
-        "- Never ask permission to look at something. Read-only commands run without a prompt,",
-        "  so just run them. Investigating is your job, not a decision for the user.",
+        "- Never use placeholders; discover unknown values first.",
         "",
-        "What is blocked and what is merely confirmed:",
-        "- Only a few catastrophic shapes are blocked outright: wiping the filesystem root,",
-        "  formatting a disk, writing a raw device, shutting the machine down, killing every",
-        "  process. Everything else that changes the system is simply confirmed by the user.",
-        "- So a blocked command means \"narrow it down\", not \"give up\". Killing one named",
-        "  process, restarting one service, editing one file are all allowed, with a prompt.",
+        "Safety:",
+        "- Catastrophic broad actions are blocked; other state changes require confirmation.",
+        "  If blocked, narrow the target instead of giving up.",
         "",
-        "When a step fails:",
-        "- A non-zero exit is part of the task, not the end of it. Diagnose it and keep going.",
-        "- Read the logs, config, and state around the failure before trying a different command.",
-        "- If a program crashes or a service will not start, check its log file, its config, and",
-        "  whether the port, file or permission it needs is free. Verify the fix by re-running it.",
-        "- Never stop and report an error you have not investigated as though it were the result.",
-        "",
-        "Finishing:",
-        "- Stopping is what says a task is done, so stop only when the thing the user asked for",
-        "  has been carried out AND verified. Reporting what you found is not the same as doing",
-        "  it. If the user asked you to restart something, it is not finished until it is",
-        "  running again and you have checked. Until then, ask for the next action.",
-        "- Stop and say so if you have genuinely run out of options, saying what you tried and",
-        "  what blocks it. That is an answer; a task nobody can finish still ends.",
-        "- Never narrate a step you have not asked for. \"Now I will check the logs\" with no",
-        "  action after it ends the task at the point you were describing what to do next.",
+        "Failure and completion:",
+        "- Diagnose failures from relevant logs, config and state; do not stop at the first error.",
+        "- Finish only after the requested outcome is carried out and verified. If genuinely",
+        "  blocked, report what was tried and the blocker.",
+        "- Never narrate a future step without issuing its action.",
         "",
     ]);
     if let Some(memory) = input.memory {
@@ -740,8 +604,8 @@ fn machine_section(host: &str, machine: &super::context::MachineFacts) -> Vec<St
             or_unknown(&machine.user),
             or_unknown(&machine.home)
         ),
-        "Your working directory is NOT listed here and must never be assumed: run pwd when you".to_string(),
-        "need one. It moves while a task runs, so anything written down would be stale.".to_string(),
+        "CWD is dynamic and not listed here; run pwd when needed instead of assuming it."
+            .to_string(),
         String::new(),
     ]
 }
@@ -822,7 +686,10 @@ mod tests {
 
     #[test]
     fn a_clean_result_is_three_lines_and_no_lecture() {
-        let result = CommandResult { output: "ok".into(), ..Default::default() };
+        let result = CommandResult {
+            output: "ok".into(),
+            ..Default::default()
+        };
         assert_eq!(describe_result(&result), "EXIT: 0\nOUTPUT:\nok");
     }
 
@@ -830,14 +697,20 @@ mod tests {
     fn empty_output_is_said_rather_than_left_blank() {
         let result = CommandResult::default();
         assert_eq!(describe_result(&result), "EXIT: 0\nOUTPUT:\n(no output)");
-        let result = CommandResult { timed_out: true, ..Default::default() };
+        let result = CommandResult {
+            timed_out: true,
+            ..Default::default()
+        };
         assert!(describe_result(&result).contains("OUTPUT:\n(nothing)"));
     }
 
     #[test]
     fn a_truncated_result_says_where_the_middle_went() {
-        let result =
-            CommandResult { output: "x".into(), truncated: true, ..Default::default() };
+        let result = CommandResult {
+            output: "x".into(),
+            truncated: true,
+            ..Default::default()
+        };
         assert!(describe_result(&result).contains("OUTPUT (middle omitted):"));
     }
 
@@ -879,7 +752,10 @@ mod tests {
     #[test]
     fn memory_outcomes_each_say_what_to_do_next() {
         let text = describe_memory(MemoryScope::Global, MemoryOutcome::Ok);
-        assert_eq!(text, "Stored in global memory. Carry on with what you were doing.");
+        assert_eq!(
+            text,
+            "Stored in global memory. Carry on with what you were doing."
+        );
         let text = describe_memory(MemoryScope::Server, MemoryOutcome::Full);
         assert!(text.starts_with("This server's memory is full and NOTHING was written."));
         let text = describe_memory(MemoryScope::Server, MemoryOutcome::Failed);
@@ -911,16 +787,27 @@ mod tests {
             server: "- nginx is at /opt/nginx".into(),
             server_name: "web-1".into(),
         };
-        let prompt = build_system_prompt(&PromptInput { memory: Some(&memory), ..base() });
-        assert!(prompt.contains("{\"action\":\"remember\""));
+        let prompt = build_system_prompt(&PromptInput {
+            memory: Some(&memory),
+            ..base()
+        });
+        assert!(!prompt.contains("{\"action\":\"remember\""));
         assert!(prompt.contains("[global]\n- prefers tabs"));
         assert!(prompt.contains("[server: web-1]\n- nginx is at /opt/nginx"));
+        let fallback = build_json_system_prompt(&PromptInput {
+            memory: Some(&memory),
+            ..base()
+        });
+        assert!(fallback.contains("{\"action\":\"remember\""));
     }
 
     #[test]
     fn empty_memory_still_invites_the_first_fact() {
         let memory = MemoryPrompt::default();
-        let prompt = build_system_prompt(&PromptInput { memory: Some(&memory), ..base() });
+        let prompt = build_system_prompt(&PromptInput {
+            memory: Some(&memory),
+            ..base()
+        });
         assert!(prompt.contains("- Nothing yet."));
         assert!(!prompt.contains("[global]"));
     }
@@ -935,16 +822,65 @@ mod tests {
     #[test]
     fn skills_on_lists_them_and_says_how_to_reach_for_one() {
         let skills = vec!["- deploy: how releases go out here".to_string()];
-        let prompt = build_system_prompt(&PromptInput { skills: &skills, ..base() });
-        assert!(prompt.contains("{\"action\":\"skill\""));
+        let prompt = build_system_prompt(&PromptInput {
+            skills: &skills,
+            ..base()
+        });
+        assert!(!prompt.contains("{\"action\":\"skill\""));
         assert!(prompt.contains("- deploy: how releases go out here"));
+        let fallback = build_json_system_prompt(&PromptInput {
+            skills: &skills,
+            ..base()
+        });
+        assert!(fallback.contains("{\"action\":\"skill\""));
+    }
+
+    #[test]
+    fn native_tools_and_json_fallback_have_separate_protocols() {
+        let native = build_system_prompt(&base());
+        assert!(native.contains("call one of the tools provided with the request"));
+        assert!(!native.contains("Allowed shapes:"));
+        assert!(!native.contains("{\"action\":\"run\""));
+
+        let fallback = build_json_system_prompt(&base());
+        assert!(fallback.contains("Allowed shapes:"));
+        assert!(fallback.contains("{\"action\":\"run\""));
+        assert!(!fallback.contains("call one of the tools provided with the request"));
+    }
+
+    #[test]
+    fn system_prompts_stay_compact() {
+        let native = build_system_prompt(&base());
+        let fallback = build_json_system_prompt(&base());
+        assert!(
+            native.chars().count() < 7_000,
+            "native prompt grew to {} chars",
+            native.len()
+        );
+        assert!(
+            fallback.chars().count() < 9_000,
+            "JSON fallback prompt grew to {} chars",
+            fallback.len()
+        );
+    }
+
+    #[test]
+    fn the_model_is_named_without_coaching_its_answer() {
+        let prompt = build_system_prompt(&base());
+        assert!(prompt.contains("running on gpt-x"));
+        assert!(!prompt.contains("Asked what model"));
+        assert!(!prompt.contains("underlying model is not disclosed"));
+        assert!(!prompt.contains("state that identity"));
     }
 
     #[test]
     fn the_reply_language_follows_the_setting() {
         let prompt = build_system_prompt(&base());
         assert!(prompt.contains("\"text\", in English."));
-        let prompt = build_system_prompt(&PromptInput { language: Language::ZhCn, ..base() });
+        let prompt = build_system_prompt(&PromptInput {
+            language: Language::ZhCn,
+            ..base()
+        });
         assert!(prompt.contains("\"text\", in Chinese."));
         assert!(prompt.contains("- Reason in Chinese too."));
     }
@@ -969,7 +905,10 @@ mod tests {
 
     #[test]
     fn not_thinking_drops_the_instruction_about_thinking() {
-        let prompt = build_system_prompt(&PromptInput { thinking: false, ..base() });
+        let prompt = build_system_prompt(&PromptInput {
+            thinking: false,
+            ..base()
+        });
         assert!(!prompt.contains("Reason in English too."));
     }
 
@@ -980,7 +919,10 @@ mod tests {
     fn the_prompt_carries_nothing_that_changes_between_tasks() {
         let prompt = build_system_prompt(&base());
         assert!(!prompt.contains("Machine and session context"));
-        assert!(!prompt.contains("CWD:"), "the working directory is not a standing instruction");
+        assert!(
+            !prompt.contains("CWD:"),
+            "the working directory is not a standing instruction"
+        );
         assert!(!prompt.contains("Recent commands"));
         assert!(!prompt.contains("Working directory"));
     }
@@ -1006,7 +948,10 @@ mod tests {
     #[test]
     fn resolved_local_directories_are_listed_when_there_are_any() {
         let places = vec!["  Desktop: C:\\Users\\me\\Desktop".to_string()];
-        let prompt = build_system_prompt(&PromptInput { local_places: &places, ..base() });
+        let prompt = build_system_prompt(&PromptInput {
+            local_places: &places,
+            ..base()
+        });
         assert!(prompt.contains("- Directories on that computer, resolved for you:"));
         assert!(prompt.contains("  Desktop: C:\\Users\\me\\Desktop"));
         let prompt = build_system_prompt(&base());

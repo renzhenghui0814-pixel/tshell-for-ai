@@ -46,7 +46,7 @@ use super::prompt::{build_system_prompt, MemoryPrompt, PromptInput};
 use super::session::AgentSession;
 use super::settings::{model_secret_key, AiSettings};
 use super::shell::{AgentShell, RunOptions, TerminalIo, DEFAULT_OUTPUT_BUDGET};
-use super::store::chat::{now_ms, ChatEntry, ChatRecord, ChatStore, ChatUsage};
+use super::store::chat::{now_ms, ChatEntry, ChatLogMessage, ChatRecord, ChatStore, ChatUsage};
 use super::store::log::LogStore;
 use super::store::memory::{AppendResult, MemoryStore};
 use super::store::skill::{SkillRead, SkillStore};
@@ -206,17 +206,27 @@ impl Host {
                 truncated: false,
             };
         }
-        match self.agent.run(&self.typist, command, timeout, cancel, &options).await {
+        match self
+            .agent
+            .run(&self.typist, command, timeout, cancel, &options)
+            .await
+        {
             Ok(result) => result,
-            Err(message) => {
-                CommandResult { output: message, exit_code: 1, timed_out: false, truncated: false }
-            }
+            Err(message) => CommandResult {
+                output: message,
+                exit_code: 1,
+                timed_out: false,
+                truncated: false,
+            },
         }
     }
 
     /// What `pwd` says, asked rather than replayed. See `context.rs`.
     async fn working_directory(&self, cancel: &Cancel) -> String {
-        let silent = RunOptions { silent: true, ..Default::default() };
+        let silent = RunOptions {
+            silent: true,
+            ..Default::default()
+        };
         let result = self.run("pwd", silent, cancel).await;
         if result.exit_code == 0 {
             result.output.trim().to_string()
@@ -263,7 +273,11 @@ impl Host {
             if home.is_empty() {
                 return path.to_string();
             }
-            return if path == "~" { home } else { join_under(&home, &path[2..]) };
+            return if path == "~" {
+                home
+            } else {
+                join_under(&home, &path[2..])
+            };
         }
         // `~user` is left alone: only the far side knows where that is, and a
         // guess would be a plausible wrong answer.
@@ -280,7 +294,10 @@ impl Host {
 
     /// One silent question to the shell, trimmed. Empty when it would not answer.
     async fn ask_shell(&self, command: &str, cancel: &Cancel) -> String {
-        let silent = RunOptions { silent: true, ..Default::default() };
+        let silent = RunOptions {
+            silent: true,
+            ..Default::default()
+        };
         let result = self.run(command, silent, cancel).await;
         if result.exit_code == 0 {
             result.output.trim().to_string()
@@ -291,7 +308,10 @@ impl Host {
 
     /// The machine's own answers, asked once per task.
     async fn machine_facts(&self, cancel: &Cancel) -> MachineFacts {
-        let silent = RunOptions { silent: true, ..Default::default() };
+        let silent = RunOptions {
+            silent: true,
+            ..Default::default()
+        };
         let result = self
             .run(
                 "uname -o 2>/dev/null || uname -s; uname -r; echo \"$SHELL\"; id -un; echo \"$HOME\"",
@@ -331,12 +351,15 @@ impl Host {
     /// machine is in here any more -- see `task_context` -- so in the ordinary
     /// case it comes out byte-identical every time, which is what lets an
     /// endpoint match its cache from message zero.
-    fn system_prompt(&self, identity: &str, machine: &MachineFacts) -> String {
+    fn system_prompts(&self, identity: &str, machine: &MachineFacts) -> (String, String) {
         let settings = self.settings();
 
         let memory = settings.memory.enabled.then(|| MemoryPrompt {
             global: self.stores.memory.read(MemoryScope::Global, None),
-            server: self.stores.memory.read(MemoryScope::Server, Some(&self.server_id)),
+            server: self
+                .stores
+                .memory
+                .read(MemoryScope::Server, Some(&self.server_id)),
             server_name: self.server_name.clone(),
         });
         let skills = if settings.skills.enabled {
@@ -346,7 +369,7 @@ impl Host {
         };
         let places = moves::describe_local_places("");
 
-        build_system_prompt(&PromptInput {
+        let input = PromptInput {
             language: self.language,
             host: &self.server_name,
             machine,
@@ -355,7 +378,11 @@ impl Host {
             local_places: &places,
             skills: &skills,
             thinking: settings.thinking.enabled,
-        })
+        };
+        (
+            build_system_prompt(&input),
+            super::prompt::build_json_system_prompt(&input),
+        )
     }
 
     /// The two sides of a transfer, bound to which way it is going.
@@ -364,9 +391,21 @@ impl Host {
     }
 
     async fn probe_remote(&self, path: &str) -> Option<PathKind> {
-        let silent = RunOptions { silent: true, ..Default::default() };
-        let result = self.run(&files::build_probe(path), silent, &Cancel::new()).await;
-        match result.output.trim().lines().next_back().unwrap_or_default().trim() {
+        let silent = RunOptions {
+            silent: true,
+            ..Default::default()
+        };
+        let result = self
+            .run(&files::build_probe(path), silent, &Cancel::new())
+            .await;
+        match result
+            .output
+            .trim()
+            .lines()
+            .next_back()
+            .unwrap_or_default()
+            .trim()
+        {
             "dir" => Some(PathKind::Directory),
             "file" => Some(PathKind::File),
             _ => None,
@@ -375,7 +414,11 @@ impl Host {
 
     fn probe_local(path: &str) -> Option<PathKind> {
         let meta = std::fs::metadata(path).ok()?;
-        Some(if meta.is_dir() { PathKind::Directory } else { PathKind::File })
+        Some(if meta.is_dir() {
+            PathKind::Directory
+        } else {
+            PathKind::File
+        })
     }
 }
 
@@ -389,13 +432,33 @@ impl Judge for Host {
         classify_path(path)
     }
     fn describe_risk(&self, reasons: &[RiskReason]) -> Vec<String> {
-        reasons.iter().map(|reason| t(self.language, &super::types::risk_key(*reason))).collect()
+        reasons
+            .iter()
+            .map(|reason| t(self.language, &super::types::risk_key(*reason)))
+            .collect()
     }
 }
 
 impl Executor for Host {
     async fn execute(&self, command: &str, cancel: &Cancel) -> CommandResult {
-        self.run(command, RunOptions::default(), cancel).await
+        let running = self.run(command, RunOptions::default(), cancel);
+        tokio::pin!(running);
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(80));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last = String::new();
+
+        loop {
+            tokio::select! {
+                result = &mut running => return result,
+                _ = tick.tick() => {
+                    let output = self.agent.output_snapshot();
+                    if !output.is_empty() && output != last {
+                        last = output.clone();
+                        self.emit(AgentEvent::CommandOutput { output });
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -517,8 +580,10 @@ impl Bytes for Host {
         // Resolved before anything is planned, so the path in the plan -- the one
         // written, the one committed, and the one the user is shown -- is the
         // same path on both connections. See `resolve_path`.
-        let request =
-            FileRequest { path: self.resolve_path(&request.path, cancel).await, ..request };
+        let request = FileRequest {
+            path: self.resolve_path(&request.path, cancel).await,
+            ..request
+        };
         files::plan_file_op(&request, self).await
     }
 
@@ -551,7 +616,9 @@ impl Stores for Host {
             MemoryScope::Global => settings.memory.global_budget,
             MemoryScope::Server => settings.memory.server_budget,
         };
-        self.stores.memory.append(scope, self.scope_id(scope), text, budget)
+        self.stores
+            .memory
+            .append(scope, self.scope_id(scope), text, budget)
     }
 
     fn skills_enabled(&self) -> bool {
@@ -560,7 +627,12 @@ impl Stores for Host {
 
     async fn load_skill(&self, id: &str, file: Option<&str>) -> SkillRead {
         let settings = self.settings();
-        self.stores.skills.read(id, file, settings.skills.max_chars, &settings.skills.disabled)
+        self.stores.skills.read(
+            id,
+            file,
+            settings.skills.max_chars,
+            &settings.skills.disabled,
+        )
     }
 
     async fn is_trusted(&self, path: &str) -> bool {
@@ -578,34 +650,108 @@ impl Emitter for Host {
          * something that is no longer true of anything. The rest is the thread,
          * and it is what a reopened conversation is drawn from.
          */
-        let keep = !matches!(
-            event,
-            AgentEvent::Thinking { .. }
+        let mut changed = false;
+        {
+            let mut record = self.record.lock().unwrap();
+            match &event {
+                AgentEvent::Usage {
+                    prompt, completion, ..
+                } => {
+                    let usage = record.usage.get_or_insert(ChatUsage::default());
+                    usage.prompt += *prompt as u64;
+                    usage.completion += *completion as u64;
+                    usage.requests += 1;
+                    changed = true;
+                }
+                AgentEvent::Reasoning { text } => {
+                    if let Some(last) = record.messages.last_mut().filter(|message| {
+                        message.role == "assistant" && message.kind == "reasoning"
+                    }) {
+                        last.text.push_str(text);
+                    } else {
+                        record.messages.push(ChatLogMessage::event(
+                            AgentEvent::Reasoning { text: text.clone() },
+                            Some(now_ms()),
+                        ));
+                    }
+                    changed = true;
+                }
+                AgentEvent::Reply { text } => {
+                    if let Some(reply) = record
+                        .messages
+                        .iter_mut()
+                        .rev()
+                        .find(|message| message.role == "assistant" && message.kind == "reply")
+                    {
+                        if reply.text != *text && !reply.text.is_empty() {
+                            reply
+                                .fields
+                                .insert("modelText".into(), Value::String(reply.text.clone()));
+                        }
+                        reply.text = text.clone();
+                        reply.time.get_or_insert_with(now_ms);
+                    } else {
+                        record.messages.push(ChatLogMessage::event(
+                            AgentEvent::Reply { text: text.clone() },
+                            Some(now_ms()),
+                        ));
+                    }
+                    changed = true;
+                }
+                AgentEvent::Thinking { .. }
                 | AgentEvent::Delta { .. }
-                | AgentEvent::Reasoning { .. }
+                | AgentEvent::CommandOutput { .. }
                 | AgentEvent::TransferProgress { .. }
                 | AgentEvent::Context { .. }
                 | AgentEvent::Transport { .. }
-                | AgentEvent::Idle
-        );
-        if keep {
-            let mut record = self.record.lock().unwrap();
-            record.entries.push(ChatEntry::event(event.clone()));
-            if let AgentEvent::Usage { prompt, completion, estimated } = &event {
-                let usage = record.usage.get_or_insert(ChatUsage::default());
-                usage.prompt += *prompt as u64;
-                usage.completion += *completion as u64;
-                usage.requests += 1;
-                // Never cleared: a total that is half measured and half guessed
-                // is a guess, and saying otherwise would be dishonest.
-                usage.estimated = usage.estimated || estimated.unwrap_or(false);
+                | AgentEvent::Idle => {}
+                AgentEvent::Command { .. }
+                | AgentEvent::Result { .. }
+                | AgentEvent::File { .. }
+                | AgentEvent::Memory { .. }
+                | AgentEvent::Transfer { .. }
+                | AgentEvent::Skill { .. }
+                | AgentEvent::Trusted { .. }
+                | AgentEvent::Refused { .. }
+                | AgentEvent::Declined { .. } => {
+                    // These are live fragments of one invocation. The model's
+                    // observation in `checkpoint` closes the group and writes a
+                    // single `role:tool, type:<tool name>` record.
+                    record.push_tool_event(event.clone());
+                }
+                AgentEvent::Stopped => {
+                    // A cancelled command has no model observation to close it.
+                    // Do not let its live fragments leak into the next call.
+                    record.discard_incomplete_tool();
+                    record
+                        .messages
+                        .push(ChatLogMessage::event(event.clone(), None));
+                    changed = true;
+                }
+                _ => {
+                    record
+                        .messages
+                        .push(ChatLogMessage::event(event.clone(), None));
+                    changed = true;
+                }
             }
-            let mut copy = record.clone();
+            let mut copy = changed.then(|| record.clone());
             drop(record);
-            self.stores.chats.save(&mut copy);
-            *self.record.lock().unwrap() = copy;
+            if let Some(mut copy) = copy.take() {
+                self.stores.chats.save(&mut copy);
+                *self.record.lock().unwrap() = copy;
+            }
         }
         self.post(json!({ "type": "event", "event": event }));
+    }
+
+    fn checkpoint(&self, messages: &[super::llm::ChatMessage]) {
+        let mut record = self.record.lock().unwrap();
+        record.sync_history(messages);
+        let mut copy = record.clone();
+        drop(record);
+        self.stores.chats.save(&mut copy);
+        *self.record.lock().unwrap() = copy;
     }
 }
 
@@ -646,14 +792,21 @@ impl Host {
         let pane = format!("ai:{}", self.pane);
         let skipped: Arc<Mutex<Vec<String>>> = Arc::default();
         let failures: Arc<Mutex<Vec<String>>> = Arc::default();
+        // The page receives every tick, while the conversation only needs the
+        // last one: it contains the completed file/byte totals and the final
+        // file's size, enough to redraw the finished bars after a reload.
+        let final_progress: Arc<Mutex<Option<TransferProgress>>> = Arc::default();
 
         let transfers = self.transfers.clone();
         let out = self.out.clone();
         let watching = pane.clone();
         let seen_skips = skipped.clone();
         let seen_failures = failures.clone();
+        let seen_progress = final_progress.clone();
         let channel = Channel::new(move |message: tauri::ipc::InvokeResponseBody| {
-            let Ok(text) = message.deserialize::<Value>() else { return Ok(()) };
+            let Ok(text) = message.deserialize::<Value>() else {
+                return Ok(());
+            };
             match text["kind"].as_str().unwrap_or_default() {
                 "conflict" => {
                     if let Some(path) = text["targetPath"].as_str() {
@@ -672,7 +825,7 @@ impl Host {
                  * how a transfer that worked perfectly showed a bar stuck at zero.
                  */
                 "scanning" => {
-                    let _ = out.send(progress_event(TransferProgress {
+                    let progress = TransferProgress {
                         phase: TransferPhase::Scanning,
                         overall: TransferOverall {
                             total_files: number(&text["totalFiles"]) as u32,
@@ -680,10 +833,12 @@ impl Host {
                             ..Default::default()
                         },
                         current: TransferCurrent::default(),
-                    }));
+                    };
+                    *seen_progress.lock().unwrap() = Some(progress.clone());
+                    let _ = out.send(progress_event(progress));
                 }
                 "progress" => {
-                    let _ = out.send(progress_event(TransferProgress {
+                    let progress = TransferProgress {
                         phase: TransferPhase::Transferring,
                         overall: TransferOverall {
                             done_files: number(&text["doneFiles"]) as u32,
@@ -696,7 +851,9 @@ impl Host {
                             transferred: number(&text["transferred"]),
                             total: number(&text["total"]),
                         },
-                    }));
+                    };
+                    *seen_progress.lock().unwrap() = Some(progress.clone());
+                    let _ = out.send(progress_event(progress));
                 }
                 "item" if text["status"] == "failed" => {
                     seen_failures
@@ -718,8 +875,11 @@ impl Host {
             stopping.cancel(&stop_pane);
         });
 
-        let roots: Vec<(String, bool)> =
-            plan.roots.iter().map(|root| (root.path.clone(), root.is_directory)).collect();
+        let roots: Vec<(String, bool)> = plan
+            .roots
+            .iter()
+            .map(|root| (root.path.clone(), root.is_directory))
+            .collect();
         let outcome = crate::transfer::run(
             self.transfers.clone(),
             pane,
@@ -731,6 +891,13 @@ impl Host {
             channel,
         )
         .await;
+
+        if let Some(progress) = final_progress.lock().unwrap().take() {
+            self.record
+                .lock()
+                .unwrap()
+                .push_tool_event(AgentEvent::TransferProgress { progress });
+        }
 
         match outcome {
             Ok(summary) => moves::describe_transfer(
@@ -745,10 +912,13 @@ impl Host {
                 &failures.lock().unwrap(),
             ),
             Err(message) => CommandResult {
-                output: format!("The {} failed before it finished: {message}", match plan.kind {
-                    TransferKind::Upload => "upload",
-                    TransferKind::Download => "download",
-                }),
+                output: format!(
+                    "The {} failed before it finished: {message}",
+                    match plan.kind {
+                        TransferKind::Upload => "upload",
+                        TransferKind::Download => "download",
+                    }
+                ),
                 exit_code: 1,
                 timed_out: false,
                 truncated: false,
@@ -801,7 +971,9 @@ impl TransferContext for Sides<'_> {
     }
     fn home_source(&self) -> String {
         if self.source_is_local() {
-            dirs::home_dir().map(|home| home.display().to_string()).unwrap_or_default()
+            dirs::home_dir()
+                .map(|home| home.display().to_string())
+                .unwrap_or_default()
         } else {
             String::new()
         }
@@ -810,7 +982,9 @@ impl TransferContext for Sides<'_> {
         if self.source_is_local() {
             String::new()
         } else {
-            dirs::home_dir().map(|home| home.display().to_string()).unwrap_or_default()
+            dirs::home_dir()
+                .map(|home| home.display().to_string())
+                .unwrap_or_default()
         }
     }
     async fn default_target(&self) -> String {
@@ -868,7 +1042,9 @@ fn provider_for(settings: &AiSettings, secrets: &Secrets) -> Arc<dyn LlmProvider
     match settings.active_model() {
         None => Arc::new(Unconfigured),
         Some(model) => {
-            let key = secrets.get(&model_secret_key(&model.id)).unwrap_or_default();
+            let key = secrets
+                .get(&model_secret_key(&model.id))
+                .unwrap_or_default();
             Arc::new(WithRetry::new(HttpProvider::new(
                 &model.base_url,
                 &model.model,
@@ -896,15 +1072,16 @@ pub struct PanelBootstrap {
 
 fn fresh_record(server_id: &str, server_name: &str) -> ChatRecord {
     ChatRecord {
+        version: 1,
         id: config::make_id(),
         server_id: server_id.to_string(),
         server_name: server_name.to_string(),
         title: String::new(),
         created_at: now_ms(),
         updated_at: now_ms(),
-        entries: Vec::new(),
         messages: Vec::new(),
         usage: None,
+        pending_tool_events: Vec::new(),
     }
 }
 
@@ -942,11 +1119,12 @@ pub fn open_panel(
     let settings = config.settings.ai.clone();
     let language = config.settings.language;
 
-    let agent = Arc::new(AgentShell::fresh(settings.agent.output_budget.max(DEFAULT_OUTPUT_BUDGET)));
+    let agent = Arc::new(AgentShell::fresh(
+        settings.agent.output_budget.max(DEFAULT_OUTPUT_BUDGET),
+    ));
     // From here every byte of that terminal passes through the agent on its way
     // to the tab, which is what lets a command's own output be told apart.
     sessions.attach(&terminal, agent.clone());
-
 
     let host = Arc::new(Host {
         pane: pane.clone(),
@@ -959,7 +1137,11 @@ pub fn open_panel(
         link: super::link::Link::new(target.clone()),
         target,
         agent,
-        typist: Typist { sessions, terminal, encoding },
+        typist: Typist {
+            sessions,
+            terminal,
+            encoding,
+        },
         stores,
         settings: Mutex::new(settings.clone()),
         out,
@@ -974,10 +1156,12 @@ pub fn open_panel(
     agent_config.request_timeout_ms = settings.request_timeout_ms;
 
     let session = AgentSession::new(host.clone(), agent_config);
-    let panel = Arc::new(Panel { host: host.clone(), session });
-    // Opening a panel opens a conversation, so it opens a transcript too. Named
-    // for the record the host was just built around.
-    panel.open_log();
+    let panel = Arc::new(Panel {
+        host: host.clone(),
+        session,
+    });
+    // A transcript is prepared here but stays file-less until an actual request.
+    panel.open_log(None);
 
     let bootstrap = PanelBootstrap {
         language: language.tag(),
@@ -1008,7 +1192,7 @@ impl Panel {
     }
 
     /// Runs one message to completion, rebuilding the prompt first.
-    pub async fn send(&self, text: String) {
+    pub async fn send(&self, text: String, images: Vec<super::llm::ChatImage>) {
         let identity = self.session.describe_provider();
         let cancel = Cancel::new();
         // Asked again per task rather than cached, because a machine can be
@@ -1016,8 +1200,11 @@ impl Panel {
         // string almost every time, so the prompt stays byte-identical and the
         // cache still matches -- this costs a round trip, not a cache miss.
         let machine = self.host.machine_facts(&cancel).await;
-        self.session
-            .configure(|current| current.system = self.host.system_prompt(&identity, &machine));
+        let (system, fallback_system) = self.host.system_prompts(&identity, &machine);
+        self.session.configure(|current| {
+            current.system = system;
+            current.fallback_system = fallback_system;
+        });
         /*
          * The machine goes in as part of this turn rather than into the prompt.
          *
@@ -1034,9 +1221,18 @@ impl Panel {
             if first {
                 // Written once, from the opening message, and then left alone: a
                 // tab that renamed itself on every turn would be unfindable.
-                record.title = super::store::chat::title_for(&text);
+                record.title = super::store::chat::title_for(if text.trim().is_empty() {
+                    "Image"
+                } else {
+                    &text
+                });
             }
-            record.entries.push(ChatEntry::user(text.clone()));
+            record.messages.push(ChatLogMessage::user(
+                text.clone(),
+                context.clone(),
+                images.clone(),
+                now_ms(),
+            ));
             first.then(|| record.title.clone())
         };
         if let Some(title) = named {
@@ -1049,24 +1245,22 @@ impl Panel {
                 ),
             }));
         }
-        self.host.post(json!({ "type": "user", "text": text }));
+        self.host
+            .post(json!({ "type": "user", "text": text, "images": images }));
         self.host.post(json!({ "type": "state", "running": true }));
 
-        self.session.send(&super::prompt::context_turn(&context, &text)).await;
-
-        // The conversation as the model saw it, kept so a reopened panel carries
-        // on rather than starting again knowing nothing.
-        let mut record = self.host.record.lock().unwrap().clone();
-        record.messages = self.session.history();
-        self.host.stores.chats.save(&mut record);
-        *self.host.record.lock().unwrap() = record;
+        self.session
+            .send_with_images(&super::prompt::context_turn(&context, &text), images)
+            .await;
 
         self.host.post(json!({ "type": "state", "running": false }));
     }
 
     pub fn close(&self) {
         self.session.stop();
-        self.host.sessions.detach(&self.host.terminal, &self.host.agent);
+        self.host
+            .sessions
+            .detach(&self.host.terminal, &self.host.agent);
         // Anything still waiting on the user resolves as declined when the
         // senders drop with the map.
         self.host.pending.lock().unwrap().clear();
@@ -1113,7 +1307,7 @@ impl Panel {
         // A new conversation is a new transcript. Without this the old file goes
         // on collecting, and reads as one exchange in which the model keeps
         // forgetting everything and re-reading its prompt.
-        self.open_log();
+        self.open_log(None);
         self.host.post(json!({ "type": "cleared" }));
     }
 
@@ -1122,18 +1316,28 @@ impl Panel {
     /// Reads the id off the record rather than being told it, so the file and the
     /// conversation it describes cannot drift apart: there is one id and both
     /// take it from the same place.
-    fn open_log(&self) {
+    fn open_log(&self, resume_messages: Option<usize>) {
         let settings = self.host.settings();
         let (server_name, chat_id) = {
             let record = self.host.record.lock().unwrap();
             (record.server_name.clone(), record.id.clone())
         };
-        self.session.set_log(Arc::new(self.host.stores.logs.open(
-            settings.log.enabled,
-            settings.log.keep,
-            &server_name,
-            &chat_id,
-        )));
+        let log = match resume_messages {
+            Some(messages) => self.host.stores.logs.resume(
+                settings.log.enabled,
+                settings.log.keep,
+                &server_name,
+                &chat_id,
+                messages,
+            ),
+            None => self.host.stores.logs.open(
+                settings.log.enabled,
+                settings.log.keep,
+                &server_name,
+                &chat_id,
+            ),
+        };
+        self.session.set_log(Arc::new(log));
     }
 
     /// Puts a recorded conversation back on screen and into the model's context.
@@ -1144,17 +1348,17 @@ impl Panel {
     /// starting a task the model knows nothing about.
     pub fn load(&self, id: &str) -> Option<Value> {
         let record = self.host.stores.chats.load(id)?;
-        self.session.restore(record.messages.clone());
+        self.session.restore(record.history());
         let view = json!({
             "type": "restore",
-            "entries": record.entries,
+            "entries": record.entries(),
             "id": record.id,
             "usage": record.usage,
         });
         *self.host.record.lock().unwrap() = record;
-        // Reopening an old conversation is entering one, not continuing the one
-        // that was on screen. It gets its own transcript, named for itself.
-        self.open_log();
+        // Its existing transcript is resumed as well: the chat and its wire log
+        // are one conversation, even across a program restart.
+        self.open_log(Some(self.session.history().len()));
         Some(view)
     }
 
@@ -1165,7 +1369,9 @@ impl Panel {
     /// the dialog that made it is gone a moment later. The row is where you find
     /// out it happened, and how to undo it.
     pub fn note_trusted(&self, dir: &str) {
-        self.host.emit(AgentEvent::Trusted { dir: dir.to_string() });
+        self.host.emit(AgentEvent::Trusted {
+            dir: dir.to_string(),
+        });
     }
 }
 
@@ -1177,7 +1383,10 @@ mod tests {
     fn the_stores_all_sit_under_the_data_directory() {
         let stores = AiStores::default();
         let root = config::data_dir();
-        assert!(stores.memory.file_for(MemoryScope::Global, None).starts_with(&root));
+        assert!(stores
+            .memory
+            .file_for(MemoryScope::Global, None)
+            .starts_with(&root));
         assert!(stores.skills.root().starts_with(&root));
         assert!(stores.trust.path().starts_with(&root));
         assert!(stores.logs.dir().starts_with(&root));
@@ -1189,7 +1398,7 @@ mod tests {
         assert!(!record.id.is_empty());
         assert_eq!(record.server_id, "s1");
         assert!(record.title.is_empty());
-        assert!(record.entries.is_empty());
+        assert!(record.messages.is_empty());
         assert!(record.usage.is_none());
         assert!(record.created_at > 0);
     }
@@ -1199,7 +1408,7 @@ mod tests {
         let settings = AiSettings::default();
         let secrets = Secrets::open(&std::env::temp_dir().join("tshell-bridge-test"));
         let provider = provider_for(&settings, &secrets);
-        assert_eq!(provider.id(), "unconfigured");
+        assert!(provider.describe().contains("configured"));
     }
 
     #[test]

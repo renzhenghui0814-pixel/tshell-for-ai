@@ -493,9 +493,7 @@ mod tests {
     /// The halves are recorded separately for exactly this reason.
     #[test]
     fn an_edit_to_a_built_in_keeps_the_halves_apart() {
-        let file = parse_ok(
-            r##"{"version":1,"overrides":{"nebula":{"dark":{"red":"#AA0000"}}}}"##,
-        );
+        let file = parse_ok(r##"{"version":1,"overrides":{"nebula":{"dark":{"red":"#AA0000"}}}}"##);
         let edit = &file.overrides["nebula"];
         assert_eq!(edit.dark.as_ref().unwrap().red.as_deref(), Some("#AA0000"));
         assert!(edit.light.is_none());

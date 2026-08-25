@@ -82,7 +82,11 @@ pub struct ThinkingSettings {
 
 impl Default for ThinkingSettings {
     fn default() -> Self {
-        Self { enabled: true, effort: ThinkingEffort::High, show: false }
+        Self {
+            enabled: true,
+            effort: ThinkingEffort::High,
+            show: false,
+        }
     }
 }
 
@@ -171,7 +175,11 @@ impl Default for MemorySettings {
         // carrying it on every request stays unnoticeable. The global scope gets
         // less: what is true of every machine is a handful of preferences, not
         // an inventory.
-        Self { enabled: true, global_budget: 2_000, server_budget: 4_000 }
+        Self {
+            enabled: true,
+            global_budget: 2_000,
+            server_budget: 4_000,
+        }
     }
 }
 
@@ -193,7 +201,11 @@ impl Default for SkillSettings {
     fn default() -> Self {
         // Room for a long procedure in one step without a single file being able
         // to swallow the whole context budget on its own.
-        Self { enabled: true, max_chars: 20_000, disabled: Vec::new() }
+        Self {
+            enabled: true,
+            max_chars: 20_000,
+            disabled: Vec::new(),
+        }
     }
 }
 
@@ -214,7 +226,10 @@ impl Default for LogSettings {
     fn default() -> Self {
         // Enough to still hold the session before the one being looked at, and
         // few enough that a forgotten setting does not fill a disk.
-        Self { enabled: false, keep: 20 }
+        Self {
+            enabled: false,
+            keep: 20,
+        }
     }
 }
 
@@ -295,13 +310,16 @@ fn clamp(value: usize, min: usize, max: usize) -> usize {
 fn is_plain_name(value: &str) -> bool {
     let trimmed = value.trim();
     !trimmed.is_empty()
-        && trimmed.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '-'))
+        && trimmed
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
 impl AiSettings {
     /// Bring a parsed file up to what the rest of the assistant may assume.
     pub fn normalize(&mut self) {
-        self.models.retain(|model| !model.base_url.trim().is_empty() && !model.model.trim().is_empty());
+        self.models
+            .retain(|model| !model.base_url.trim().is_empty() && !model.model.trim().is_empty());
         for model in &mut self.models {
             if model.id.trim().is_empty() {
                 model.id = make_id();
@@ -313,10 +331,16 @@ impl AiSettings {
         // Which model answers, resolved against the list so it always names
         // something that exists. A dangling id falls to the first configured
         // endpoint, and to nothing at all when there is none.
-        let known = self.models.iter().any(|model| model.id == self.active_model_id);
+        let known = self
+            .models
+            .iter()
+            .any(|model| model.id == self.active_model_id);
         if !known {
-            self.active_model_id =
-                self.models.first().map(|model| model.id.clone()).unwrap_or_default();
+            self.active_model_id = self
+                .models
+                .first()
+                .map(|model| model.id.clone())
+                .unwrap_or_default();
         }
 
         self.output_lines = clamp(self.output_lines, 1, 200);
@@ -326,7 +350,9 @@ impl AiSettings {
         self.agent.command_timeout_ms = self.agent.command_timeout_ms.clamp(1_000, 600_000);
         self.agent.output_budget = clamp(self.agent.output_budget, 500, 60_000);
         self.agent.context_budget = clamp(self.agent.context_budget, 0, 400_000);
-        self.agent.read_only_commands.retain(|name| is_plain_name(name));
+        self.agent
+            .read_only_commands
+            .retain(|name| is_plain_name(name));
         for name in &mut self.agent.read_only_commands {
             *name = name.trim().to_string();
         }
@@ -345,7 +371,9 @@ impl AiSettings {
 
     /// The model that answers, or `None` when the user has configured none.
     pub fn active_model(&self) -> Option<&AiModel> {
-        self.models.iter().find(|model| model.id == self.active_model_id)
+        self.models
+            .iter()
+            .find(|model| model.id == self.active_model_id)
     }
 
     /// Adds an endpoint and switches to it, which is what configuring one is for.
@@ -364,7 +392,11 @@ impl AiSettings {
             Some(at) => self.models[at].id.clone(),
             None => make_id(),
         };
-        let entry = AiModel { id: id.clone(), base_url, model: name };
+        let entry = AiModel {
+            id: id.clone(),
+            base_url,
+            model: name,
+        };
         match existing {
             Some(at) => self.models[at] = entry,
             None => self.models.push(entry),
@@ -383,8 +415,11 @@ impl AiSettings {
             return false;
         }
         if self.active_model_id == id {
-            self.active_model_id =
-                self.models.first().map(|model| model.id.clone()).unwrap_or_default();
+            self.active_model_id = self
+                .models
+                .first()
+                .map(|model| model.id.clone())
+                .unwrap_or_default();
         }
         true
     }
@@ -415,9 +450,18 @@ mod tests {
                 context_budget: 9_999_999,
                 ..Default::default()
             },
-            memory: MemorySettings { global_budget: 99_999, ..Default::default() },
-            skills: SkillSettings { max_chars: 1, ..Default::default() },
-            log: LogSettings { keep: 0, ..Default::default() },
+            memory: MemorySettings {
+                global_budget: 99_999,
+                ..Default::default()
+            },
+            skills: SkillSettings {
+                max_chars: 1,
+                ..Default::default()
+            },
+            log: LogSettings {
+                keep: 0,
+                ..Default::default()
+            },
             ..Default::default()
         };
         settings.normalize();
@@ -436,9 +480,21 @@ mod tests {
     fn a_model_missing_its_endpoint_or_name_is_dropped() {
         let mut settings = AiSettings {
             models: vec![
-                AiModel { id: "a".into(), base_url: " ".into(), model: "x".into() },
-                AiModel { id: "b".into(), base_url: "http://x".into(), model: "".into() },
-                AiModel { id: "c".into(), base_url: " http://y ".into(), model: " z ".into() },
+                AiModel {
+                    id: "a".into(),
+                    base_url: " ".into(),
+                    model: "x".into(),
+                },
+                AiModel {
+                    id: "b".into(),
+                    base_url: "http://x".into(),
+                    model: "".into(),
+                },
+                AiModel {
+                    id: "c".into(),
+                    base_url: " http://y ".into(),
+                    model: " z ".into(),
+                },
             ],
             ..Default::default()
         };
@@ -465,7 +521,10 @@ mod tests {
 
     #[test]
     fn with_no_models_there_is_nothing_to_point_at() {
-        let mut settings = AiSettings { active_model_id: "gone".into(), ..Default::default() };
+        let mut settings = AiSettings {
+            active_model_id: "gone".into(),
+            ..Default::default()
+        };
         settings.normalize();
         assert_eq!(settings.active_model_id, "");
         assert!(settings.active_model().is_none());

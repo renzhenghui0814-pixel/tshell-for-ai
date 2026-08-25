@@ -54,7 +54,11 @@ impl ProseStreamer {
              * early: the hold ends at the key, before any value the model wrote
              * could have whitespace that mattered.
              */
-            let so_far: String = self.holding.chars().filter(|c| !c.is_whitespace()).collect();
+            let so_far: String = self
+                .holding
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
             if so_far.starts_with(OPENING) {
                 self.swallowed = true;
                 self.holding.clear();
@@ -91,7 +95,11 @@ mod tests {
     #[test]
     fn the_action_at_the_end_is_never_painted() {
         assert_eq!(
-            stream(&["I'll look.\n", r#"{"action":"run","#, r#""command":"df -h"}"#]),
+            stream(&[
+                "I'll look.\n",
+                r#"{"action":"run","#,
+                r#""command":"df -h"}"#
+            ]),
             "I'll look.\n"
         );
     }
@@ -100,20 +108,32 @@ mod tests {
     /// survive being split anywhere inside it.
     #[test]
     fn an_opening_split_across_chunks_is_still_recognised() {
-        assert_eq!(stream(&["ok ", "{", "\"a", "cti", "on\"", ":\"run\"}"]), "ok ");
+        assert_eq!(
+            stream(&["ok ", "{", "\"a", "cti", "on\"", ":\"run\"}"]),
+            "ok "
+        );
     }
 
     #[test]
     fn a_space_inside_the_opening_does_not_fool_it() {
-        assert_eq!(stream(&["ok ", "{ \"action\" : \"run\", \"command\":\"ls\"}"]), "ok ");
+        assert_eq!(
+            stream(&["ok ", "{ \"action\" : \"run\", \"command\":\"ls\"}"]),
+            "ok "
+        );
     }
 
     /// Braces are everywhere in an answer about a machine, and every one of them
     /// is text.
     #[test]
     fn brace_shaped_prose_is_released_once_it_proves_itself() {
-        assert_eq!(stream(&["Use awk '{print $1}' here."]), "Use awk '{print $1}' here.");
-        assert_eq!(stream(&["Post ", r#"{"user":"bob"}"#]), r#"Post {"user":"bob"}"#);
+        assert_eq!(
+            stream(&["Use awk '{print $1}' here."]),
+            "Use awk '{print $1}' here."
+        );
+        assert_eq!(
+            stream(&["Post ", r#"{"user":"bob"}"#]),
+            r#"Post {"user":"bob"}"#
+        );
         assert_eq!(stream(&["a ", "{", "\"a", "ge\":3}"]), r#"a {"age":3}"#);
     }
 
@@ -130,7 +150,10 @@ mod tests {
 
     #[test]
     fn a_whole_reply_pushed_at_once_still_comes_back() {
-        assert_eq!(stream(&["All set.\n{\"action\":\"run\",\"command\":\"ls\"}"]), "All set.\n");
+        assert_eq!(
+            stream(&["All set.\n{\"action\":\"run\",\"command\":\"ls\"}"]),
+            "All set.\n"
+        );
     }
 
     #[test]

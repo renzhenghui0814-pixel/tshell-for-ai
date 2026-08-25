@@ -29,7 +29,7 @@ use serde_json::{Map, Value};
 use crate::atomic;
 
 /// The only version this build reads or writes.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 const DEFAULT_GROUP_ID: &str = "default";
 
@@ -90,7 +90,11 @@ pub enum Encoding {
  * and then fails to read its own output back.
  */
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Auth {
     Password {
         #[serde(default)]
@@ -114,7 +118,7 @@ impl Default for Auth {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct Server {
+pub struct SshService {
     #[serde(default)]
     pub id: String,
     #[serde(default)]
@@ -143,7 +147,83 @@ pub struct Group {
     #[serde(default)]
     pub name: String,
     #[serde(default)]
-    pub servers: Vec<Server>,
+    pub servers: Vec<Service>,
+}
+
+/*
+ * Local services carry only the properties their launcher consumes. They live
+ * in the same ordered `servers` array as SSH services; `kind` is the sole
+ * discriminator, so no parallel collection or order index can drift from it.
+ */
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellService {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cwd: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct VsDevService {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub arch: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cwd: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "kind")]
+pub enum Service {
+    #[serde(rename = "SSH")]
+    Ssh(SshService),
+    #[serde(rename = "vsDev")]
+    VsDev(VsDevService),
+    #[serde(rename = "powerShell")]
+    PowerShell(ShellService),
+    #[serde(rename = "cmd")]
+    Cmd(ShellService),
+}
+
+impl Service {
+    pub fn id(&self) -> &str {
+        match self {
+            Service::Ssh(value) => &value.id,
+            Service::VsDev(value) => &value.id,
+            Service::PowerShell(value) | Service::Cmd(value) => &value.id,
+        }
+    }
+
+    pub fn id_mut(&mut self) -> &mut String {
+        match self {
+            Service::Ssh(value) => &mut value.id,
+            Service::VsDev(value) => &mut value.id,
+            Service::PowerShell(value) | Service::Cmd(value) => &mut value.id,
+        }
+    }
+
+    pub fn as_ssh(&self) -> Option<&SshService> {
+        match self {
+            Service::Ssh(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub fn as_ssh_mut(&mut self) -> Option<&mut SshService> {
+        match self {
+            Service::Ssh(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -212,7 +292,9 @@ fn is_binding(text: &str) -> bool {
         return false;
     }
     let mut parts = text.split('+').collect::<Vec<_>>();
-    let Some(code) = parts.pop() else { return false };
+    let Some(code) = parts.pop() else {
+        return false;
+    };
     if parts.len() > 4 {
         return false;
     }
@@ -265,10 +347,12 @@ impl AppConfig {
     /// list is where the eye goes first, and a pane that never opened has no
     /// claim on it.
     pub fn touch_recent(&mut self, id: &str) {
-        let known = self
-            .groups
-            .iter()
-            .any(|group| group.servers.iter().any(|server| server.id == id));
+        let known = self.groups.iter().any(|group| {
+            group
+                .servers
+                .iter()
+                .any(|service| service.as_ssh().is_some_and(|server| server.id == id))
+        });
         if !known {
             return;
         }
@@ -288,6 +372,18 @@ impl AppConfig {
         self.settings.ai.normalize();
         self.settings.keys.retain(|_, binding| is_binding(binding));
 
+        // The tree always needs a destination for a newly created service.
+        if self.groups.is_empty() {
+            self.groups.push(Group {
+                id: DEFAULT_GROUP_ID.to_string(),
+                name: String::new(),
+                servers: Vec::new(),
+            });
+        }
+
+        // Service ids identify sessions, secrets and open panes, so they are
+        // unique across the whole file rather than merely within one group.
+        let mut ids = std::collections::HashSet::new();
         for group in &mut self.groups {
             if group.id.trim().is_empty() {
                 group.id = make_id();
@@ -300,26 +396,50 @@ impl AppConfig {
              * name into the language that happened to be set the day the group
              * was made, which is the one thing this arrangement avoids.
              */
-            group.servers.retain(|server| {
-                !server.host.trim().is_empty() && !server.username.trim().is_empty()
+            group.servers.retain(|service| match service {
+                Service::Ssh(server) => {
+                    !server.host.trim().is_empty() && !server.username.trim().is_empty()
+                }
+                _ => true,
             });
-            for server in &mut group.servers {
-                if server.id.trim().is_empty() {
-                    server.id = make_id();
+            for service in &mut group.servers {
+                if service.id().trim().is_empty() || !ids.insert(service.id().to_string()) {
+                    let mut id = make_id();
+                    while !ids.insert(id.clone()) {
+                        id = make_id();
+                    }
+                    *service.id_mut() = id;
                 }
-                if server.name.trim().is_empty() {
-                    server.name = server.host.clone();
-                }
-                if server.port == 0 {
-                    server.port = 22;
-                }
-                // A private key entry with no path cannot connect and cannot be
-                // repaired from here; password is the shape with no missing part.
-                if let Auth::PrivateKey { path, .. } = &server.auth {
-                    if path.trim().is_empty() {
-                        server.auth = Auth::Password {
-                            has_password: false,
-                        };
+                match service {
+                    Service::Ssh(server) => {
+                        if server.name.trim().is_empty() {
+                            server.name = server.host.clone();
+                        }
+                        if server.port == 0 {
+                            server.port = 22;
+                        }
+                        if matches!(&server.auth, Auth::PrivateKey { path, .. } if path.trim().is_empty())
+                        {
+                            server.auth = Auth::default();
+                        }
+                    }
+                    Service::VsDev(term) => {
+                        if term.name.trim().is_empty() {
+                            term.name = "Visual Studio".to_string();
+                        }
+                        if term.arch.trim().is_empty() {
+                            term.arch = "x86".to_string();
+                        }
+                    }
+                    Service::PowerShell(term) => {
+                        if term.name.trim().is_empty() {
+                            term.name = "PowerShell".to_string();
+                        }
+                    }
+                    Service::Cmd(term) => {
+                        if term.name.trim().is_empty() {
+                            term.name = "CMD".to_string();
+                        }
                     }
                 }
             }
@@ -332,22 +452,17 @@ impl AppConfig {
          * remember. Repeats go the same way: a hand-edited file is not the
          * authority on its own shape.
          */
-        self.recent.retain(|id| self.groups.iter().any(|g| g.servers.iter().any(|s| &s.id == id)));
+        self.recent.retain(|id| {
+            self.groups.iter().any(|group| {
+                group
+                    .servers
+                    .iter()
+                    .any(|service| service.as_ssh().is_some_and(|server| &server.id == id))
+            })
+        });
         let mut seen = std::collections::HashSet::new();
         self.recent.retain(|id| seen.insert(id.clone()));
         self.recent.truncate(RECENT_MAX);
-
-        // The tree draws groups, so there has to be one to drop a server into.
-        if self.groups.is_empty() {
-            self.groups.push(Group {
-                id: DEFAULT_GROUP_ID.to_string(),
-                // Blank, so that it reads as the default group in whatever
-                // language is set -- until the user renames it, at which point
-                // the name is theirs and stops moving.
-                name: String::new(),
-                servers: Vec::new(),
-            });
-        }
     }
 
     pub fn group_mut(&mut self, id: &str) -> Result<&mut Group, String> {
@@ -380,16 +495,16 @@ impl AppConfig {
         Ok(true)
     }
 
-    /// Move a server within its group, or into another one.
+    /// Move any service within its group, or into another one.
     ///
     /// Both ends are located before anything is lifted out: a drop that names a
     /// group this build cannot find -- a stale panel, a group deleted while the
     /// drag was in the air -- has to leave the tree exactly as it was, and it
     /// cannot do that once the server is already out of its old group.
-    pub fn move_server(
+    pub fn move_service(
         &mut self,
         from_group_id: &str,
-        server_id: &str,
+        service_id: &str,
         to_group_id: &str,
         to_index: usize,
     ) -> Result<bool, String> {
@@ -399,40 +514,47 @@ impl AppConfig {
         let from = self.groups[from_group]
             .servers
             .iter()
-            .position(|server| server.id == server_id)
-            .ok_or("Server not found.")?;
+            .position(|service| service.id() == service_id)
+            .ok_or("Service not found.")?;
 
         if from_group == to_group {
             let servers = &mut self.groups[from_group].servers;
             let Some(to) = resolve(from, to_index, servers.len()) else {
                 return Ok(false);
             };
-            let server = servers.remove(from);
-            servers.insert(to, server);
+            let service = servers.remove(from);
+            servers.insert(to, service);
             return Ok(true);
         }
 
         /*
          * Across groups there is no gap to account for: the index is read
-         * against the destination, which the server is not in yet. Clamping
+         * against the destination, which the service is not in yet. Clamping
          * rather than erroring, because the destination can legitimately have
          * shrunk since the panel drew it, and landing at the end is the answer
          * that loses nothing.
          */
-        let server = self.groups[from_group].servers.remove(from);
+        let service = self.groups[from_group].servers.remove(from);
         let servers = &mut self.groups[to_group].servers;
         let to = to_index.min(servers.len());
-        servers.insert(to, server);
+        servers.insert(to, service);
         Ok(true)
     }
 
-    pub fn find_server(&self, group_id: &str, server_id: &str) -> Option<&Server> {
+    pub fn find_server(&self, group_id: &str, server_id: &str) -> Option<&SshService> {
         self.groups
             .iter()
             .find(|group| group.id == group_id)?
             .servers
             .iter()
-            .find(|server| server.id == server_id)
+            .find_map(|service| service.as_ssh().filter(|server| server.id == server_id))
+    }
+
+    pub fn find_local_term(&self, id: &str) -> Option<&Service> {
+        self.groups
+            .iter()
+            .flat_map(|group| group.servers.iter())
+            .find(|service| service.id() == id && service.as_ssh().is_none())
     }
 }
 
@@ -509,24 +631,103 @@ pub fn load() -> Result<AppConfig, LoadError> {
         Err(error) => return Err(LoadError::Unreadable(error.to_string())),
     };
 
-    parse(&raw)
+    let old_version = serde_json::from_str::<Value>(&raw)
+        .ok()
+        .and_then(|value| value.get("version").and_then(Value::as_u64))
+        .unwrap_or(VERSION as u64) as u32;
+    let config = parse(&raw)?;
+    if old_version == 1 {
+        save(&config).map_err(LoadError::Unreadable)?;
+    }
+    Ok(config)
 }
 
 /// The half of [`load`] that has no filesystem in it, and so can be tested.
 pub fn parse(raw: &str) -> Result<AppConfig, LoadError> {
     // The version is checked before the rest is interpreted: a future file may
     // well parse as this shape and mean something else by it.
-    let probe: Value =
+    let mut probe: Value =
         serde_json::from_str(raw).map_err(|error| LoadError::Unreadable(error.to_string()))?;
     let version = probe.get("version").and_then(Value::as_u64).unwrap_or(0) as u32;
     if version > VERSION {
         return Err(LoadError::FutureVersion(version));
     }
 
+    if version == 1 {
+        migrate_v1(&mut probe);
+    }
+
     let mut config: AppConfig =
         serde_json::from_value(probe).map_err(|error| LoadError::Unreadable(error.to_string()))?;
     config.normalize();
     Ok(config)
+}
+
+/// Fold the transitional local-terminal model into the single ordered service
+/// array. This runs once while loading a v1 file; `load` immediately writes the
+/// resulting v2 shape, so no runtime code has to understand both models.
+fn migrate_v1(root: &mut Value) {
+    let Some(root) = root.as_object_mut() else {
+        return;
+    };
+    let top_level_terms = root
+        .remove("localTerms")
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    let groups = root
+        .entry("groups")
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut();
+    let Some(groups) = groups else { return };
+
+    if groups.is_empty() && !top_level_terms.is_empty() {
+        groups.push(serde_json::json!({
+            "id": DEFAULT_GROUP_ID,
+            "name": "",
+            "servers": []
+        }));
+    }
+
+    for (index, group) in groups.iter_mut().enumerate() {
+        let Some(group) = group.as_object_mut() else {
+            continue;
+        };
+        let mut services = group
+            .remove("servers")
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default();
+        for service in &mut services {
+            if let Some(service) = service.as_object_mut() {
+                service.insert("kind".into(), Value::String("SSH".into()));
+            }
+        }
+        services.extend(
+            group
+                .remove("localTerms")
+                .and_then(|value| value.as_array().cloned())
+                .unwrap_or_default(),
+        );
+        if index == 0 {
+            services.extend(top_level_terms.clone());
+        }
+
+        let order = group
+            .remove("order")
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default();
+        if !order.is_empty() {
+            let mut ordered = Vec::with_capacity(services.len());
+            for wanted in order.iter().filter_map(Value::as_str) {
+                if let Some(at) = services.iter().position(|service| service["id"] == wanted) {
+                    ordered.push(services.remove(at));
+                }
+            }
+            ordered.append(&mut services);
+            services = ordered;
+        }
+        group.insert("servers".into(), Value::Array(services));
+    }
+    root.insert("version".into(), Value::from(VERSION));
 }
 
 pub fn save(config: &AppConfig) -> Result<(), String> {
@@ -553,10 +754,23 @@ mod tests {
      */
     #[test]
     fn a_binding_is_checked_for_shape_and_not_for_sense() {
-        for good in ["Ctrl+Shift+KeyT", "F11", "Alt+Shift+Digit1", "KeyA", "Meta+Space"] {
+        for good in [
+            "Ctrl+Shift+KeyT",
+            "F11",
+            "Alt+Shift+Digit1",
+            "KeyA",
+            "Meta+Space",
+        ] {
             assert!(is_binding(good), "{good} should be a binding");
         }
-        for bad in ["", "Ctrl+", "+KeyT", "Hyper+KeyT", "Ctrl+Shift+1Key", "Ctrl Shift T"] {
+        for bad in [
+            "",
+            "Ctrl+",
+            "+KeyT",
+            "Hyper+KeyT",
+            "Ctrl+Shift+1Key",
+            "Ctrl Shift T",
+        ] {
             assert!(!is_binding(bad), "{bad:?} should not be a binding");
         }
         // Long enough to be someone's essay rather than someone's keystroke.
@@ -567,7 +781,7 @@ mod tests {
     /// that is not a colour. The rest of the map is not disturbed by it.
     #[test]
     fn an_unreadable_binding_is_dropped() {
-        let raw = r#"{"version":1,"settings":{"keys":{"openTransfer":"Ctrl+Shift+KeyT","openAssistant":"nonsense here"}},"groups":[]}"#;
+        let raw = r#"{"version":2,"settings":{"keys":{"openTransfer":"Ctrl+Shift+KeyT","openAssistant":"nonsense here"}},"groups":[]}"#;
         let config = parse_ok(raw);
         assert_eq!(
             config.settings.keys.get("openTransfer").map(String::as_str),
@@ -581,8 +795,8 @@ mod tests {
     /// understand quietly dropped.
     #[test]
     fn refuses_a_future_version() {
-        let raw = r#"{"version": 2, "settings": {}, "groups": []}"#;
-        assert!(matches!(parse(raw), Err(LoadError::FutureVersion(2))));
+        let raw = r#"{"version": 3, "settings": {}, "groups": []}"#;
+        assert!(matches!(parse(raw), Err(LoadError::FutureVersion(3))));
     }
 
     /// A broken file is an error, and specifically not a reason to start over.
@@ -595,12 +809,12 @@ mod tests {
     #[test]
     fn tagged_auth_survives_a_round_trip() {
         let raw = r#"{
-          "version": 1,
+          "version": 2,
           "settings": { "language": "zh-CN", "showHiddenFiles": true },
           "groups": [{ "id": "g", "name": "G", "servers": [
-            { "id": "a", "name": "a", "host": "h1", "port": 22, "username": "u",
+            { "id": "a", "kind": "SSH", "name": "a", "host": "h1", "port": 22, "username": "u",
               "encoding": "gb18030", "auth": { "type": "password", "hasPassword": true } },
-            { "id": "b", "name": "b", "host": "h2", "port": 2222, "username": "u",
+            { "id": "b", "kind": "SSH", "name": "b", "host": "h2", "port": 2222, "username": "u",
               "encoding": "utf-8",
               "auth": { "type": "privateKey", "path": "~/.ssh/id_ed25519", "hasPassphrase": true } }
           ]}]
@@ -610,10 +824,13 @@ mod tests {
         let again = parse_ok(&serde_json::to_string(&config).unwrap());
 
         let servers = &again.groups[0].servers;
-        assert_eq!(servers[0].auth, Auth::Password { has_password: true });
-        assert_eq!(servers[0].encoding, Encoding::Gb18030);
         assert_eq!(
-            servers[1].auth,
+            servers[0].as_ssh().unwrap().auth,
+            Auth::Password { has_password: true }
+        );
+        assert_eq!(servers[0].as_ssh().unwrap().encoding, Encoding::Gb18030);
+        assert_eq!(
+            servers[1].as_ssh().unwrap().auth,
             Auth::PrivateKey {
                 path: "~/.ssh/id_ed25519".into(),
                 has_passphrase: true
@@ -629,8 +846,8 @@ mod tests {
     #[test]
     fn the_written_file_holds_no_secret() {
         let config = parse_ok(
-            r#"{"version":1,"groups":[{"id":"g","name":"G","servers":[
-                 {"id":"a","host":"h","username":"u",
+            r#"{"version":2,"groups":[{"id":"g","name":"G","servers":[
+                 {"id":"a","kind":"SSH","name":"a","host":"h","username":"u",
                   "auth":{"type":"password","hasPassword":true}}]}]}"#,
         );
         let written = serde_json::to_string(&config).unwrap();
@@ -644,10 +861,13 @@ mod tests {
     #[test]
     fn unknown_settings_are_carried_through() {
         let config = parse_ok(
-            r#"{"version":1,"settings":{"language":"en-US","fromALaterBuild":{"x":1}},"groups":[]}"#,
+            r#"{"version":2,"settings":{"language":"en-US","fromALaterBuild":{"x":1}},"groups":[]}"#,
         );
         let written = serde_json::to_string(&config).unwrap();
-        assert!(written.contains(r#""fromALaterBuild":{"x":1}"#), "{written}");
+        assert!(
+            written.contains(r#""fromALaterBuild":{"x":1}"#),
+            "{written}"
+        );
     }
 
     /// The same courtesy one level down: `ai` is understood now, but a key
@@ -655,7 +875,7 @@ mod tests {
     #[test]
     fn unknown_ai_settings_are_carried_through() {
         let config = parse_ok(
-            r#"{"version":1,"settings":{"ai":{"enabled":true,"fromALaterBuild":2}},"groups":[]}"#,
+            r#"{"version":2,"settings":{"ai":{"enabled":true,"fromALaterBuild":2}},"groups":[]}"#,
         );
         let written = serde_json::to_string(&config).unwrap();
         assert!(written.contains(r#""fromALaterBuild":2"#), "{written}");
@@ -664,11 +884,11 @@ mod tests {
     #[test]
     fn normalize_repairs_what_a_hand_edit_can_break() {
         let config = parse_ok(
-            r#"{"version":1,"groups":[{"id":"g","name":"G","servers":[
-                 {"host":"only-a-host","username":"u"},
-                 {"host":"","username":"u"},
-                 {"host":"h","username":""},
-                 {"id":"k","host":"h","username":"u","port":0,
+            r#"{"version":2,"groups":[{"id":"g","name":"G","servers":[
+                 {"id":"","kind":"SSH","name":"","host":"only-a-host","username":"u"},
+                 {"id":"empty-host","kind":"SSH","name":"bad","host":"","username":"u"},
+                 {"id":"empty-user","kind":"SSH","name":"bad","host":"h","username":""},
+                 {"id":"k","kind":"SSH","name":"k","host":"h","username":"u","port":0,
                   "auth":{"type":"privateKey","path":"  "}}]}]}"#,
         );
 
@@ -676,13 +896,20 @@ mod tests {
         // The two with nothing to connect to are gone; the two usable ones stay.
         assert_eq!(servers.len(), 2);
 
-        assert!(!servers[0].id.is_empty(), "a missing id is filled in");
-        assert_eq!(servers[0].name, "only-a-host", "the name falls back to the host");
-        assert_eq!(servers[0].port, 22);
+        let first = servers[0].as_ssh().unwrap();
+        assert!(!first.id.is_empty(), "a missing id is filled in");
+        assert_eq!(first.name, "only-a-host", "the name falls back to the host");
+        assert_eq!(first.port, 22);
 
         // A private key with no path cannot connect and cannot be repaired here.
-        assert_eq!(servers[1].port, 22, "port 0 is not a port");
-        assert_eq!(servers[1].auth, Auth::Password { has_password: false });
+        let second = servers[1].as_ssh().unwrap();
+        assert_eq!(second.port, 22, "port 0 is not a port");
+        assert_eq!(
+            second.auth,
+            Auth::Password {
+                has_password: false
+            }
+        );
     }
 
     /// The tree draws groups, so there has to be one to drop a server into.
@@ -693,7 +920,7 @@ mod tests {
     /// that happened to be set on the day the file was created.
     #[test]
     fn an_empty_file_still_has_a_blank_named_group() {
-        let config = parse_ok(r#"{"version":1,"groups":[]}"#);
+        let config = parse_ok(r#"{"version":2,"groups":[]}"#);
         assert_eq!(config.groups.len(), 1);
         assert_eq!(config.groups[0].id, DEFAULT_GROUP_ID);
         assert!(config.groups[0].name.is_empty());
@@ -709,7 +936,7 @@ mod tests {
     #[test]
     fn a_renamed_default_group_keeps_its_name() {
         let config =
-            parse_ok(r#"{"version":1,"groups":[{"id":"default","name":"生产","servers":[]}]}"#);
+            parse_ok(r#"{"version":2,"groups":[{"id":"default","name":"生产","servers":[]}]}"#);
         assert_eq!(config.groups[0].name, "生产");
     }
 
@@ -726,13 +953,13 @@ mod tests {
     /// Two groups of two, named so that a move is legible in one assert.
     fn tree() -> AppConfig {
         parse_ok(
-            r#"{"version":1,"groups":[
+            r#"{"version":2,"groups":[
                  {"id":"g1","name":"G1","servers":[
-                   {"id":"a","host":"a","username":"u"},
-                   {"id":"b","host":"b","username":"u"}]},
+                   {"id":"a","kind":"SSH","name":"a","host":"a","username":"u"},
+                   {"id":"b","kind":"SSH","name":"b","host":"b","username":"u"}]},
                  {"id":"g2","name":"G2","servers":[
-                   {"id":"c","host":"c","username":"u"},
-                   {"id":"d","host":"d","username":"u"}]}]}"#,
+                   {"id":"c","kind":"SSH","name":"c","host":"c","username":"u"},
+                   {"id":"d","kind":"SSH","name":"d","host":"d","username":"u"}]}]}"#,
         )
     }
 
@@ -748,7 +975,7 @@ mod tests {
             .expect("group")
             .servers
             .iter()
-            .map(|s| s.id.as_str())
+            .map(Service::id)
             .collect()
     }
 
@@ -766,7 +993,7 @@ mod tests {
     #[test]
     fn a_downward_move_accounts_for_the_gap_it_leaves() {
         let mut config = parse_ok(
-            r#"{"version":1,"groups":[
+            r#"{"version":2,"groups":[
                  {"id":"g1","name":"","servers":[]},
                  {"id":"g2","name":"","servers":[]},
                  {"id":"g3","name":"","servers":[]}]}"#,
@@ -794,7 +1021,7 @@ mod tests {
     #[test]
     fn a_server_reorders_inside_its_group() {
         let mut config = tree();
-        assert!(config.move_server("g1", "b", "g1", 0).unwrap());
+        assert!(config.move_service("g1", "b", "g1", 0).unwrap());
         assert_eq!(server_ids(&config, "g1"), ["b", "a"]);
     }
 
@@ -804,16 +1031,33 @@ mod tests {
     #[test]
     fn a_server_moves_to_another_group() {
         let mut config = tree();
-        assert!(config.move_server("g1", "a", "g2", 1).unwrap());
+        assert!(config.move_service("g1", "a", "g2", 1).unwrap());
         assert_eq!(server_ids(&config, "g1"), ["b"]);
         assert_eq!(server_ids(&config, "g2"), ["c", "a", "d"]);
     }
 
     #[test]
+    fn every_service_kind_reorders_and_moves_through_the_same_array() {
+        let mut config = parse_ok(
+            r#"{"version":2,"groups":[
+              {"id":"g1","name":"One","servers":[
+                {"id":"cmd","name":"CMD","kind":"cmd"},
+                {"id":"ps","name":"PowerShell","kind":"powerShell"}]},
+              {"id":"g2","name":"Two","servers":[
+                {"id":"vs","name":"VS","kind":"vsDev"}]}
+            ]}"#,
+        );
+        assert!(config.move_service("g1", "ps", "g1", 0).unwrap());
+        assert_eq!(server_ids(&config, "g1"), ["ps", "cmd"]);
+        assert!(config.move_service("g1", "cmd", "g2", 1).unwrap());
+        assert_eq!(server_ids(&config, "g2"), ["vs", "cmd"]);
+    }
+
+    #[test]
     fn a_server_dropped_where_it_already_is_changes_nothing() {
         let mut config = tree();
-        assert!(!config.move_server("g1", "a", "g1", 0).unwrap());
-        assert!(!config.move_server("g1", "a", "g1", 1).unwrap());
+        assert!(!config.move_service("g1", "a", "g1", 0).unwrap());
+        assert!(!config.move_service("g1", "a", "g1", 1).unwrap());
         assert_eq!(server_ids(&config, "g1"), ["a", "b"]);
     }
 
@@ -822,7 +1066,7 @@ mod tests {
     #[test]
     fn the_same_index_in_another_group_is_still_a_move() {
         let mut config = tree();
-        assert!(config.move_server("g1", "a", "g2", 0).unwrap());
+        assert!(config.move_service("g1", "a", "g2", 0).unwrap());
         assert_eq!(server_ids(&config, "g1"), ["b"]);
         assert_eq!(server_ids(&config, "g2"), ["a", "c", "d"]);
     }
@@ -833,8 +1077,8 @@ mod tests {
     #[test]
     fn a_move_to_a_missing_group_leaves_the_tree_alone() {
         let mut config = tree();
-        assert!(config.move_server("g1", "a", "nope", 0).is_err());
-        assert!(config.move_server("g1", "nope", "g2", 0).is_err());
+        assert!(config.move_service("g1", "a", "nope", 0).is_err());
+        assert!(config.move_service("g1", "nope", "g2", 0).is_err());
         assert!(config.move_group("nope", 0).is_err());
         assert_eq!(server_ids(&config, "g1"), ["a", "b"]);
         assert_eq!(server_ids(&config, "g2"), ["c", "d"]);
@@ -845,10 +1089,14 @@ mod tests {
     /// Enough servers that the cap on `recent` has something to cut.
     fn seven_servers() -> AppConfig {
         let servers: Vec<String> = (1..=7)
-            .map(|n| format!(r#"{{"id":"s{n}","host":"h{n}","username":"u"}}"#))
+            .map(|n| {
+                format!(
+                    r#"{{"id":"s{n}","kind":"SSH","name":"s{n}","host":"h{n}","username":"u"}}"#
+                )
+            })
             .collect();
         parse_ok(&format!(
-            r#"{{"version":1,"groups":[{{"id":"g","name":"G","servers":[{}]}}]}}"#,
+            r#"{{"version":2,"groups":[{{"id":"g","name":"G","servers":[{}]}}]}}"#,
             servers.join(",")
         ))
     }
@@ -920,5 +1168,106 @@ mod tests {
         config.touch_recent("a");
         config.touch_recent("nope");
         assert_eq!(config.recent, ["a"]);
+    }
+
+    // ----------------------------------------------------------- services ---
+
+    #[test]
+    fn v1_is_folded_into_one_array_in_its_recorded_order() {
+        let config = parse_ok(
+            r#"{"version":1,"groups":[{"id":"g","name":"Mixed","servers":[
+              {"id":"ssh","name":"Remote","host":"host","username":"user"}
+            ],"localTerms":[
+              {"id":"cmd","kind":"cmd","name":"CMD"},
+              {"id":"ps","kind":"powerShell","name":"PowerShell"}
+            ],"order":["cmd","ssh","ps"]}]}"#,
+        );
+        assert_eq!(server_ids(&config, "g"), ["cmd", "ssh", "ps"]);
+        assert!(matches!(config.groups[0].servers[0], Service::Cmd(_)));
+        assert!(matches!(config.groups[0].servers[1], Service::Ssh(_)));
+
+        let written = serde_json::to_value(&config).unwrap();
+        assert_eq!(written["version"], VERSION);
+        assert!(written["groups"][0].get("localTerms").is_none());
+        assert!(written["groups"][0].get("order").is_none());
+        assert_eq!(written["groups"][0]["servers"][1]["kind"], "SSH");
+    }
+
+    #[test]
+    fn all_service_kinds_share_one_ordered_array_and_round_trip() {
+        let raw = r#"{
+          "version": 2,
+          "groups": [{
+            "id": "g", "name": "Mixed", "servers": [
+              { "id": "ssh", "kind": "SSH", "name": "Remote", "host": "host",
+                "port": 22, "username": "user" },
+              { "id": "cmd", "kind": "cmd", "name": "CMD", "cwd": "C:\\src" },
+              { "id": "ps", "kind": "powerShell", "name": "PowerShell", "cwd": "D:\\work" },
+              { "id": "vs", "kind": "vsDev", "name": "VS 2013 x86",
+                "path": "D:\\VS\\vcvarsall.bat", "arch": "x86", "cwd": "D:\\code" }
+            ]
+          }]
+        }"#;
+
+        let config = parse_ok(raw);
+        assert_eq!(server_ids(&config, "g"), ["ssh", "cmd", "ps", "vs"]);
+        assert!(matches!(config.groups[0].servers[0], Service::Ssh(_)));
+        assert!(matches!(config.groups[0].servers[1], Service::Cmd(_)));
+        assert!(matches!(
+            config.groups[0].servers[2],
+            Service::PowerShell(_)
+        ));
+        assert!(matches!(config.groups[0].servers[3], Service::VsDev(_)));
+
+        let written = serde_json::to_value(&config).unwrap();
+        assert!(written.get("localTerms").is_none());
+        let group = &written["groups"][0];
+        assert!(group.get("order").is_none());
+        let kinds: Vec<&str> = group["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|service| service["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, ["SSH", "cmd", "powerShell", "vsDev"]);
+        assert!(parse(&serde_json::to_string(&written).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn service_ids_are_made_unique_across_all_groups() {
+        let config = parse_ok(
+            r#"{"version":2,"groups":[
+              {"id":"g1","name":"G1","servers":[
+                {"id":"a","kind":"cmd","name":"one"}
+              ]},
+              {"id":"g2","name":"G2","servers":[
+                {"id":"a","kind":"powerShell","name":"two"},
+                {"id":"","kind":"vsDev","name":"three"}
+              ]}
+            ]}"#,
+        );
+        let first = server_ids(&config, "g1");
+        let second = server_ids(&config, "g2");
+        assert_eq!(first[0], "a");
+        assert_ne!(second[0], "a");
+        assert!(!second[0].is_empty());
+        assert!(!second[1].is_empty());
+        assert_ne!(second[0], second[1]);
+    }
+
+    #[test]
+    fn a_local_service_is_found_by_id_inside_any_group() {
+        let config = parse_ok(
+            r#"{"version":2,"groups":[
+              {"id":"g1","name":"One","servers":[]},
+              {"id":"g2","name":"Two","servers":[
+                {"id":"t","kind":"cmd","name":"CMD","cwd":"C:\\src"}
+              ]}
+            ]}"#,
+        );
+        let term = config.find_local_term("t").expect("found by id");
+        assert_eq!(term.id(), "t");
+        assert!(matches!(term, Service::Cmd(_)));
+        assert!(config.find_local_term("nope").is_none());
     }
 }

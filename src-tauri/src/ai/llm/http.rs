@@ -21,8 +21,8 @@ use serde_json::{json, Map, Value};
 
 use super::prose::ProseStreamer;
 use super::{
-    ChatRole, Completion, CompletionRequest, ExtraField, LlmError, LlmFailure, LlmProvider, Reply,
-    TokenUsage, ToolCall, ToolSpec, TransportInfo, Watcher,
+    ChatMessage, ChatRole, Completion, CompletionRequest, ExtraField, LlmError, LlmFailure,
+    LlmProvider, Reply, TokenUsage, ToolCall, ToolSpec, TransportInfo, Watcher,
 };
 use crate::ai::settings::{ThinkingEffort, ThinkingSettings};
 
@@ -85,7 +85,11 @@ impl PartialCall {
             // nudges, which is the same path a mangled JSON object takes.
             return None;
         }
-        Some(ToolCall { id: self.id, name: self.name, arguments: self.arguments })
+        Some(ToolCall {
+            id: self.id,
+            name: self.name,
+            arguments: self.arguments,
+        })
     }
 }
 
@@ -96,9 +100,14 @@ impl PartialCall {
 /// once, a stream carries `index` explicitly and any subset of the fields. Both
 /// are additive, so both are applied the same way.
 fn collect_calls(value: &Value, into: &mut Vec<PartialCall>) {
-    let Some(items) = value.as_array() else { return };
+    let Some(items) = value.as_array() else {
+        return;
+    };
     for (position, item) in items.iter().enumerate() {
-        let index = item["index"].as_u64().map(|index| index as usize).unwrap_or(position);
+        let index = item["index"]
+            .as_u64()
+            .map(|index| index as usize)
+            .unwrap_or(position);
         if into.len() <= index {
             into.resize(index + 1, PartialCall::default());
         }
@@ -233,17 +242,119 @@ impl HttpProvider {
             params.insert("tool_choice".into(), json!("auto"));
         }
 
-        let mut messages = vec![json!({ "role": "system", "content": request.system })];
-        messages.extend(request.messages.iter().map(|message| {
-            json!({
-                "role": match message.role { ChatRole::User => "user", ChatRole::Assistant => "assistant" },
-                "content": message.content,
-            })
-        }));
+        let system = if with_tools {
+            &request.system
+        } else {
+            &request.fallback_system
+        };
+        let mut messages = vec![json!({ "role": "system", "content": system })];
+        messages.extend(Self::project_messages(&request.messages, with_tools));
 
         let mut full = params.clone();
         full.insert("messages".into(), Value::Array(messages));
         (Value::Object(params), Value::Object(full))
+    }
+
+    /// Projects the durable, structured history onto the protocol this endpoint
+    /// understands. The stored history itself is never flattened.
+    fn project_messages(messages: &[ChatMessage], with_tools: bool) -> Vec<Value> {
+        messages
+            .iter()
+            .map(|message| {
+                if !with_tools {
+                    let mut content = message.content.clone();
+                    for call in &message.tool_calls {
+                        if !content.trim().is_empty() {
+                            content.push('\n');
+                        }
+                        content.push_str(&Self::render_json_call(call));
+                    }
+                    return json!({
+                        "role": if message.role == ChatRole::Assistant { "assistant" } else { "user" },
+                        "content": Self::content_field(message, content),
+                    });
+                }
+
+                match message.role {
+                    ChatRole::User => json!({
+                        "role": "user",
+                        "content": Self::content_field(message, message.content.clone()),
+                    }),
+                    ChatRole::Tool => json!({
+                        "role": "tool",
+                        "tool_call_id": message.tool_call_id.as_deref().unwrap_or_default(),
+                        "content": message.content,
+                    }),
+                    ChatRole::Assistant if !message.tool_calls.is_empty() => json!({
+                        "role": "assistant",
+                        "content": if message.content.is_empty() { Value::Null } else { json!(message.content) },
+                        "tool_calls": message.tool_calls.iter().map(|call| json!({
+                            "id": call.id,
+                            "type": "function",
+                            "function": { "name": call.name, "arguments": call.arguments },
+                        })).collect::<Vec<_>>(),
+                    }),
+                    ChatRole::Assistant => {
+                        json!({ "role": "assistant", "content": message.content })
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// DeepSeek's OpenAI-compatible vision shape. Text-only turns deliberately
+    /// remain strings so every existing endpoint sees byte-for-byte the request
+    /// shape it already accepts.
+    fn content_field(message: &ChatMessage, text: String) -> Value {
+        if message.role != ChatRole::User || message.images.is_empty() {
+            return json!(text);
+        }
+        let mut blocks = Vec::with_capacity(message.images.len() + 1);
+        if !text.is_empty() {
+            blocks.push(json!({ "type": "text", "text": text }));
+        }
+        blocks.extend(message.images.iter().map(|image| {
+            json!({
+                "type": "image_url",
+                "image_url": { "url": image.data_url() },
+            })
+        }));
+        Value::Array(blocks)
+    }
+
+    /// Request logs explain that an image was present without copying megabytes
+    /// of opaque data into every tool step's transcript.
+    fn log_messages(mut messages: Vec<Value>) -> Vec<Value> {
+        for message in &mut messages {
+            let Some(blocks) = message.get_mut("content").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for block in blocks {
+                let Some(url) = block
+                    .get_mut("image_url")
+                    .and_then(|image| image.get_mut("url"))
+                else {
+                    continue;
+                };
+                let label = url
+                    .as_str()
+                    .and_then(|value| value.strip_prefix("data:"))
+                    .and_then(|value| value.split(';').next())
+                    .map(|kind| format!("[{kind} image data omitted]"))
+                    .unwrap_or_else(|| "[image data omitted]".to_string());
+                *url = json!(label);
+            }
+        }
+        messages
+    }
+
+    fn render_json_call(call: &ToolCall) -> String {
+        let mut value = serde_json::from_str::<Value>(&call.arguments)
+            .unwrap_or_else(|_| json!({ "arguments": call.arguments }));
+        if let Some(object) = value.as_object_mut() {
+            object.insert("action".into(), json!(call.name.trim().to_lowercase()));
+        }
+        serde_json::to_string(&value).unwrap_or_else(|_| call.arguments.clone())
     }
 
     async fn post(
@@ -281,14 +392,17 @@ impl HttpProvider {
             params["tools"] = json!(names);
         }
 
+        let actual_system = if with_tools {
+            &request.system
+        } else {
+            &request.fallback_system
+        };
+        let projected = Self::log_messages(Self::project_messages(&request.messages, with_tools));
         request.watcher.logged_request(&json!({
             "endpoint": self.endpoint(),
             "params": params,
-            "system": request.system,
-            "messages": request.messages.iter().map(|message| json!({
-                "role": match message.role { ChatRole::User => "user", ChatRole::Assistant => "assistant" },
-                "content": message.content,
-            })).collect::<Vec<_>>(),
+            "system": actual_system,
+            "messages": projected,
         }));
 
         let mut builder = CLIENT
@@ -321,7 +435,10 @@ impl HttpProvider {
 
         report_usage(&payload["usage"], watcher);
         let choice = &payload["choices"][0];
-        let content = choice["message"]["content"].as_str().unwrap_or_default().to_string();
+        let content = choice["message"]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
         let mut calls = Vec::new();
         collect_calls(&choice["message"]["tool_calls"], &mut calls);
 
@@ -419,14 +536,18 @@ impl HttpProvider {
             while let Some(cut) = buffer.iter().position(|byte| *byte == b'\n') {
                 let line = String::from_utf8_lossy(&buffer[..cut]).trim().to_string();
                 buffer.drain(..=cut);
-                let Some(data) = line.strip_prefix("data:") else { continue };
+                let Some(data) = line.strip_prefix("data:") else {
+                    continue;
+                };
                 let data = data.trim();
                 if data == "[DONE]" {
                     continue;
                 }
 
                 // A frame that does not parse is one frame, not the end of the answer.
-                let Ok(frame) = serde_json::from_str::<Value>(data) else { continue };
+                let Ok(frame) = serde_json::from_str::<Value>(data) else {
+                    continue;
+                };
                 if let Some(message) = frame["error"]["message"].as_str() {
                     return Err(LlmError::new(LlmFailure::Unknown, message));
                 }
@@ -441,8 +562,11 @@ impl HttpProvider {
                     answer.finish_reason = Some(reason.to_string());
                 }
 
-                let delta =
-                    if choice["delta"].is_null() { &choice["message"] } else { &choice["delta"] };
+                let delta = if choice["delta"].is_null() {
+                    &choice["message"]
+                } else {
+                    &choice["delta"]
+                };
                 /*
                  * Before the `content` test below, and not subject to it: a frame
                  * carrying a fragment of a tool call has no content at all, and
@@ -479,12 +603,11 @@ impl HttpProvider {
 }
 
 impl LlmProvider for HttpProvider {
-    fn id(&self) -> &str {
-        &self.id
-    }
-
     fn describe(&self) -> String {
-        format!("the model \"{}\", served from {}", self.model, self.base_url)
+        format!(
+            "the model \"{}\", served from {}",
+            self.model, self.base_url
+        )
     }
 
     fn complete<'a>(&'a self, request: CompletionRequest) -> Completion<'a> {
@@ -494,19 +617,7 @@ impl LlmProvider for HttpProvider {
             let mut sent_tools = !request.tools.is_empty() && !self.tools_refused();
             let mut response = self.post(&request, &extras, sent_tools).await?;
 
-            /*
-             * A 400 with an optional field on board is the one failure worth
-             * answering rather than reporting. Everything this client adds beyond
-             * the common shape is a preference, and no preference is worth an
-             * endpoint the user cannot talk to at all -- so it comes off and the
-             * request goes again without it. Once: a second failure is about the
-             * request itself and is reported as it stands.
-             *
-             * All of them come off together because `extras` never carries more
-             * than one: the two fields are alternatives, `thinking` for off and
-             * `reasoning_effort` for anything but the default strength.
-             */
-            let mut dropped: Vec<ExtraField> = extras
+            let optional: Vec<ExtraField> = extras
                 .keys()
                 .filter_map(|key| match key.as_str() {
                     "thinking" => Some(ExtraField::Thinking),
@@ -515,39 +626,42 @@ impl LlmProvider for HttpProvider {
                 })
                 .collect();
             /*
-             * Tools come off with them, and are by far the likeliest reason for a
-             * 400 here: "OpenAI-compatible" is a claim about the route, and a
-             * gateway fronting a model with no tool support rejects the field
-             * outright. Losing them costs nothing but a longer road -- the system
-             * prompt still describes the JSON protocol, and `parse.rs` still reads
-             * it -- which is the whole reason both tracks are kept.
+             * Diagnose optional fields before tools. If both came off in one
+             * retry, a provider that rejected only `thinking` would be remembered
+             * as having no tools and every later request would unnecessarily use
+             * the text protocol.
              */
-            if sent_tools {
-                dropped.push(ExtraField::Tools);
-            }
-            dropped.sort();
-            if response.status() == 400 && !dropped.is_empty() {
-                // Read and discarded rather than ignored: a body nobody consumes
-                // holds its socket until the process happens to notice.
+            if response.status() == 400 && !optional.is_empty() {
                 let _ = read_error(response).await;
-                let second = self.post(&request, &Map::new(), false).await?;
-                /*
-                 * Only a second attempt that worked proves these fields were the
-                 * problem. A 400 about the model name or the messages rejects
-                 * both requests alike, and remembering a refusal on the strength
-                 * of that would quietly turn a setting off for the rest of the
-                 * session over something that had nothing to do with it.
-                 */
+                let second = self.post(&request, &Map::new(), sent_tools).await?;
                 if second.status().is_success() {
                     let mut refused = REFUSED.lock().unwrap();
                     let known = refused.entry(self.id.clone()).or_default();
-                    known.extend(dropped.iter().copied());
+                    known.extend(optional.iter().copied());
                     drop(refused);
-                    request.watcher.degraded(&dropped);
+                    request.watcher.degraded(&optional);
                 }
                 response = second;
-                // The second attempt carried no tools, so nothing it sent back can
-                // be a call. Said here rather than assumed further down.
+            }
+
+            /*
+             * Only a 400 that survives the extra-field retry is evidence against
+             * tools. This retry changes both halves together: removes `tools`
+             * from the body and selects the JSON-only prompt/history projection.
+             */
+            if response.status() == 400 && sent_tools {
+                let _ = read_error(response).await;
+                let second = self.post(&request, &Map::new(), false).await?;
+                if second.status().is_success() {
+                    REFUSED
+                        .lock()
+                        .unwrap()
+                        .entry(self.id.clone())
+                        .or_default()
+                        .insert(ExtraField::Tools);
+                    request.watcher.degraded(&[ExtraField::Tools]);
+                }
+                response = second;
                 sent_tools = false;
             }
 
@@ -569,8 +683,11 @@ impl LlmProvider for HttpProvider {
                 let code = response.status();
                 let detail = read_error(response).await;
                 let status = format!("HTTP {}", code).trim().to_string();
-                let message =
-                    if detail.is_empty() { status } else { format!("{status}: {detail}") };
+                let message = if detail.is_empty() {
+                    status
+                } else {
+                    format!("{status}: {detail}")
+                };
                 return Err(LlmError::new(status_kind(code.as_u16()), message));
             }
 
@@ -615,8 +732,11 @@ impl LlmProvider for HttpProvider {
                 request.watcher.truncated();
             }
 
-            let calls: Vec<ToolCall> =
-                answer.calls.into_iter().filter_map(PartialCall::finish).collect();
+            let calls: Vec<ToolCall> = answer
+                .calls
+                .into_iter()
+                .filter_map(PartialCall::finish)
+                .collect();
             /*
              * Calls nobody offered are dropped rather than acted on: whatever the
              * endpoint is echoing, it is not this request. Dropped rather than
@@ -632,13 +752,18 @@ impl LlmProvider for HttpProvider {
              * the loop can use it: a step that returned nothing usable is the one
              * most worth reading afterwards.
              */
-            request.watcher
-                .logged_response(&Reply { text: answer.content.clone(), calls: calls.clone() });
+            request.watcher.logged_response(&Reply {
+                text: answer.content.clone(),
+                calls: calls.clone(),
+            });
 
             // Calls with no prose is the ordinary shape of a working step, so the
             // emptiness test below has to count them.
             if !answer.content.trim().is_empty() || !calls.is_empty() {
-                return Ok(Reply { text: answer.content, calls });
+                return Ok(Reply {
+                    text: answer.content,
+                    calls,
+                });
             }
 
             /*
@@ -660,7 +785,10 @@ impl LlmProvider for HttpProvider {
                 Some(reason) => format!(" (finish_reason: {reason})"),
                 None => String::new(),
             };
-            Err(LlmError::new(LlmFailure::Empty, format!("The model returned an empty reply.{why}")))
+            Err(LlmError::new(
+                LlmFailure::Empty,
+                format!("The model returned an empty reply.{why}"),
+            ))
         })
     }
 }
@@ -685,7 +813,9 @@ async fn read_error(response: reqwest::Response) -> String {
         return String::new();
     }
     if let Ok(payload) = serde_json::from_str::<Value>(&body) {
-        let message = payload["error"]["message"].as_str().or_else(|| payload["message"].as_str());
+        let message = payload["error"]["message"]
+            .as_str()
+            .or_else(|| payload["message"].as_str());
         if let Some(message) = message {
             return clip(message.trim(), 400);
         }
@@ -715,15 +845,15 @@ fn status_kind(status: u16) -> LlmFailure {
 pub struct Unconfigured;
 
 impl LlmProvider for Unconfigured {
-    fn id(&self) -> &str {
-        "unconfigured"
-    }
     fn describe(&self) -> String {
         "a language model the user configured".to_string()
     }
     fn complete<'a>(&'a self, _request: CompletionRequest) -> Completion<'a> {
         Box::pin(async {
-            Err(LlmError::new(LlmFailure::NotConfigured, "No model endpoint has been configured."))
+            Err(LlmError::new(
+                LlmFailure::NotConfigured,
+                "No model endpoint has been configured.",
+            ))
         })
     }
 }
@@ -749,7 +879,10 @@ mod tests {
             "",
             Default::default(),
         );
-        assert_eq!(direct.endpoint(), "https://api.example.com/v1/chat/completions");
+        assert_eq!(
+            direct.endpoint(),
+            "https://api.example.com/v1/chat/completions"
+        );
     }
 
     #[test]
@@ -760,7 +893,10 @@ mod tests {
 
     #[test]
     fn thinking_off_is_said_and_a_lower_effort_is_said() {
-        let off = provider(ThinkingSettings { enabled: false, ..Default::default() });
+        let off = provider(ThinkingSettings {
+            enabled: false,
+            ..Default::default()
+        });
         assert_eq!(off.extras()["thinking"], json!({ "type": "disabled" }));
 
         let low = provider(ThinkingSettings {
@@ -778,10 +914,15 @@ mod tests {
 
     #[test]
     fn a_remembered_refusal_takes_the_field_back_off() {
-        let provider = HttpProvider::new("https://refuser.example", "m", "", ThinkingSettings {
-            enabled: false,
-            ..Default::default()
-        });
+        let provider = HttpProvider::new(
+            "https://refuser.example",
+            "m",
+            "",
+            ThinkingSettings {
+                enabled: false,
+                ..Default::default()
+            },
+        );
         assert!(!provider.extras().is_empty());
         REFUSED
             .lock()
@@ -797,6 +938,7 @@ mod tests {
         let provider = provider(Default::default());
         let request = CompletionRequest {
             system: "be helpful".into(),
+            fallback_system: "be helpful".into(),
             messages: vec![ChatMessage::user("hi"), ChatMessage::assistant("hello")],
             timeout_ms: 0,
             cancel: Default::default(),
@@ -807,13 +949,54 @@ mod tests {
         assert_eq!(params["model"], "gpt-x");
         assert_eq!(params["stream"], true);
         assert_eq!(params["stream_options"]["include_usage"], true);
-        assert!(params.get("messages").is_none(), "the log's params exclude the conversation");
+        assert!(
+            params.get("messages").is_none(),
+            "the log's params exclude the conversation"
+        );
 
         let messages = full["messages"].as_array().unwrap();
         assert_eq!(messages[0]["role"], "system");
         assert_eq!(messages[0]["content"], "be helpful");
         assert_eq!(messages[1]["role"], "user");
         assert_eq!(messages[2]["role"], "assistant");
+    }
+
+    #[test]
+    fn vision_turns_use_text_and_image_url_blocks_without_changing_plain_turns() {
+        let provider = provider(Default::default());
+        let image = super::super::ChatImage {
+            media_type: "image/png".into(),
+            data: "iVBORw==".into(),
+        };
+        let request = CompletionRequest {
+            system: "see".into(),
+            fallback_system: "see".into(),
+            messages: vec![
+                ChatMessage::user_with_images("describe", vec![image]),
+                ChatMessage::user("plain"),
+            ],
+            timeout_ms: 0,
+            cancel: Default::default(),
+            watcher: Arc::new(super::super::Silent),
+            tools: Vec::new(),
+        };
+
+        let (_, body) = provider.body(&request, &Map::new(), false);
+        let vision = body["messages"][1]["content"].as_array().unwrap();
+        assert_eq!(vision[0], json!({ "type": "text", "text": "describe" }));
+        assert_eq!(vision[1]["type"], "image_url");
+        assert_eq!(
+            vision[1]["image_url"]["url"],
+            "data:image/png;base64,iVBORw=="
+        );
+        assert_eq!(body["messages"][2]["content"], "plain");
+
+        let logged =
+            HttpProvider::log_messages(HttpProvider::project_messages(&request.messages, false));
+        assert_eq!(
+            logged[0]["content"][1]["image_url"]["url"],
+            "[image/png image data omitted]"
+        );
     }
 
     fn spec(name: &str) -> ToolSpec {
@@ -829,6 +1012,7 @@ mod tests {
         let provider = provider(Default::default());
         let request = CompletionRequest {
             system: String::new(),
+            fallback_system: String::new(),
             messages: Vec::new(),
             timeout_ms: 0,
             cancel: Default::default(),
@@ -843,6 +1027,49 @@ mod tests {
         // `auto`, never `required`: a reply that calls nothing is how a task ends,
         // and a question that wanted a sentence deserves a sentence.
         assert_eq!(params["tool_choice"], "auto");
+    }
+
+    #[test]
+    fn structured_history_is_native_until_tools_are_refused() {
+        let provider = provider(Default::default());
+        let call = ToolCall {
+            id: "call_7".into(),
+            name: "run".into(),
+            arguments: r#"{"command":"uptime","why":"load"}"#.into(),
+        };
+        let request = CompletionRequest {
+            system: "native prompt".into(),
+            fallback_system: "json prompt".into(),
+            messages: vec![
+                ChatMessage::user("check"),
+                ChatMessage::assistant_calls("", vec![call]),
+                ChatMessage::tool_result("call_7", "uptime output"),
+            ],
+            timeout_ms: 0,
+            cancel: Default::default(),
+            watcher: Arc::new(super::super::Silent),
+            tools: vec![spec("run")],
+        };
+
+        let (_, native) = provider.body(&request, &Map::new(), true);
+        assert_eq!(native["messages"][0]["content"], "native prompt");
+        assert_eq!(
+            native["messages"][2]["tool_calls"][0]["function"]["name"],
+            "run"
+        );
+        assert_eq!(native["messages"][3]["role"], "tool");
+        assert_eq!(native["messages"][3]["tool_call_id"], "call_7");
+
+        let (_, fallback) = provider.body(&request, &Map::new(), false);
+        assert_eq!(fallback["messages"][0]["content"], "json prompt");
+        assert_eq!(fallback["messages"][2]["role"], "assistant");
+        assert_eq!(
+            fallback["messages"][2]["content"],
+            r#"{"action":"run","command":"uptime","why":"load"}"#
+        );
+        assert_eq!(fallback["messages"][3]["role"], "user");
+        assert_eq!(fallback["messages"][3]["content"], "uptime output");
+        assert!(fallback["messages"][2].get("tool_calls").is_none());
     }
 
     /// An endpoint that has refused tools once is not asked again this window --
@@ -870,6 +1097,7 @@ mod tests {
 
         let request = CompletionRequest {
             system: String::new(),
+            fallback_system: String::new(),
             messages: Vec::new(),
             timeout_ms: 0,
             cancel: Default::default(),
@@ -895,7 +1123,10 @@ mod tests {
             &json!([{ "index": 0, "id": "call_a", "function": { "name": "run", "arguments": "{\"comm" } }]),
             &mut calls,
         );
-        collect_calls(&json!([{ "index": 0, "function": { "arguments": "and\":\"df -h\"}" } }]), &mut calls);
+        collect_calls(
+            &json!([{ "index": 0, "function": { "arguments": "and\":\"df -h\"}" } }]),
+            &mut calls,
+        );
 
         let finished: Vec<_> = calls.into_iter().filter_map(PartialCall::finish).collect();
         assert_eq!(finished.len(), 1);
@@ -915,8 +1146,14 @@ mod tests {
             ]),
             &mut calls,
         );
-        collect_calls(&json!([{ "index": 1, "function": { "arguments": ":2}" } }]), &mut calls);
-        collect_calls(&json!([{ "index": 0, "function": { "arguments": ":1}" } }]), &mut calls);
+        collect_calls(
+            &json!([{ "index": 1, "function": { "arguments": ":2}" } }]),
+            &mut calls,
+        );
+        collect_calls(
+            &json!([{ "index": 0, "function": { "arguments": ":1}" } }]),
+            &mut calls,
+        );
 
         let finished: Vec<_> = calls.into_iter().filter_map(PartialCall::finish).collect();
         assert_eq!(finished.len(), 2);
@@ -931,8 +1168,15 @@ mod tests {
     #[test]
     fn a_call_with_no_name_is_dropped_rather_than_guessed_at() {
         let mut calls = Vec::new();
-        collect_calls(&json!([{ "index": 0, "function": { "arguments": "{}" } }]), &mut calls);
-        assert!(calls.into_iter().filter_map(PartialCall::finish).next().is_none());
+        collect_calls(
+            &json!([{ "index": 0, "function": { "arguments": "{}" } }]),
+            &mut calls,
+        );
+        assert!(calls
+            .into_iter()
+            .filter_map(PartialCall::finish)
+            .next()
+            .is_none());
     }
 
     #[test]
@@ -948,6 +1192,7 @@ mod tests {
     async fn an_unconfigured_endpoint_says_so_rather_than_failing_obscurely() {
         let request = CompletionRequest {
             system: String::new(),
+            fallback_system: String::new(),
             messages: Vec::new(),
             timeout_ms: 0,
             cancel: Default::default(),

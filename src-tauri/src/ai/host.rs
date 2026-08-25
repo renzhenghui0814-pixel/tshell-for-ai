@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 use super::cancel::Cancel;
 use super::files::{FileOpError, FilePlan, FileRequest};
+use super::llm::ChatMessage;
 use super::llm::LlmProvider;
 use super::moves::{TransferOpError, TransferPlan, TransferRequest};
 use super::policy::command::PolicyResult;
@@ -40,7 +41,8 @@ pub trait Judge: Send + Sync {
 
 /// The only thing that types into the terminal.
 pub trait Executor: Send + Sync {
-    fn execute(&self, command: &str, cancel: &Cancel) -> impl Future<Output = CommandResult> + Send;
+    fn execute(&self, command: &str, cancel: &Cancel)
+        -> impl Future<Output = CommandResult> + Send;
 }
 
 /// The only thing that puts a question in front of the user.
@@ -71,8 +73,11 @@ pub trait Bytes: Send + Sync {
         request: FileRequest,
         cancel: &Cancel,
     ) -> impl Future<Output = Result<FilePlan, FileOpError>> + Send;
-    fn apply_file(&self, plan: &FilePlan, cancel: &Cancel)
-        -> impl Future<Output = CommandResult> + Send;
+    fn apply_file(
+        &self,
+        plan: &FilePlan,
+        cancel: &Cancel,
+    ) -> impl Future<Output = CommandResult> + Send;
     /// Resolves a transfer against both machines, asking the user for anything the
     /// model could not supply. A dismissed dialog is an error here -- a transfer
     /// nobody chose a destination for has not happened.
@@ -93,7 +98,8 @@ pub trait Bytes: Send + Sync {
 pub trait Stores: Send + Sync {
     /// False means `remember` was never offered, so using it is a mistake.
     fn memory_enabled(&self) -> bool;
-    fn remember(&self, scope: MemoryScope, text: &str) -> impl Future<Output = AppendResult> + Send;
+    fn remember(&self, scope: MemoryScope, text: &str)
+        -> impl Future<Output = AppendResult> + Send;
     /// False means no skill was ever offered, so naming one is a mistake rather
     /// than a miss.
     fn skills_enabled(&self) -> bool;
@@ -111,6 +117,10 @@ pub trait Stores: Send + Sync {
 /// Where events go. A test collects them and asserts on the whole sequence.
 pub trait Emitter: Send + Sync {
     fn emit(&self, event: AgentEvent);
+    /// Makes the model's current view durable independently of the visual event
+    /// stream. A process can disappear between two events, so the two cannot
+    /// safely be tied to a task finishing.
+    fn checkpoint(&self, messages: &[ChatMessage]);
 }
 
 pub trait AgentHost: Judge + Executor + Asker + Bytes + Stores + Emitter {}
@@ -129,6 +139,7 @@ pub struct AgentConfig {
     /// must not be blocked behind it.
     pub provider: Arc<dyn LlmProvider>,
     pub system: String,
+    pub fallback_system: String,
     pub max_steps: u32,
     /// Characters of conversation carried into one request. 0 carries everything.
     pub context_budget: usize,
@@ -141,6 +152,7 @@ impl AgentConfig {
         Self {
             provider,
             system: String::new(),
+            fallback_system: String::new(),
             max_steps: 0,
             context_budget: 48_000,
             request_timeout_ms: 120_000,

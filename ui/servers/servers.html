@@ -118,6 +118,56 @@
   </div>
 
   <div id="contextMenu" class="context-menu c-menu"></div>
+
+  <!--
+    A local terminal: a shell on this machine, shown in the same xterm pane as
+    a remote one. The dialog is the same shape as the server one -- a few
+    sections, the third of which changes with the kind chosen.
+  -->
+  <div id="localTermModal" class="modal">
+    <div class="dialog">
+      <div id="localTermDialogTitle" class="dialog-title"></div>
+      <input id="localTermId" type="hidden">
+      <input id="localTermGroupId" type="hidden">
+
+      <div class="form-section">
+        <label class="c-label" for="localTermType" data-i18n="localTermType"></label>
+        <span class="c-select">
+          <select id="localTermType" class="c-field">
+            <option value="cmd" data-i18n="termTypeCmd"></option>
+            <option value="powerShell" data-i18n="termTypePowerShell"></option>
+            <option value="vsDev" data-i18n="termTypeVsDev"></option>
+          </select>
+        </span>
+      </div>
+
+      <div class="form-section">
+        <label class="c-label" for="localTermName" data-i18n="localTermName"></label>
+        <input id="localTermName" class="c-field" data-i18n-placeholder="localTermNamePlaceholder">
+        <label class="c-label" for="localTermCwd" data-i18n="localTermCwd"></label>
+        <input id="localTermCwd" class="c-field" data-i18n-placeholder="localTermCwdPlaceholder">
+      </div>
+
+      <!-- Only for a Visual Studio developer prompt: where its toolshed is. -->
+      <div class="form-section" id="vsDevFields" hidden>
+        <label class="c-label" for="vsDevPath" data-i18n="vsDevPath"></label>
+        <input id="vsDevPath" class="c-field" data-i18n-placeholder="vsDevPathPlaceholder">
+        <label class="c-label" for="vsDevArch" data-i18n="vsDevArch"></label>
+        <span class="c-select">
+          <select id="vsDevArch" class="c-field">
+            <option value="x86" data-i18n="archX86"></option>
+            <option value="x64" data-i18n="archX64"></option>
+          </select>
+        </span>
+      </div>
+
+      <div class="actions">
+        <button id="cancelLocalTerm" class="c-btn" data-i18n="cancel"></button>
+        <button id="saveLocalTerm" class="c-btn c-btn-primary" data-i18n="save"></button>
+      </div>
+    </div>
+  </div>
+
   <script src="servers.js"></script>
 </body>
 </html>

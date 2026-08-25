@@ -35,7 +35,10 @@ pub fn write_bytes(path: &Path, contents: &[u8]) -> io::Result<()> {
     })?;
     fs::create_dir_all(parent)?;
 
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("config");
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("config");
     let temporary = parent.join(format!(".{name}.{}.tmp", std::process::id()));
 
     // Scoped so the handle is closed before the rename; Windows will not rename
@@ -68,7 +71,10 @@ pub fn write_private(path: &Path, contents: &str) -> io::Result<()> {
         })?;
         fs::create_dir_all(parent)?;
 
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("config");
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("config");
         let temporary = parent.join(format!(".{name}.{}.tmp", std::process::id()));
 
         {

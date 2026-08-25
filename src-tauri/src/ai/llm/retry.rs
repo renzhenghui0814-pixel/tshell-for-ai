@@ -15,7 +15,10 @@ use std::time::Duration;
 use super::{Completion, CompletionRequest, LlmError, LlmFailure, LlmProvider};
 
 fn is_retryable(kind: LlmFailure) -> bool {
-    matches!(kind, LlmFailure::RateLimited | LlmFailure::Network | LlmFailure::Timeout)
+    matches!(
+        kind,
+        LlmFailure::RateLimited | LlmFailure::Network | LlmFailure::Timeout
+    )
 }
 
 /// Quadrupling, from one second. Jittered so several panels do not return
@@ -46,7 +49,10 @@ pub struct WithRetry<P> {
 
 impl<P: LlmProvider> WithRetry<P> {
     pub fn new(inner: P) -> Self {
-        Self { inner, attempts: ATTEMPTS }
+        Self {
+            inner,
+            attempts: ATTEMPTS,
+        }
     }
 
     #[cfg(test)]
@@ -56,10 +62,6 @@ impl<P: LlmProvider> WithRetry<P> {
 }
 
 impl<P: LlmProvider> LlmProvider for WithRetry<P> {
-    fn id(&self) -> &str {
-        self.inner.id()
-    }
-
     fn describe(&self) -> String {
         self.inner.describe()
     }
@@ -71,6 +73,7 @@ impl<P: LlmProvider> LlmProvider for WithRetry<P> {
                 // token are shared handles but the struct itself is consumed.
                 let one = CompletionRequest {
                     system: request.system.clone(),
+                    fallback_system: request.fallback_system.clone(),
                     messages: request.messages.clone(),
                     timeout_ms: request.timeout_ms,
                     cancel: request.cancel.clone(),
@@ -118,14 +121,15 @@ mod tests {
 
     impl Failing {
         fn new(kind: LlmFailure, succeed_on: u32) -> Self {
-            Self { kind, calls: AtomicU32::new(0), succeed_on }
+            Self {
+                kind,
+                calls: AtomicU32::new(0),
+                succeed_on,
+            }
         }
     }
 
     impl LlmProvider for Failing {
-        fn id(&self) -> &str {
-            "failing"
-        }
         fn describe(&self) -> String {
             "a test".into()
         }
@@ -157,6 +161,7 @@ mod tests {
     fn request(cancel: crate::ai::cancel::Cancel, watcher: Arc<dyn Watcher>) -> CompletionRequest {
         CompletionRequest {
             system: "s".into(),
+            fallback_system: "json".into(),
             messages: Vec::new(),
             timeout_ms: 0,
             cancel,
@@ -169,8 +174,10 @@ mod tests {
     async fn a_passing_condition_is_tried_again_and_succeeds() {
         let watcher = Arc::new(Counting::default());
         let provider = WithRetry::new(Failing::new(LlmFailure::RateLimited, 3));
-        let reply =
-            provider.complete(request(Default::default(), watcher.clone())).await.unwrap();
+        let reply = provider
+            .complete(request(Default::default(), watcher.clone()))
+            .await
+            .unwrap();
         assert_eq!(reply.text, "ok");
         let retries = watcher.retries.lock().unwrap();
         assert_eq!(retries.len(), 2);
@@ -182,8 +189,10 @@ mod tests {
     async fn a_bad_key_is_not_asked_about_twice() {
         let watcher = Arc::new(Counting::default());
         let provider = WithRetry::new(Failing::new(LlmFailure::Unauthorized, 99));
-        let error =
-            provider.complete(request(Default::default(), watcher.clone())).await.unwrap_err();
+        let error = provider
+            .complete(request(Default::default(), watcher.clone()))
+            .await
+            .unwrap_err();
         assert_eq!(error.kind, LlmFailure::Unauthorized);
         assert!(watcher.retries.lock().unwrap().is_empty());
     }
@@ -191,8 +200,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_empty_reply_is_left_to_the_loop() {
         let provider = WithRetry::new(Failing::new(LlmFailure::Empty, 99));
-        let error =
-            provider.complete(request(Default::default(), Arc::new(Silent))).await.unwrap_err();
+        let error = provider
+            .complete(request(Default::default(), Arc::new(Silent)))
+            .await
+            .unwrap_err();
         assert_eq!(error.kind, LlmFailure::Empty);
     }
 
@@ -201,8 +212,10 @@ mod tests {
         let inner = Failing::new(LlmFailure::Network, 99);
         let provider = WithRetry::with_attempts(inner, 2);
         let watcher = Arc::new(Counting::default());
-        let error =
-            provider.complete(request(Default::default(), watcher.clone())).await.unwrap_err();
+        let error = provider
+            .complete(request(Default::default(), watcher.clone()))
+            .await
+            .unwrap_err();
         assert_eq!(error.kind, LlmFailure::Network);
         assert_eq!(watcher.retries.lock().unwrap().len(), 1);
     }
@@ -212,7 +225,10 @@ mod tests {
         let cancel = crate::ai::cancel::Cancel::new();
         cancel.cancel();
         let provider = WithRetry::new(Failing::new(LlmFailure::Network, 99));
-        let error = provider.complete(request(cancel, Arc::new(Silent))).await.unwrap_err();
+        let error = provider
+            .complete(request(cancel, Arc::new(Silent)))
+            .await
+            .unwrap_err();
         assert_eq!(error.kind, LlmFailure::Network);
     }
 

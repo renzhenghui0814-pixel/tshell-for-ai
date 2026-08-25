@@ -197,9 +197,18 @@ body {
  * but absent -- a 0px strip that still swallows a click at the top of the
  * screen is the kind of thing that is only ever found by accident.
  *
+ * The workbench's padding is the eight pixels of ground that separate the
+ * cards from the window's edge, and it goes the same way the chrome does:
+ * full screen means the cards reach the edge, and a strip of `--bg-elev`
+ * across the bottom of a full-screen terminal is a strip of colour that has
+ * no surface left to mean anything on. The corners still round off, and the
+ * ground still shows through the four cut corners -- a corner is where a card
+ * is allowed to stop, a straight edge is not.
+ *
  * Getting back out is the shortcut, and nothing else. See `toggleFullscreen`.
  */
 body.fullscreen .titlebar { display: none; }
+body.fullscreen .workbench { padding: 0; }
 
 body.maximized .glyph-maximize { display: none; }
 body.maximized .glyph-restore { display: block; }

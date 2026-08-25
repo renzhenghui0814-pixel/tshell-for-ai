@@ -57,7 +57,11 @@ fn schema(properties: Vec<(&str, Value)>, required: &[&str]) -> Value {
 }
 
 fn tool(name: &str, description: &str, parameters: Value) -> ToolSpec {
-    ToolSpec { name: name.into(), description: description.into(), parameters }
+    ToolSpec {
+        name: name.into(),
+        description: description.into(),
+        parameters,
+    }
 }
 
 /// The reason shown to the user on the confirmation card. Every acting verb has
@@ -78,10 +82,7 @@ pub fn tool_specs(has_memory: bool, has_skills: bool) -> Vec<ToolSpec> {
             "run",
             "Run one shell command in the user's own terminal, on the remote machine.",
             schema(
-                vec![
-                    ("command", text("A single-line shell command.")),
-                    why(),
-                ],
+                vec![("command", text("A single-line shell command.")), why()],
                 &["command", "why"],
             ),
         ),
@@ -91,7 +92,10 @@ pub fn tool_specs(has_memory: bool, has_skills: bool) -> Vec<ToolSpec> {
             schema(
                 vec![
                     ("path", text("Absolute path on the remote machine.")),
-                    ("content", text("The entire file, exactly as it should end up.")),
+                    (
+                        "content",
+                        text("The entire file, exactly as it should end up."),
+                    ),
                     why(),
                 ],
                 &["path", "content", "why"],
@@ -115,7 +119,10 @@ pub fn tool_specs(has_memory: bool, has_skills: bool) -> Vec<ToolSpec> {
             schema(
                 vec![
                     ("path", text("Absolute path on the remote machine.")),
-                    ("old", text("The exact existing text to replace, occurring exactly once.")),
+                    (
+                        "old",
+                        text("The exact existing text to replace, occurring exactly once."),
+                    ),
                     ("new", text("What replaces it.")),
                     why(),
                 ],
@@ -169,8 +176,14 @@ pub fn tool_specs(has_memory: bool, has_skills: bool) -> Vec<ToolSpec> {
             "Read one of the user's skills, for instructions on how they want something done.",
             schema(
                 vec![
-                    ("name", text("The skill's name, as listed in the system prompt.")),
-                    ("file", text("A file inside the skill. Omit for its main file.")),
+                    (
+                        "name",
+                        text("The skill's name, as listed in the system prompt."),
+                    ),
+                    (
+                        "file",
+                        text("A file inside the skill. Omit for its main file."),
+                    ),
                     why(),
                 ],
                 &["name", "why"],
@@ -225,7 +238,10 @@ pub fn action_from_call(call: &ToolCall) -> Option<AgentAction> {
     // put back before the shared reader sees the object. Overwritten rather than
     // filled in: what the endpoint says was called outranks anything the model
     // may have written into the arguments.
-    record.insert("action".into(), Value::String(call.name.trim().to_lowercase()));
+    record.insert(
+        "action".into(),
+        Value::String(call.name.trim().to_lowercase()),
+    );
     action_from_object(record)
 }
 
@@ -235,16 +251,17 @@ mod tests {
     use crate::ai::types::{ActionKind, MemoryScope};
 
     fn call(name: &str, arguments: &str) -> ToolCall {
-        ToolCall { id: "call_1".into(), name: name.into(), arguments: arguments.into() }
+        ToolCall {
+            id: "call_1".into(),
+            name: name.into(),
+            arguments: arguments.into(),
+        }
     }
 
     #[test]
     fn a_call_becomes_the_action_of_the_same_name() {
-        let action = action_from_call(&call(
-            "run",
-            r#"{"command":"df -h","why":"check disk"}"#,
-        ))
-        .unwrap();
+        let action =
+            action_from_call(&call("run", r#"{"command":"df -h","why":"check disk"}"#)).unwrap();
         assert_eq!(action.action, Some(ActionKind::Run));
         assert_eq!(action.command.as_deref(), Some("df -h"));
         assert_eq!(action.why.as_deref(), Some("check disk"));
@@ -319,9 +336,11 @@ mod tests {
     /// other machine the user owns, so anything but a plain "global" narrows.
     #[test]
     fn a_memory_scope_that_is_not_global_is_this_machine() {
-        let action =
-            action_from_call(&call("remember", r#"{"scope":"nonsense","text":"a","why":"b"}"#))
-                .unwrap();
+        let action = action_from_call(&call(
+            "remember",
+            r#"{"scope":"nonsense","text":"a","why":"b"}"#,
+        ))
+        .unwrap();
         assert_eq!(action.scope, Some(MemoryScope::Server));
     }
 
@@ -411,4 +430,3 @@ mod tests {
         }
     }
 }
-

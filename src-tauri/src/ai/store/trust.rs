@@ -84,9 +84,13 @@ impl TrustStore {
     /// parse is different -- it is someone's hand edit, half finished -- so it
     /// comes back as `None` and the writers refuse rather than flattening it.
     fn load(&self) -> Option<TrustedFile> {
-        let empty =
-            || TrustedFile { version: CURRENT_VERSION, servers: BTreeMap::new() };
-        let Ok(text) = std::fs::read_to_string(&self.file) else { return Some(empty()) };
+        let empty = || TrustedFile {
+            version: CURRENT_VERSION,
+            servers: BTreeMap::new(),
+        };
+        let Ok(text) = std::fs::read_to_string(&self.file) else {
+            return Some(empty());
+        };
         if text.trim().is_empty() {
             return Some(empty());
         }
@@ -96,7 +100,9 @@ impl TrustStore {
         let mut servers = BTreeMap::new();
         if let Some(listed) = object.get("servers").and_then(|value| value.as_object()) {
             for (id, list) in listed {
-                let Some(list) = list.as_array() else { continue };
+                let Some(list) = list.as_array() else {
+                    continue;
+                };
                 servers.insert(
                     id.clone(),
                     list.iter()
@@ -107,7 +113,10 @@ impl TrustStore {
                 );
             }
         }
-        Some(TrustedFile { version: CURRENT_VERSION, servers })
+        Some(TrustedFile {
+            version: CURRENT_VERSION,
+            servers,
+        })
     }
 
     fn save(&self, data: &TrustedFile) -> std::io::Result<()> {
@@ -152,15 +161,19 @@ impl TrustStore {
             return TrustWrite::Relative;
         }
         let root = normalize_path(dir);
-        let Some(mut data) = self.load() else { return TrustWrite::Unreadable };
+        let Some(mut data) = self.load() else {
+            return TrustWrite::Unreadable;
+        };
 
         let current = data.servers.get(server_id).cloned().unwrap_or_default();
         if current.iter().any(|entry| covers(entry, &root)) {
             return TrustWrite::NoChange;
         }
 
-        let mut kept: Vec<String> =
-            current.into_iter().filter(|entry| !covers(&root, entry)).collect();
+        let mut kept: Vec<String> = current
+            .into_iter()
+            .filter(|entry| !covers(&root, entry))
+            .collect();
         kept.push(root);
         data.servers.insert(server_id.to_string(), kept);
         match self.save(&data) {
@@ -171,10 +184,16 @@ impl TrustStore {
 
     /// Drops one entry, matched exactly as it reads in the list.
     pub fn remove(&self, server_id: &str, dir: &str) -> TrustWrite {
-        let Some(mut data) = self.load() else { return TrustWrite::Unreadable };
+        let Some(mut data) = self.load() else {
+            return TrustWrite::Unreadable;
+        };
 
         let current = data.servers.get(server_id).cloned().unwrap_or_default();
-        let kept: Vec<String> = current.iter().filter(|entry| *entry != dir).cloned().collect();
+        let kept: Vec<String> = current
+            .iter()
+            .filter(|entry| *entry != dir)
+            .cloned()
+            .collect();
         if kept.len() == current.len() {
             return TrustWrite::NoChange;
         }
@@ -298,7 +317,10 @@ mod tests {
         assert_eq!(store.remove("s", "/srv/app"), TrustWrite::Unreadable);
         assert!(store.list("s").is_empty());
         // And still on disk, exactly as the user left it.
-        assert_eq!(std::fs::read_to_string(store.path()).unwrap(), "{ not json at all");
+        assert_eq!(
+            std::fs::read_to_string(store.path()).unwrap(),
+            "{ not json at all"
+        );
     }
 
     #[test]

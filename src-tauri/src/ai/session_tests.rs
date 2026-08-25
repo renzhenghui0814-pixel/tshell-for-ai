@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 use super::cancel::Cancel;
 use super::files::{FileOpError, FilePlan, FileRequest, FileRunner};
 use super::host::{AgentConfig, Asker, Bytes, Emitter, Executor, Judge, Stores};
-use super::llm::{Completion, CompletionRequest, LlmError, LlmFailure, LlmProvider, Reply, ToolCall};
+use super::llm::{
+    ChatMessage, Completion, CompletionRequest, LlmError, LlmFailure, LlmProvider, Reply, ToolCall,
+};
 use super::moves::{TransferOpError, TransferPlan, TransferRequest};
 use super::policy::command::{classify_command, PolicyResult};
 use super::policy::path::{classify_path, PathPolicyResult};
@@ -19,9 +21,7 @@ use super::policy::risk::RiskReason;
 use super::session::AgentSession;
 use super::store::memory::{AppendOutcome, AppendResult};
 use super::store::skill::SkillRead;
-use super::types::{
-    AgentEvent, AgentMode, CommandResult, FileEncoding, MemoryScope, SkillOutcome,
-};
+use super::types::{AgentEvent, AgentMode, CommandResult, FileEncoding, MemoryScope, SkillOutcome};
 
 /// A model that hands back a scripted reply per step.
 struct Script {
@@ -33,13 +33,19 @@ impl Script {
     fn new(replies: Vec<&str>) -> Arc<Self> {
         Arc::new(Self {
             replies: Mutex::new(
-                replies.into_iter().map(|text| Ok(Reply::text(text))).collect(),
+                replies
+                    .into_iter()
+                    .map(|text| Ok(Reply::text(text)))
+                    .collect(),
             ),
             asked: AtomicUsize::new(0),
         })
     }
     fn failing(error: LlmError) -> Arc<Self> {
-        Arc::new(Self { replies: Mutex::new(vec![Err(error)]), asked: AtomicUsize::new(0) })
+        Arc::new(Self {
+            replies: Mutex::new(vec![Err(error)]),
+            asked: AtomicUsize::new(0),
+        })
     }
     /// Replies built exactly as the test wants them, for the cases where the
     /// difference between the two tracks is the thing under test.
@@ -79,9 +85,6 @@ impl Script {
 }
 
 impl LlmProvider for Script {
-    fn id(&self) -> &str {
-        "script"
-    }
     fn describe(&self) -> String {
         "a scripted model".into()
     }
@@ -119,6 +122,7 @@ struct Fake {
     answers: Answers,
     events: Mutex<Vec<AgentEvent>>,
     commands: Mutex<Vec<String>>,
+    checkpoints: Mutex<Vec<Vec<ChatMessage>>>,
 }
 
 impl Fake {
@@ -127,6 +131,7 @@ impl Fake {
             answers,
             events: Mutex::new(Vec::new()),
             commands: Mutex::new(Vec::new()),
+            checkpoints: Mutex::new(Vec::new()),
         })
     }
 
@@ -139,13 +144,20 @@ impl Fake {
         self.events()
             .iter()
             .map(|event| {
-                serde_json::to_value(event).unwrap()["type"].as_str().unwrap_or("?").to_string()
+                serde_json::to_value(event).unwrap()["type"]
+                    .as_str()
+                    .unwrap_or("?")
+                    .to_string()
             })
             .collect()
     }
 
     fn commands(&self) -> Vec<String> {
         self.commands.lock().unwrap().clone()
+    }
+
+    fn checkpoints(&self) -> Vec<Vec<ChatMessage>> {
+        self.checkpoints.lock().unwrap().clone()
     }
 }
 
@@ -168,7 +180,10 @@ impl Judge for Fake {
         classify_path(path)
     }
     fn describe_risk(&self, reasons: &[RiskReason]) -> Vec<String> {
-        reasons.iter().map(|reason| format!("<{}>", reason.key())).collect()
+        reasons
+            .iter()
+            .map(|reason| format!("<{}>", reason.key()))
+            .collect()
     }
 }
 
@@ -177,7 +192,10 @@ impl Executor for Fake {
         self.commands.lock().unwrap().push(command.to_string());
         let mut results = self.answers.results.lock().unwrap();
         if results.is_empty() {
-            CommandResult { output: "ok".into(), ..Default::default() }
+            CommandResult {
+                output: "ok".into(),
+                ..Default::default()
+            }
         } else {
             results.remove(0)
         }
@@ -219,7 +237,10 @@ impl Bytes for Fake {
         })
     }
     async fn apply_file(&self, plan: &FilePlan, _cancel: &Cancel) -> CommandResult {
-        CommandResult { output: format!("wrote {}", plan.path), ..Default::default() }
+        CommandResult {
+            output: format!("wrote {}", plan.path),
+            ..Default::default()
+        }
     }
     async fn plan_transfer(
         &self,
@@ -234,13 +255,19 @@ impl Bytes for Fake {
             roots: request
                 .paths
                 .into_iter()
-                .map(|path| super::moves::TransferRoot { path, is_directory: false })
+                .map(|path| super::moves::TransferRoot {
+                    path,
+                    is_directory: false,
+                })
                 .collect(),
             target: request.to,
         })
     }
     async fn run_transfer(&self, _plan: &TransferPlan, _cancel: &Cancel) -> CommandResult {
-        CommandResult { output: "moved".into(), ..Default::default() }
+        CommandResult {
+            output: "moved".into(),
+            ..Default::default()
+        }
     }
 }
 
@@ -274,6 +301,9 @@ impl Emitter for Fake {
     fn emit(&self, event: AgentEvent) {
         self.events.lock().unwrap().push(event);
     }
+    fn checkpoint(&self, messages: &[ChatMessage]) {
+        self.checkpoints.lock().unwrap().push(messages.to_vec());
+    }
 }
 
 /// A runner nothing in these tests uses, so `files.rs` need not be dragged in.
@@ -302,8 +332,26 @@ async fn prose_alone_is_the_answer_and_ends_the_task() {
     let script = Script::new(vec!["hello there"]);
     session(host.clone(), script).send("hi").await;
 
-    assert_eq!(host.tags(), ["thinking", "context", "usage", "reply", "idle"]);
+    assert_eq!(
+        host.tags(),
+        ["thinking", "context", "usage", "reply", "idle"]
+    );
     assert!(matches!(&host.events()[3], AgentEvent::Reply { text } if text == "hello there"));
+}
+
+#[tokio::test]
+async fn history_is_checkpointed_before_a_task_finishes() {
+    let host = Fake::new(permissive());
+    let script = Script::new(vec!["done"]);
+    session(host.clone(), script).send("start").await;
+
+    let checkpoints = host.checkpoints();
+    assert!(checkpoints
+        .iter()
+        .any(|history| { history.len() == 1 && history[0] == ChatMessage::user("start") }));
+    assert!(checkpoints
+        .iter()
+        .any(|history| { history.len() == 2 && history[1] == ChatMessage::assistant("done") }));
 }
 
 /// The commonest false alarm the old scan had: an answer that shows the user
@@ -318,10 +366,18 @@ async fn an_answer_quoting_json_is_still_an_answer() {
 ```
 and it returns 202.",
     ]);
-    session(host.clone(), script).send("what does the body look like?").await;
+    session(host.clone(), script)
+        .send("what does the body look like?")
+        .await;
 
-    assert!(host.commands().is_empty(), "an example must not be carried out");
-    assert_eq!(host.tags(), ["thinking", "context", "usage", "reply", "idle"]);
+    assert!(
+        host.commands().is_empty(),
+        "an example must not be carried out"
+    );
+    assert_eq!(
+        host.tags(),
+        ["thinking", "context", "usage", "reply", "idle"]
+    );
 }
 
 #[tokio::test]
@@ -349,7 +405,10 @@ async fn a_destructive_command_is_refused_and_the_task_carries_on() {
     ]);
     session(host.clone(), script).send("clean up").await;
 
-    assert!(host.commands().is_empty(), "nothing was typed into the terminal");
+    assert!(
+        host.commands().is_empty(),
+        "nothing was typed into the terminal"
+    );
     let refused = host
         .events()
         .into_iter()
@@ -363,7 +422,10 @@ async fn a_destructive_command_is_refused_and_the_task_carries_on() {
 
 #[tokio::test]
 async fn a_declined_confirmation_runs_nothing_and_says_so() {
-    let host = Fake::new(Answers { confirm_command: false, ..permissive() });
+    let host = Fake::new(Answers {
+        confirm_command: false,
+        ..permissive()
+    });
     let script = Script::new(vec![
         r#"{"action":"run","command":"systemctl restart nginx","why":"restart"}"#,
         "left alone",
@@ -376,7 +438,11 @@ async fn a_declined_confirmation_runs_nothing_and_says_so() {
 
 #[tokio::test]
 async fn auto_mode_answers_the_confirmation_but_not_the_refusal() {
-    let host = Fake::new(Answers { confirm_command: false, mode: AgentMode::Auto, ..permissive() });
+    let host = Fake::new(Answers {
+        confirm_command: false,
+        mode: AgentMode::Auto,
+        ..permissive()
+    });
     let script = Script::new(vec![
         r#"{"action":"run","command":"systemctl restart nginx","why":"restart"}"#,
         r#"{"action":"run","command":"rm -rf /","why":"clean"}"#,
@@ -384,12 +450,25 @@ async fn auto_mode_answers_the_confirmation_but_not_the_refusal() {
     ]);
     session(host.clone(), script).send("go").await;
 
-    assert_eq!(host.commands(), vec!["systemctl restart nginx"], "the confirmed one ran unasked");
+    assert_eq!(
+        host.commands(),
+        vec!["systemctl restart nginx"],
+        "the confirmed one ran unasked"
+    );
     let marked = host.events().into_iter().any(|event| {
-        matches!(event, AgentEvent::Command { unconfirmed: Some(super::types::Unconfirmed::Auto), .. })
+        matches!(
+            event,
+            AgentEvent::Command {
+                unconfirmed: Some(super::types::Unconfirmed::Auto),
+                ..
+            }
+        )
     });
     assert!(marked, "the card says it was not confirmed");
-    assert!(host.tags().contains(&"refused".to_string()), "the refusal still refuses");
+    assert!(
+        host.tags().contains(&"refused".to_string()),
+        "the refusal still refuses"
+    );
 }
 
 #[tokio::test]
@@ -450,7 +529,10 @@ async fn narration_after_work_has_started_ends_the_task() {
     assert_eq!(replies, 1);
     assert_eq!(host.tags().last().unwrap(), "idle");
     assert!(
-        !session.history().into_iter().any(|message| message.content.contains("NOTHING")),
+        !session
+            .history()
+            .into_iter()
+            .any(|message| message.content.contains("NOTHING")),
         "the model was not told its answer had gone missing",
     );
 }
@@ -466,7 +548,10 @@ async fn a_file_action_is_planned_shown_confirmed_and_applied() {
 
     let tags = host.tags();
     let at = |name: &str| tags.iter().position(|tag| tag == name).unwrap();
-    assert!(at("command") < at("file"), "the card is drawn before the change is shown");
+    assert!(
+        at("command") < at("file"),
+        "the card is drawn before the change is shown"
+    );
     assert!(at("file") < at("result"));
 }
 
@@ -480,7 +565,10 @@ async fn a_write_to_a_device_is_refused_before_the_machine_is_touched() {
     session(host.clone(), script).send("go").await;
 
     assert!(host.tags().contains(&"refused".to_string()));
-    assert!(!host.tags().contains(&"file".to_string()), "nothing was planned");
+    assert!(
+        !host.tags().contains(&"file".to_string()),
+        "nothing was planned"
+    );
 }
 
 #[tokio::test]
@@ -500,11 +588,17 @@ async fn trust_mode_skips_the_dialog_only_for_a_trusted_directory() {
     let marked = host.events().into_iter().any(|event| {
         matches!(
             event,
-            AgentEvent::Command { unconfirmed: Some(super::types::Unconfirmed::Trusted), .. }
+            AgentEvent::Command {
+                unconfirmed: Some(super::types::Unconfirmed::Trusted),
+                ..
+            }
         )
     });
     assert!(marked);
-    assert!(!host.tags().contains(&"declined".to_string()), "it went through unasked");
+    assert!(
+        !host.tags().contains(&"declined".to_string()),
+        "it went through unasked"
+    );
 }
 
 #[tokio::test]
@@ -540,7 +634,9 @@ async fn a_remembered_line_is_reported_with_an_undo_token() {
         .into_iter()
         .find(|event| matches!(event, AgentEvent::Memory { .. }))
         .expect("a memory card");
-    assert!(matches!(remembered, AgentEvent::Memory { token: Some(ref token), .. } if token == "t1"));
+    assert!(
+        matches!(remembered, AgentEvent::Memory { token: Some(ref token), .. } if token == "t1")
+    );
 }
 
 #[tokio::test]
@@ -552,18 +648,24 @@ async fn a_transcribed_paragraph_is_refused_as_a_fact() {
     session(host.clone(), script).send("go").await;
 
     let oversize = host.events().into_iter().any(|event| {
-        matches!(event, AgentEvent::Memory { outcome: super::types::MemoryOutcome::Oversize, .. })
+        matches!(
+            event,
+            AgentEvent::Memory {
+                outcome: super::types::MemoryOutcome::Oversize,
+                ..
+            }
+        )
     });
     assert!(oversize);
 }
 
 #[tokio::test]
 async fn memory_switched_off_answers_the_action_rather_than_writing() {
-    let host = Fake::new(Answers { memory_enabled: false, ..permissive() });
-    let script = Script::new(vec![
-        r#"{"action":"remember","text":"a fact"}"#,
-        "ok",
-    ]);
+    let host = Fake::new(Answers {
+        memory_enabled: false,
+        ..permissive()
+    });
+    let script = Script::new(vec![r#"{"action":"remember","text":"a fact"}"#, "ok"]);
     let session = session(host.clone(), script);
     session.send("go").await;
 
@@ -602,7 +704,10 @@ async fn a_skill_is_read_once_and_the_second_load_is_told_to_scroll_up() {
 
 #[tokio::test]
 async fn a_transfer_runs_without_a_confirmation() {
-    let host = Fake::new(Answers { confirm_command: false, ..permissive() });
+    let host = Fake::new(Answers {
+        confirm_command: false,
+        ..permissive()
+    });
     let script = Script::new(vec![
         r#"{"action":"download","path":"/var/log/a","to":"/tmp"}"#,
         "moved",
@@ -639,10 +744,10 @@ async fn the_step_limit_ends_the_task_and_says_so() {
     session.send("go").await;
 
     assert_eq!(host.commands().len(), 2);
-    assert!(host.events().into_iter().any(|event| matches!(
-        event,
-        AgentEvent::StepLimit { steps: 2 }
-    )));
+    assert!(host
+        .events()
+        .into_iter()
+        .any(|event| matches!(event, AgentEvent::StepLimit { steps: 2 })));
 }
 
 #[tokio::test]
@@ -721,11 +826,10 @@ async fn the_oldest_command_output_is_folded_away_once_the_budget_is_passed() {
     replies.push("ok");
     let script = Script::new(replies);
     for _ in 0..8 {
-        host.answers
-            .results
-            .lock()
-            .unwrap()
-            .push(CommandResult { output: "x".repeat(4000), ..Default::default() });
+        host.answers.results.lock().unwrap().push(CommandResult {
+            output: "x".repeat(4000),
+            ..Default::default()
+        });
     }
 
     let session = session(host.clone(), script);
@@ -736,23 +840,51 @@ async fn the_oldest_command_output_is_folded_away_once_the_budget_is_passed() {
     // came back under the budget by dropping output rather than whole turns.
     let history = session.history();
     assert!(
-        history.iter().any(|message| message.content.contains("[Output omitted here:")),
+        history
+            .iter()
+            .any(|message| message.content.contains("[Output omitted here:")),
         "the oldest output was folded"
     );
     assert!(
-        history.iter().any(|message| message.content.contains("EXIT:")),
+        history
+            .iter()
+            .any(|message| message.content.contains("EXIT:")),
         "the shape of the task survives -- the exit codes are still there"
     );
     assert_eq!(history[0].content, "go", "the task itself is never folded");
 }
 
 #[tokio::test]
+async fn a_short_command_output_is_not_expanded_while_trimming() {
+    let host = Fake::new(permissive());
+    // Empty results are shorter than the explanatory folding placeholder. Once
+    // enough turns cross the budget, trimming must skip them instead of growing
+    // the context (and, in debug builds, subtracting with overflow).
+    let mut replies = vec![r#"{"action":"run","command":"true"}"#; 8];
+    replies.push("ok");
+    let script = Script::new(replies);
+
+    let session = session(host, script);
+    session.configure(|config| config.context_budget = 200);
+    session.send("go").await;
+
+    let history = session.history();
+    assert_eq!(
+        history.last().map(|message| message.content.as_str()),
+        Some("ok")
+    );
+    assert!(
+        history
+            .iter()
+            .all(|message| !message.content.contains("[Output omitted here:")),
+        "a fold that would make a short result longer must be skipped"
+    );
+}
+
+#[tokio::test]
 async fn a_restored_conversation_knows_which_skills_are_already_in_it() {
     let host = Fake::new(permissive());
-    let script = Script::new(vec![
-        r#"{"action":"skill","name":"deploy"}"#,
-        "ok",
-    ]);
+    let script = Script::new(vec![r#"{"action":"skill","name":"deploy"}"#, "ok"]);
     let session = session(host.clone(), script);
     session.restore(vec![
         super::llm::ChatMessage::user("go"),
@@ -764,9 +896,18 @@ async fn a_restored_conversation_knows_which_skills_are_already_in_it() {
     session.send("again").await;
 
     let repeated = host.events().into_iter().any(|event| {
-        matches!(event, AgentEvent::Skill { outcome: SkillOutcome::Repeat, .. })
+        matches!(
+            event,
+            AgentEvent::Skill {
+                outcome: SkillOutcome::Repeat,
+                ..
+            }
+        )
     });
-    assert!(repeated, "the body already in the conversation was not fetched twice");
+    assert!(
+        repeated,
+        "the body already in the conversation was not fetched twice"
+    );
 }
 
 #[test]
@@ -818,7 +959,10 @@ async fn parallel_calls_all_run_in_one_step() {
 /// it -- but it does not run either.
 #[tokio::test]
 async fn a_batch_does_not_smuggle_a_command_past_the_confirmation() {
-    let host = Fake::new(Answers { confirm_command: false, ..permissive() });
+    let host = Fake::new(Answers {
+        confirm_command: false,
+        ..permissive()
+    });
     let script = Script::calling(vec![
         vec![
             ("run", r#"{"command":"rm -rf /var/data","why":"cleanup"}"#),
@@ -828,11 +972,14 @@ async fn a_batch_does_not_smuggle_a_command_past_the_confirmation() {
     ]);
     session(host.clone(), script).send("clean up").await;
 
-    assert!(host.commands().is_empty(), "neither may run: {:?}", host.commands());
+    assert!(
+        host.commands().is_empty(),
+        "neither may run: {:?}",
+        host.commands()
+    );
 }
 
-/// A batch reports as one turn, labelled by call. Three results in a row with
-/// nothing saying which is which is worse than not having asked in parallel.
+/// Native results remain one tool message per call, paired by id.
 #[tokio::test]
 async fn a_batch_reports_its_results_as_one_labelled_turn() {
     let host = Fake::new(permissive());
@@ -847,21 +994,32 @@ async fn a_batch_reports_its_results_as_one_labelled_turn() {
     session.send("look").await;
 
     let messages = session.messages_for_test();
-    let observations: Vec<&str> = messages
+    let observations: Vec<_> = messages
         .iter()
-        .filter(|message| message.role == crate::ai::llm::ChatRole::User)
-        .map(|message| message.content.as_str())
+        .filter(|message| message.role == crate::ai::llm::ChatRole::Tool)
         .collect();
-    // The task itself, then exactly one turn carrying both results.
-    assert_eq!(observations.len(), 2, "observations were: {observations:#?}");
-    let combined = observations[1];
-    assert!(combined.contains("[1 of 2 -- run df -h]"), "was: {combined}");
-    assert!(combined.contains("[2 of 2 -- run free -m]"), "was: {combined}");
+    assert_eq!(
+        observations.len(),
+        2,
+        "observations were: {observations:#?}"
+    );
+    let calls = messages
+        .iter()
+        .find(|message| !message.tool_calls.is_empty())
+        .expect("the assistant called both tools");
+    assert_eq!(
+        observations[0].tool_call_id.as_deref(),
+        Some(calls.tool_calls[0].id.as_str())
+    );
+    assert_eq!(
+        observations[1].tool_call_id.as_deref(),
+        Some(calls.tool_calls[1].id.as_str())
+    );
+    assert!(!observations[0].content.is_empty());
+    assert!(!observations[1].content.is_empty());
 }
 
-/// The history has to read the same whichever track produced it, so that a task
-/// which started on one endpoint and continued on another does not look like it
-/// changed language halfway.
+/// Native calls are durable as calls, not flattened into assistant prose.
 #[tokio::test]
 async fn a_call_is_written_into_the_history_as_the_object_it_stands_for() {
     let host = Fake::new(permissive());
@@ -877,9 +1035,18 @@ async fn a_call_is_written_into_the_history_as_the_object_it_stands_for() {
         .iter()
         .find(|message| message.role == crate::ai::llm::ChatRole::Assistant)
         .expect("the model spoke");
-    let record: serde_json::Value = serde_json::from_str(&spoken.content).unwrap();
-    assert_eq!(record["action"], "run");
-    assert_eq!(record["command"], "uptime");
+    assert!(spoken.content.is_empty());
+    assert_eq!(spoken.tool_calls.len(), 1);
+    assert_eq!(spoken.tool_calls[0].name, "run");
+    assert!(spoken.tool_calls[0].arguments.contains("uptime"));
+    let result = messages
+        .iter()
+        .find(|message| message.role == crate::ai::llm::ChatRole::Tool)
+        .expect("the tool answered");
+    assert_eq!(
+        result.tool_call_id.as_deref(),
+        Some(spoken.tool_calls[0].id.as_str())
+    );
 }
 
 /// The JSON track carries one action per step, and it is the last object in the
@@ -929,7 +1096,10 @@ async fn a_batch_whose_first_call_is_unreadable_runs_nothing() {
 /// second card under an answer the user had already read.
 #[tokio::test]
 async fn prose_after_acting_ends_the_task() {
-    for finish in [Reply::text("Rocky Linux 9.6, 16 cores."), Reply::calls(Vec::new())] {
+    for finish in [
+        Reply::text("Rocky Linux 9.6, 16 cores."),
+        Reply::calls(Vec::new()),
+    ] {
         let host = Fake::new(permissive());
         let script = Script::scripted(vec![
             Reply::calls(vec![ToolCall {
@@ -945,9 +1115,16 @@ async fn prose_after_acting_ends_the_task() {
 
         // Two requests: the probe, and the answer. Not a third.
         assert_eq!(asked.asked.load(Ordering::SeqCst), 2);
-        assert!(host.tags().contains(&"reply".to_string()), "tags: {:?}", host.tags());
         assert!(
-            !session.history().into_iter().any(|message| message.content.contains("NOTHING")),
+            host.tags().contains(&"reply".to_string()),
+            "tags: {:?}",
+            host.tags()
+        );
+        assert!(
+            !session
+                .history()
+                .into_iter()
+                .any(|message| message.content.contains("NOTHING")),
             "the model was told its finished task was still waiting",
         );
     }
@@ -992,8 +1169,20 @@ fn the_response_log_carries_the_calls_and_not_only_the_prose() {
     };
 
     let written = crate::ai::session::transcribe_for_test(&reply);
-    assert!(written.contains("Checking the disks."), "the prose is kept: {written}");
-    assert!(written.contains("\"command\":\"df -h\""), "the first call is there: {written}");
-    assert!(written.contains("\"command\":\"free -m\""), "the second call is there: {written}");
-    assert!(written.contains("\"action\":\"run\""), "the verb comes back as the action");
+    assert!(
+        written.contains("Checking the disks."),
+        "the prose is kept: {written}"
+    );
+    assert!(
+        written.contains("\"command\":\"df -h\""),
+        "the first call is there: {written}"
+    );
+    assert!(
+        written.contains("\"command\":\"free -m\""),
+        "the second call is there: {written}"
+    );
+    assert!(
+        written.contains("\"action\":\"run\""),
+        "the verb comes back as the action"
+    );
 }

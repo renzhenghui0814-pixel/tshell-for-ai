@@ -66,7 +66,13 @@ pub fn memory_file_name(scope: MemoryScope, server_id: Option<&str>) -> String {
     let cleaned: String = server_id
         .unwrap_or_default()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(MAX_ID_LENGTH)
         .collect();
     let cleaned = cleaned.trim_start_matches('.');
@@ -79,7 +85,10 @@ pub fn memory_file_name(scope: MemoryScope, server_id: Option<&str>) -> String {
 
 /// A stored line is `- text`. Comparisons are made on the text, not the bullet.
 fn line_text(line: &str) -> String {
-    line.trim_start().trim_start_matches(['-', '*']).trim().to_string()
+    line.trim_start()
+        .trim_start_matches(['-', '*'])
+        .trim()
+        .to_string()
 }
 
 /// The bullet or heading a line was written with, so an edit keeps its shape.
@@ -124,7 +133,10 @@ pub struct MemoryStore {
 
 impl MemoryStore {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into(), written: Mutex::new(HashMap::new()) }
+        Self {
+            dir: dir.into(),
+            written: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn file_for(&self, scope: MemoryScope, server_id: Option<&str>) -> PathBuf {
@@ -226,28 +238,49 @@ impl MemoryStore {
     ) -> AppendResult {
         let fact = flatten(text);
         if fact.is_empty() {
-            return AppendResult { outcome: AppendOutcome::Failed, token: None };
+            return AppendResult {
+                outcome: AppendOutcome::Failed,
+                token: None,
+            };
         }
 
         let file = self.file_for(scope, server_id);
         let current = self.read(scope, server_id);
         if current.lines().any(|line| line_text(line) == fact) {
-            return AppendResult { outcome: AppendOutcome::Duplicate, token: None };
+            return AppendResult {
+                outcome: AppendOutcome::Duplicate,
+                token: None,
+            };
         }
 
         let line = format!("- {fact}");
-        let next =
-            if current.is_empty() { format!("{line}\n") } else { format!("{current}\n{line}\n") };
+        let next = if current.is_empty() {
+            format!("{line}\n")
+        } else {
+            format!("{current}\n{line}\n")
+        };
         if budget == 0 || next.chars().count() > budget {
-            return AppendResult { outcome: AppendOutcome::Full, token: None };
+            return AppendResult {
+                outcome: AppendOutcome::Full,
+                token: None,
+            };
         }
 
         if atomic::write(&file, &next).is_err() {
-            return AppendResult { outcome: AppendOutcome::Failed, token: None };
+            return AppendResult {
+                outcome: AppendOutcome::Failed,
+                token: None,
+            };
         }
         let token = make_token();
-        self.written.lock().unwrap().insert(token.clone(), (file, line));
-        AppendResult { outcome: AppendOutcome::Ok, token: Some(token) }
+        self.written
+            .lock()
+            .unwrap()
+            .insert(token.clone(), (file, line));
+        AppendResult {
+            outcome: AppendOutcome::Ok,
+            token: Some(token),
+        }
     }
 
     /// Takes back one specific line the assistant wrote.
@@ -278,12 +311,19 @@ fn split_lines(text: &str) -> Vec<String> {
     if text.is_empty() {
         return Vec::new();
     }
-    text.lines().filter(|line| !line.trim().is_empty()).map(str::to_string).collect()
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn rewrite(file: &Path, lines: &[String]) -> RemoveOutcome {
     let body = lines.join("\n").trim().to_string();
-    let content = if body.is_empty() { String::new() } else { format!("{body}\n") };
+    let content = if body.is_empty() {
+        String::new()
+    } else {
+        format!("{body}\n")
+    };
     match atomic::write(file, &content) {
         Ok(()) => RemoveOutcome::Ok,
         Err(_) => RemoveOutcome::Failed,
@@ -297,7 +337,8 @@ mod tests {
     struct Temp(PathBuf);
     impl Temp {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("tshell-memory-{name}-{}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("tshell-memory-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             Self(dir)
@@ -316,21 +357,41 @@ mod tests {
 
     #[test]
     fn a_server_id_cannot_climb_out_of_the_directory() {
-        assert_eq!(memory_file_name(MemoryScope::Global, Some("anything")), "global.md");
-        assert_eq!(memory_file_name(MemoryScope::Server, Some("../../evil")), "_.._evil.md");
-        assert_eq!(memory_file_name(MemoryScope::Server, Some("...")), "unnamed.md");
+        assert_eq!(
+            memory_file_name(MemoryScope::Global, Some("anything")),
+            "global.md"
+        );
+        assert_eq!(
+            memory_file_name(MemoryScope::Server, Some("../../evil")),
+            "_.._evil.md"
+        );
+        assert_eq!(
+            memory_file_name(MemoryScope::Server, Some("...")),
+            "unnamed.md"
+        );
         assert_eq!(memory_file_name(MemoryScope::Server, None), "unnamed.md");
-        assert_eq!(memory_file_name(MemoryScope::Server, Some("web-1.prod")), "web-1.prod.md");
+        assert_eq!(
+            memory_file_name(MemoryScope::Server, Some("web-1.prod")),
+            "web-1.prod.md"
+        );
     }
 
     #[test]
     fn a_fact_is_appended_as_one_flattened_line() {
         let temp = Temp::new("append");
         let store = temp.store();
-        let result = store.append(MemoryScope::Server, Some("s"), "  nginx  lives\n at /opt  ", BUDGET);
+        let result = store.append(
+            MemoryScope::Server,
+            Some("s"),
+            "  nginx  lives\n at /opt  ",
+            BUDGET,
+        );
         assert_eq!(result.outcome, AppendOutcome::Ok);
         assert!(result.token.is_some());
-        assert_eq!(store.read(MemoryScope::Server, Some("s")), "- nginx lives at /opt");
+        assert_eq!(
+            store.read(MemoryScope::Server, Some("s")),
+            "- nginx lives at /opt"
+        );
     }
 
     #[test]
@@ -359,14 +420,22 @@ mod tests {
     fn an_empty_fact_is_not_a_fact() {
         let temp = Temp::new("empty");
         let store = temp.store();
-        assert_eq!(store.append(MemoryScope::Server, Some("s"), "   ", BUDGET).outcome, AppendOutcome::Failed);
+        assert_eq!(
+            store
+                .append(MemoryScope::Server, Some("s"), "   ", BUDGET)
+                .outcome,
+            AppendOutcome::Failed
+        );
     }
 
     #[test]
     fn undo_takes_back_the_line_it_wrote_and_only_that_one() {
         let temp = Temp::new("undo");
         let store = temp.store();
-        let first = store.append(MemoryScope::Global, None, "one", BUDGET).token.unwrap();
+        let first = store
+            .append(MemoryScope::Global, None, "one", BUDGET)
+            .token
+            .unwrap();
         store.append(MemoryScope::Global, None, "two", BUDGET);
 
         assert_eq!(store.undo(&first), RemoveOutcome::Ok);
@@ -383,13 +452,30 @@ mod tests {
         std::fs::write(temp.0.join("global.md"), "## Heading\n- a bullet\n").unwrap();
 
         assert_eq!(
-            store.replace(MemoryScope::Global, None, 1, "- a bullet", "a better bullet", BUDGET),
+            store.replace(
+                MemoryScope::Global,
+                None,
+                1,
+                "- a bullet",
+                "a better bullet",
+                BUDGET
+            ),
             EditOutcome::Ok
         );
-        assert_eq!(store.lines(MemoryScope::Global, None)[1], "- a better bullet");
+        assert_eq!(
+            store.lines(MemoryScope::Global, None)[1],
+            "- a better bullet"
+        );
 
         assert_eq!(
-            store.replace(MemoryScope::Global, None, 0, "## Heading", "New Heading", BUDGET),
+            store.replace(
+                MemoryScope::Global,
+                None,
+                0,
+                "## Heading",
+                "New Heading",
+                BUDGET
+            ),
             EditOutcome::Ok
         );
         assert_eq!(store.lines(MemoryScope::Global, None)[0], "New Heading");
@@ -402,11 +488,24 @@ mod tests {
         store.append(MemoryScope::Global, None, "one", BUDGET);
 
         assert_eq!(
-            store.replace(MemoryScope::Global, None, 0, "- something else", "x", BUDGET),
+            store.replace(
+                MemoryScope::Global,
+                None,
+                0,
+                "- something else",
+                "x",
+                BUDGET
+            ),
             EditOutcome::Missing
         );
-        assert_eq!(store.replace(MemoryScope::Global, None, 9, "- one", "x", BUDGET), EditOutcome::Missing);
-        assert_eq!(store.remove_at(MemoryScope::Global, None, 0, "- wrong"), RemoveOutcome::Missing);
+        assert_eq!(
+            store.replace(MemoryScope::Global, None, 9, "- one", "x", BUDGET),
+            EditOutcome::Missing
+        );
+        assert_eq!(
+            store.remove_at(MemoryScope::Global, None, 0, "- wrong"),
+            RemoveOutcome::Missing
+        );
         assert_eq!(store.lines(MemoryScope::Global, None), vec!["- one"]);
     }
 
@@ -415,7 +514,10 @@ mod tests {
         let temp = Temp::new("last");
         let store = temp.store();
         store.append(MemoryScope::Global, None, "only", BUDGET);
-        assert_eq!(store.remove_at(MemoryScope::Global, None, 0, "- only"), RemoveOutcome::Ok);
+        assert_eq!(
+            store.remove_at(MemoryScope::Global, None, 0, "- only"),
+            RemoveOutcome::Ok
+        );
         assert_eq!(store.read(MemoryScope::Global, None), "");
     }
 

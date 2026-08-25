@@ -14,13 +14,12 @@ use std::sync::{Arc, Mutex};
 use super::cancel::Cancel;
 use super::files::{FileOpError, FileRequest};
 use super::host::{AgentConfig, AgentHost};
+use super::llm::ToolCall;
 use super::llm::{
     ChatMessage, CompletionRequest, LlmError, LlmFailure, Reply, TokenUsage, TransportInfo, Watcher,
 };
 use super::moves::TransferRequest;
 use super::parse::{carries_action, parse_actions, ParsedReply};
-use super::llm::ToolCall;
-use super::tools::{action_from_call, tool_specs};
 use super::policy::command::Verdict;
 use super::policy::path::PathVerdict;
 use super::prompt::{
@@ -29,6 +28,7 @@ use super::prompt::{
 };
 use super::store::memory::AppendOutcome;
 use super::store::skill::MAIN_FILE;
+use super::tools::{action_from_call, tool_specs};
 use super::types::{
     ActionKind, AgentAction, AgentEvent, AgentMode, MemoryOutcome, MemoryScope, SkillOutcome,
     Unconfirmed,
@@ -46,12 +46,52 @@ struct StepWatcher<H: AgentHost> {
     log: Arc<super::store::log::LogSession>,
 }
 
+/// Render either a legacy text message or an OpenAI-style multimodal content
+/// array for the human-readable model transcript. Image bytes have already
+/// been replaced by a short label in the transport layer; keeping the blocks
+/// separate here makes both the user's words and the image type visible.
+fn logged_message_content(content: &serde_json::Value) -> String {
+    if let Some(text) = content.as_str() {
+        return text.to_string();
+    }
+    let Some(blocks) = content.as_array() else {
+        return String::new();
+    };
+    blocks
+        .iter()
+        .filter_map(|block| match block["type"].as_str() {
+            Some("text") => block["text"].as_str().map(str::to_string),
+            Some("image_url") => block["image_url"]["url"].as_str().map(str::to_string),
+            _ => None,
+        })
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(test)]
+#[test]
+fn model_log_renders_multimodal_text_and_image_information() {
+    let content = serde_json::json!([
+        { "type": "text", "text": "describe this screenshot" },
+        { "type": "image_url", "image_url": { "url": "[image/png image data omitted]" } }
+    ]);
+    assert_eq!(
+        logged_message_content(&content),
+        "describe this screenshot\n[image/png image data omitted]"
+    );
+}
+
 impl<H: AgentHost + 'static> Watcher for StepWatcher<H> {
     fn delta(&self, text: &str) {
-        self.host.emit(AgentEvent::Delta { text: text.to_string() });
+        self.host.emit(AgentEvent::Delta {
+            text: text.to_string(),
+        });
     }
     fn reasoning(&self, text: &str) {
-        self.host.emit(AgentEvent::Reasoning { text: text.to_string() });
+        self.host.emit(AgentEvent::Reasoning {
+            text: text.to_string(),
+        });
     }
     fn usage(&self, usage: TokenUsage) {
         self.billed.store(true, Ordering::SeqCst);
@@ -70,7 +110,10 @@ impl<H: AgentHost + 'static> Watcher for StepWatcher<H> {
         });
     }
     fn retry(&self, attempt: u32, kind: LlmFailure) {
-        self.host.emit(AgentEvent::Retry { attempt, kind: kind.tag().to_string() });
+        self.host.emit(AgentEvent::Retry {
+            attempt,
+            kind: kind.tag().to_string(),
+        });
     }
     fn degraded(&self, fields: &[super::llm::ExtraField]) {
         self.host.emit(AgentEvent::Degraded {
@@ -101,7 +144,7 @@ impl<H: AgentHost + 'static> Watcher for StepWatcher<H> {
                     .map(|item| {
                         (
                             item["role"].as_str().unwrap_or_default().to_string(),
-                            item["content"].as_str().unwrap_or_default().to_string(),
+                            logged_message_content(&item["content"]),
                         )
                     })
                     .collect()
@@ -140,8 +183,10 @@ fn render_call(call: &ToolCall) -> String {
             serde_json::to_string(&serde_json::Value::Object(record))
                 .unwrap_or_else(|_| call.arguments.clone())
         }
-        None => format!("{{\"action\":\"{verb}\",\"arguments\":{}}}",
-            serde_json::to_string(&call.arguments).unwrap_or_else(|_| "\"\"".into())),
+        None => format!(
+            "{{\"action\":\"{verb}\",\"arguments\":{}}}",
+            serde_json::to_string(&call.arguments).unwrap_or_else(|_| "\"\"".into())
+        ),
     }
 }
 
@@ -274,7 +319,12 @@ impl<H: AgentHost + 'static> AgentSession<H> {
     /// turn of the conversation, so counting it would move this number when
     /// nothing was said.
     pub fn context_chars(&self) -> usize {
-        self.messages.lock().unwrap().iter().map(|message| message.content.chars().count()).sum()
+        self.messages
+            .lock()
+            .unwrap()
+            .iter()
+            .map(ChatMessage::char_len)
+            .sum()
     }
 
     /// Replaces the parts of the wiring that can change between tasks.
@@ -296,8 +346,27 @@ impl<H: AgentHost + 'static> AgentSession<H> {
 
     /// Puts a recorded conversation back, so a task carries on where it left off
     /// rather than starting again with the model knowing nothing about it.
-    pub fn restore(&self, messages: Vec<ChatMessage>) {
+    pub fn restore(&self, mut messages: Vec<ChatMessage>) {
         self.reset();
+        // A process can stop after a call was persisted but before its result
+        // was. Native APIs reject that incomplete pair, so close it explicitly
+        // before the conversation is used again.
+        let answered: HashSet<String> = messages
+            .iter()
+            .filter_map(|message| message.tool_call_id.clone())
+            .collect();
+        let pending: Vec<String> = messages
+            .iter()
+            .flat_map(|message| message.tool_calls.iter())
+            .filter(|call| !answered.contains(&call.id))
+            .map(|call| call.id.clone())
+            .collect();
+        for id in pending {
+            messages.push(ChatMessage::tool_result(
+                id,
+                "The previous session ended before this tool returned a result. Re-check it if it is still needed.",
+            ));
+        }
         let mut loaded = self.loaded.lock().unwrap();
         for message in &messages {
             // A reopened conversation still has its skill bodies in it, so the
@@ -312,11 +381,20 @@ impl<H: AgentHost + 'static> AgentSession<H> {
         *self.messages.lock().unwrap() = messages;
     }
 
+    #[cfg(test)]
     pub async fn send(&self, user_text: &str) {
+        self.send_with_images(user_text, Vec::new()).await;
+    }
+
+    pub async fn send_with_images(&self, user_text: &str, images: Vec<super::llm::ChatImage>) {
         if self.is_running() {
             return;
         }
-        self.messages.lock().unwrap().push(ChatMessage::user(user_text));
+        self.messages
+            .lock()
+            .unwrap()
+            .push(ChatMessage::user_with_images(user_text, images));
+        self.checkpoint();
         self.run_loop().await;
     }
 
@@ -364,7 +442,9 @@ impl<H: AgentHost + 'static> AgentSession<H> {
             self.trim();
             // After the folding rather than before it, so the figure is what the
             // next request actually carries and not what it would have carried.
-            self.host.emit(AgentEvent::Context { chars: self.context_chars() as u32 });
+            self.host.emit(AgentEvent::Context {
+                chars: self.context_chars() as u32,
+            });
 
             let watcher = Arc::new(StepWatcher {
                 host: self.host.clone(),
@@ -372,12 +452,17 @@ impl<H: AgentHost + 'static> AgentSession<H> {
                 cut_off: AtomicBool::new(false),
                 log: self.log.lock().unwrap().clone(),
             });
-            let (system, timeout_ms) = {
+            let (system, fallback_system, timeout_ms) = {
                 let config = self.config.lock().unwrap();
-                (config.system.clone(), config.request_timeout_ms)
+                (
+                    config.system.clone(),
+                    config.fallback_system.clone(),
+                    config.request_timeout_ms,
+                )
             };
             let request = CompletionRequest {
                 system: system.clone(),
+                fallback_system,
                 messages: self.messages.lock().unwrap().clone(),
                 timeout_ms,
                 cancel: cancel.clone(),
@@ -399,7 +484,7 @@ impl<H: AgentHost + 'static> AgentSession<H> {
             let provider = self.config.lock().unwrap().provider.clone();
             let reply = provider.complete(request).await;
 
-            let reply = match reply {
+            let mut reply = match reply {
                 Ok(reply) => reply,
                 Err(error) => {
                     // A 200 that carried no answer is a hiccup on the way, not a
@@ -416,13 +501,20 @@ impl<H: AgentHost + 'static> AgentSession<H> {
                          * attempt's thinking piles up under the last one's and the
                          * pause has no reason on screen.
                          */
-                        self.host
-                            .emit(AgentEvent::Retry { attempt: blanks, kind: "empty".into() });
+                        self.host.emit(AgentEvent::Retry {
+                            attempt: blanks,
+                            kind: "empty".into(),
+                        });
                         continue;
                     }
                     return Err(error);
                 }
             };
+            for (index, call) in reply.calls.iter_mut().enumerate() {
+                if call.id.trim().is_empty() {
+                    call.id = format!("call_{}_{}", step + 1, index + 1);
+                }
+            }
             blanks = 0;
             let cut_off = watcher.cut_off.load(Ordering::SeqCst);
 
@@ -465,13 +557,22 @@ impl<H: AgentHost + 'static> AgentSession<H> {
              * written out as the objects they are equivalent to. Both tracks then
              * read back identically, days later, out of the chat store.
              */
-            let spoken = transcribe_reply(&reply);
-            self.messages.lock().unwrap().push(ChatMessage::assistant(&spoken));
+            let remembered = if reply.calls.is_empty() {
+                ChatMessage::assistant(&reply.text)
+            } else {
+                ChatMessage::assistant_calls(&reply.text, reply.calls.clone())
+            };
+            self.messages.lock().unwrap().push(remembered);
+            self.checkpoint();
 
             // The reply as it was written is already in the log, put there by the
             // provider that received it. What this client made of it is visible in
             // the thread, and in what the next request carries.
-            let ParsedReply { actions, unreadable, prose } = self.read_reply(&reply);
+            let ParsedReply {
+                actions,
+                unreadable,
+                prose,
+            } = self.read_reply(&reply);
 
             /*
              * A reply asking for nothing is the answer, and the task is over.
@@ -515,7 +616,12 @@ impl<H: AgentHost + 'static> AgentSession<H> {
                     });
                     return Ok(());
                 }
-                self.observe(&protocol_nudge(cut_off));
+                let nudge = protocol_nudge(cut_off);
+                if reply.calls.is_empty() {
+                    self.observe(&nudge);
+                } else {
+                    self.push_tool_results(&reply.calls, vec![nudge; reply.calls.len()]);
+                }
                 step += 1;
                 continue;
             }
@@ -536,7 +642,7 @@ impl<H: AgentHost + 'static> AgentSession<H> {
              * has one.
              */
             let batch = actions;
-            if batch.len() > 1 {
+            if !reply.calls.is_empty() || batch.len() > 1 {
                 *self.gathering.lock().unwrap() = Some(Vec::new());
             }
 
@@ -551,7 +657,7 @@ impl<H: AgentHost + 'static> AgentSession<H> {
 
             for action in &batch {
                 if cancel.is_cancelled() {
-                    self.flush_batch(&batch);
+                    self.flush_batch(&batch, &reply.calls);
                     self.host.emit(AgentEvent::Stopped);
                     return Ok(());
                 }
@@ -570,7 +676,7 @@ impl<H: AgentHost + 'static> AgentSession<H> {
                 }
             }
 
-            self.flush_batch(&batch);
+            self.flush_batch(&batch, &reply.calls);
             step += 1;
         }
 
@@ -586,7 +692,12 @@ impl<H: AgentHost + 'static> AgentSession<H> {
     }
 
     async fn run_command_action(&self, action: &AgentAction, cancel: &Cancel) {
-        let command = action.command.clone().unwrap_or_default().trim().to_string();
+        let command = action
+            .command
+            .clone()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         if command.is_empty() {
             self.observe("The run action needs a non-empty command.");
             return;
@@ -597,7 +708,10 @@ impl<H: AgentHost + 'static> AgentSession<H> {
 
         if policy.verdict == Verdict::Refuse {
             let reasons = self.host.describe_risk(&policy.reasons);
-            self.host.emit(AgentEvent::Refused { command: command.clone(), reasons });
+            self.host.emit(AgentEvent::Refused {
+                command: command.clone(),
+                reasons,
+            });
             let keys: Vec<&str> = policy.reasons.iter().map(|reason| reason.key()).collect();
             self.observe(&[
                 format!("REFUSED and not run: blocked as destructive ({}).", keys.join(", ")),
@@ -666,7 +780,10 @@ impl<H: AgentHost + 'static> AgentSession<H> {
     /// exists: the user is asked about a change that has already been resolved
     /// against the file as it actually is, not about the model's description of one.
     async fn run_file_action(&self, action: &AgentAction, cancel: &Cancel) {
-        let kind = action.action.and_then(ActionKind::as_file_op).expect("a file verb");
+        let kind = action
+            .action
+            .and_then(ActionKind::as_file_op)
+            .expect("a file verb");
         let path = action.path.clone().unwrap_or_default().trim().to_string();
         let why = action.why.clone().unwrap_or_default();
         if path.is_empty() {
@@ -680,8 +797,10 @@ impl<H: AgentHost + 'static> AgentSession<H> {
         let policy = self.host.classify_path(&path);
         if policy.verdict == PathVerdict::Refuse {
             let reasons = self.host.describe_risk(&policy.reasons);
-            self.host
-                .emit(AgentEvent::Refused { command: format!("{} {path}", kind.tag()), reasons });
+            self.host.emit(AgentEvent::Refused {
+                command: format!("{} {path}", kind.tag()),
+                reasons,
+            });
             let keys: Vec<&str> = policy.reasons.iter().map(|reason| reason.key()).collect();
             self.observe(&[
                 format!(
@@ -797,9 +916,16 @@ impl<H: AgentHost + 'static> AgentSession<H> {
     /// `plan_transfer`, and the path that lands in the plan may be neither the one
     /// the model sent nor one it has ever seen.
     async fn run_transfer_action(&self, action: &AgentAction, cancel: &Cancel) {
-        let kind = action.action.and_then(ActionKind::as_transfer).expect("a transfer verb");
-        let paths: Vec<String> =
-            action.paths.iter().filter(|path| !path.is_empty()).cloned().collect();
+        let kind = action
+            .action
+            .and_then(ActionKind::as_transfer)
+            .expect("a transfer verb");
+        let paths: Vec<String> = action
+            .paths
+            .iter()
+            .filter(|path| !path.is_empty())
+            .cloned()
+            .collect();
         let to = action.to.clone().unwrap_or_default().trim().to_string();
         let why = action.why.clone().unwrap_or_default();
 
@@ -807,7 +933,11 @@ impl<H: AgentHost + 'static> AgentSession<H> {
             return;
         }
 
-        let arrow = if to.is_empty() { String::new() } else { format!("-> {to}") };
+        let arrow = if to.is_empty() {
+            String::new()
+        } else {
+            format!("-> {to}")
+        };
         let label = [kind_tag(kind).to_string(), paths.join(" "), arrow]
             .into_iter()
             .filter(|part| !part.is_empty())
@@ -833,7 +963,11 @@ impl<H: AgentHost + 'static> AgentSession<H> {
                     timed_out: false,
                     truncated: false,
                 });
-                self.observe(&format!("The {} did not happen: {}", kind_tag(kind), error.0));
+                self.observe(&format!(
+                    "The {} did not happen: {}",
+                    kind_tag(kind),
+                    error.0
+                ));
                 return;
             }
         };
@@ -950,7 +1084,12 @@ impl<H: AgentHost + 'static> AgentSession<H> {
             AppendOutcome::Full => MemoryOutcome::Full,
             AppendOutcome::Failed => MemoryOutcome::Failed,
         };
-        self.host.emit(AgentEvent::Memory { scope, text, outcome, token: result.token });
+        self.host.emit(AgentEvent::Memory {
+            scope,
+            text,
+            outcome,
+            token: result.token,
+        });
         self.observe(&describe_memory(scope, outcome));
     }
 
@@ -1017,12 +1156,18 @@ impl<H: AgentHost + 'static> AgentSession<H> {
             truncated: result.truncated.then_some(true),
         });
 
-        let Some(content) = result.content.filter(|_| result.outcome == SkillOutcome::Ok) else {
+        let Some(content) = result
+            .content
+            .filter(|_| result.outcome == SkillOutcome::Ok)
+        else {
             self.observe(&describe_skill_failure(result.outcome, &id, &read_file));
             return;
         };
 
-        self.loaded.lock().unwrap().insert(format!("{id}::{read_file}"));
+        self.loaded
+            .lock()
+            .unwrap()
+            .insert(format!("{id}::{read_file}"));
         self.observe(
             &[
                 skill_header(&id, &read_file),
@@ -1054,6 +1199,14 @@ impl<H: AgentHost + 'static> AgentSession<H> {
             return;
         }
         self.messages.lock().unwrap().push(ChatMessage::user(text));
+        self.checkpoint();
+    }
+
+    /// Persists exactly what the next model request would receive. This is kept
+    /// beside every history mutation so closing the app mid-task cannot leave a
+    /// visually complete chat whose model context is empty.
+    fn checkpoint(&self) {
+        self.host.checkpoint(&self.history());
     }
 
     /// Turns a batch's gathered results into the one turn the model reads.
@@ -1063,9 +1216,15 @@ impl<H: AgentHost + 'static> AgentSession<H> {
     /// guessing wrongly about that is worse than not having asked in parallel at
     /// all. Idempotent: a step that was never a batch has nothing gathered and
     /// this does nothing.
-    fn flush_batch(&self, batch: &[AgentAction]) {
-        let Some(results) = self.gathering.lock().unwrap().take() else { return };
+    fn flush_batch(&self, batch: &[AgentAction], calls: &[ToolCall]) {
+        let Some(results) = self.gathering.lock().unwrap().take() else {
+            return;
+        };
         if results.is_empty() {
+            return;
+        }
+        if !calls.is_empty() {
+            self.push_tool_results(calls, results);
             return;
         }
         let total = results.len();
@@ -1082,6 +1241,18 @@ impl<H: AgentHost + 'static> AgentSession<H> {
             .collect::<Vec<_>>()
             .join("\n\n");
         self.observe(&joined);
+    }
+
+    fn push_tool_results(&self, calls: &[ToolCall], results: Vec<String>) {
+        let mut messages = self.messages.lock().unwrap();
+        for (index, call) in calls.iter().enumerate() {
+            let content = results.get(index).cloned().unwrap_or_else(|| {
+                "This tool was not run because the step stopped before it was reached.".into()
+            });
+            messages.push(ChatMessage::tool_result(&call.id, content));
+        }
+        drop(messages);
+        self.checkpoint();
     }
 
     /// What one reply amounted to, whichever track it came back on.
@@ -1125,7 +1296,10 @@ impl<H: AgentHost + 'static> AgentSession<H> {
         }
 
         let mut messages = self.messages.lock().unwrap();
-        let mut total: usize = messages.iter().map(|message| message.content.chars().count()).sum();
+        let mut total: usize = messages
+            .iter()
+            .map(|message| message.content.chars().count())
+            .sum();
         if total <= budget {
             return;
         }
@@ -1145,7 +1319,10 @@ impl<H: AgentHost + 'static> AgentSession<H> {
             let mut index = 1;
             while index < last && total > budget {
                 let message = &messages[index];
-                if message.role != super::llm::ChatRole::User {
+                if !matches!(
+                    message.role,
+                    super::llm::ChatRole::User | super::llm::ChatRole::Tool
+                ) {
                     index += 1;
                     continue;
                 }
@@ -1156,13 +1333,23 @@ impl<H: AgentHost + 'static> AgentSession<H> {
                     index += 1;
                     continue;
                 };
+                let original_len = message.content.chars().count();
+                let folded_len = folded.chars().count();
+                // The explanatory placeholder can be longer than a very small
+                // command result. Replacing that result would grow the context,
+                // and subtracting the negative saving from `usize` panics in a
+                // debug build. Only commit folds that actually save space.
+                if folded_len >= original_len {
+                    index += 1;
+                    continue;
+                }
                 // The text really is gone now, so the model must be allowed to ask
                 // for it again. Left in the set, it would be told to scroll up to
                 // a page that is no longer there.
                 if let Some(key) = skill_key_of(&message.content) {
                     self.loaded.lock().unwrap().remove(&key);
                 }
-                total -= message.content.chars().count() - folded.chars().count();
+                total -= original_len - folded_len;
                 messages[index].content = folded;
                 index += 1;
             }

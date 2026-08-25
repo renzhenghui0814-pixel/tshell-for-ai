@@ -12,6 +12,11 @@
   const thread = $('thread');
   /** The card awaiting a result, so output lands on the command that produced it. */
   let openCard = null;
+  // One model response may contain a batch of tool calls.  It earns one
+  // timeline point, on its first visible action, never one point per tool.
+  let responseDotTaken = false;
+  /** The one timeline row owned by the current model response. */
+  let responseStep = null;
   /** The progress view inside it, while a transfer is running. Ticks repaint this. */
   let openTransfer = null;
   /** Labels for the copy button on a rendered code block. */
@@ -110,12 +115,25 @@
    *
    * @returns the node passed in, not the wrapper: callers hold on to cards.
    */
-  function appendStep(node, tone) {
+  function appendStep(node, tone, timeline, time) {
     const row = document.createElement('div');
-    row.className = 'step' + (tone ? ' ' + tone : '');
+    row.className = 'step' + (tone ? ' ' + tone : '') + (timeline === false ? ' no-dot' : '');
+    if (timeline !== false) addTimelineDot(row, time);
     row.append(node);
     append(row);
     return node;
+  }
+
+  function addTimelineDot(row, time) {
+    if (!row || row.querySelector('.step-dot')) return;
+    const stamp = new Intl.DateTimeFormat(boot.language || undefined, {
+      year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'
+    }).format(new Date(time || Date.now()));
+    const dot = document.createElement('span');
+    dot.className = 'step-dot';
+    dot.title = stamp;
+    dot.setAttribute('aria-label', stamp);
+    row.prepend(dot);
   }
 
   /** The timeline row something sits in, for removing it whole. */
@@ -175,7 +193,7 @@
     const el = document.createElement('div');
     el.className = 'note' + (kind ? ' ' + kind : '');
     el.append(document.createTextNode(text));
-    return appendStep(el);
+    return appendStep(el, '', false);
   }
 
   /*
@@ -183,13 +201,78 @@
    * through the renderer. The user's own turn does not: what they typed is shown
    * back exactly as they typed it, backticks and all.
    */
-  function turn(text, who) {
+  function imageUrl(image) {
+    return image && image.data ? 'data:' + image.mediaType + ';base64,' + image.data : '';
+  }
+
+  let imagePreviewReturnFocus = null;
+
+  function openImagePreview(src, label, trigger) {
+    if (!src) return;
+    imagePreviewReturnFocus = trigger || document.activeElement;
+    const preview = $('imagePreview');
+    const image = $('imagePreviewImage');
+    const caption = $('imagePreviewCaption');
+    image.src = src;
+    image.alt = label || S.agentPastedImage || '';
+    caption.textContent = image.alt;
+    caption.hidden = !caption.textContent;
+    preview.hidden = false;
+    takeFocus($('imagePreviewClose'));
+  }
+
+  function closeImagePreview() {
+    const preview = $('imagePreview');
+    if (preview.hidden) return;
+    preview.hidden = true;
+    $('imagePreviewImage').removeAttribute('src');
+    const target = imagePreviewReturnFocus;
+    imagePreviewReturnFocus = null;
+    if (target && target.isConnected) takeFocus(target);
+  }
+
+  function previewButton(src, label, className) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.title = S.agentOpenImagePreview || label || '';
+    button.setAttribute('aria-label', button.title);
+    const preview = document.createElement('img');
+    preview.src = src;
+    preview.alt = label || S.agentPastedImage || '';
+    button.append(preview);
+    button.onclick = () => openImagePreview(src, preview.alt, button);
+    return button;
+  }
+
+  function userImages(images) {
+    const gallery = document.createElement('div');
+    gallery.className = 'user-images';
+    (images || []).forEach((image) => {
+      const src = imageUrl(image);
+      if (!src) return;
+      gallery.append(previewButton(
+        src,
+        image.name || S.agentPastedImage || '',
+        'user-image-open'
+      ));
+    });
+    return gallery;
+  }
+
+  function turn(text, who, timeline, images, time) {
+    if (who === 'user') { responseDotTaken = false; responseStep = null; }
     const el = document.createElement('div');
     el.className = 'turn ' + who;
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     if (who === 'assistant') bubble.append(window.tshellMarkdown.render(text, copyStrings));
-    else bubble.textContent = text;
+    else {
+      const gallery = userImages(images);
+      if (gallery.childElementCount) bubble.append(gallery);
+      if (text) bubble.append(document.createTextNode(text));
+      bubble.classList.toggle('image-only', !text && gallery.childElementCount > 0);
+    }
     el.append(bubble);
     /*
      * The user's own turns are on the rail too, in blue. The timeline is the
@@ -198,7 +281,7 @@
      * are what that message caused. Breaking the line at every question would
      * cut it exactly where the reason for the next dozen steps is written.
      */
-    appendStep(el, who === 'user' ? 'sent' : '');
+    return appendStep(el, who === 'user' ? 'sent' : 'response', timeline, time);
   }
 
   // -- streaming ------------------------------------------------------------
@@ -281,7 +364,9 @@
       liveText = '';
       liveSettled = 0;
       el.append(liveBubble);
-      appendStep(el);
+      // Streaming text is not a completed response yet. Its timeline point is
+      // added exactly once when the matching reply event settles it.
+      appendStep(el, 'response', false);
     }
     liveText += text;
     countOutput(text);
@@ -298,10 +383,10 @@
    * @param text What the model really sent. The streamed text is only what was
    *   painted early, and the two can differ: a retry throws away a half-written
    *   answer, and an endpoint that ignored `stream` never painted anything.
-   * @returns true when a bubble was there to settle, so the caller knows not to
-   *   add a second one.
+   * @returns the bubble when one was there to settle, so the caller can retain
+   *   the timeline row owned by this response.
    */
-  function settleDelta(text) {
+  function settleDelta(text, timeline) {
     if (!liveBubble) return false;
     stopLive();
     const bubble = liveBubble;
@@ -313,10 +398,15 @@
     // One final render over the whole text, replacing both halves. Whatever was
     // painted early was painted from a prefix; this is painted from the answer.
     follow(() => {
+      const row = stepOf(bubble);
+      if (timeline !== false) {
+        if (row) row.classList.add('response');
+        addTimelineDot(row);
+      }
       bubble.classList.remove('streaming');
       bubble.replaceChildren(window.tshellMarkdown.render(text, copyStrings));
     });
-    return true;
+    return bubble;
   }
 
   /** Throws away a partly-written answer, for when it is about to be written again. */
@@ -431,7 +521,9 @@
     // code that has not been written yet -- the answer below is where that
     // belongs. It also costs a full highlight pass on text that grows by the
     // fragment and is repainted every time.
-    box.replaceChildren(window.tshellMarkdown.render(state.text, copyStrings, { highlight: false }));
+    // Reasoning is evidence, not a formatted answer: show the exact stream,
+    // including code-looking text, without markdown parsing or highlighting.
+    box.textContent = state.text;
     if (stick) box.scrollTop = box.scrollHeight;
   }
 
@@ -445,6 +537,7 @@
      */
     state.count.textContent = elapsed(state.start, state.done)
       + ' · ' + S.agentReasoningCount.replace('{0}', compact(state.tokens));
+    state.preview.textContent = latestLine(state.text);
     // The body is not on screen while the card is shut, and a step can think for
     // tens of thousands of tokens -- rebuilding that text node every repaint to
     // show none of it is the most expensive thing this panel could do. Reading
@@ -455,6 +548,11 @@
     // An open card grows the thread until it reaches its own scroll height, so
     // the end of the thread has to be kept in view for that much of it.
     followLater(() => fillReason(state));
+  }
+
+  function latestLine(text) {
+    const lines = String(text || '').trim().split(/\r?\n/);
+    return lines[lines.length - 1] || '';
   }
 
   function paintReason() {
@@ -468,7 +566,7 @@
    * and a number ticking over is the difference between working and hung. Opening
    * it is for when you want to know what it is working on.
    */
-  function appendReasoning(text) {
+  function appendReasoning(text, time) {
     countOutput(text);
     /*
      * With the card switched off the thinking still counts, it just does not get
@@ -495,21 +593,22 @@
       card.className = 'reason';
       const head = document.createElement('summary');
       head.className = 'reason-head';
+      head.append(icon('#i-think', 'icon reason-icon'));
       const label = document.createElement('span');
       label.className = 'reason-label';
-      label.textContent = S.agentReasoning;
-      const count = document.createElement('span');
-      count.className = 'reason-count';
-      head.append(label, count);
+      label.textContent = 'Think';
+      const preview = document.createElement('span');
+      preview.className = 'reason-preview';
+      head.append(label, preview);
       const body = document.createElement('div');
       body.className = 'reason-body';
       card.append(head, body);
-      const state = { card: card, body: body, count: count, text: '', tokens: 0, start: Date.now(), done: 0 };
+      const state = { card: card, body: body, count: document.createElement('span'), preview: preview, text: '', tokens: 0, start: Date.now(), done: 0 };
       // Filled on open, because a shut card is never filled: this is what puts
       // the thought there, whether the step is still running or ended long ago.
       card.addEventListener('toggle', () => { if (card.open) fillReason(state); });
       reason = state;
-      appendStep(card);
+      appendStep(card, '', undefined, time);
     }
     reason.text += text;
     reason.tokens += estimateTokens(text);
@@ -687,7 +786,7 @@
     button.title = S[running ? 'agentStop' : 'agentSend'] || '';
     button.setAttribute('aria-label', button.title);
     $('submitIcon').setAttribute('href', running ? '#i-stop' : '#i-send');
-    if (!running) button.disabled = !$('input').value.trim();
+    if (!running) button.disabled = !$('input').value.trim() && !pendingImages.length;
     else button.disabled = false;
   }
 
@@ -701,16 +800,37 @@
     const card = document.createElement('details');
     // The dot on the rail is what says which of the three this was, so the badge
     // that used to say it in words is gone and so is the chevron beside it.
-    card.className = 'card';
-    card.open = verdict !== 'auto';
+    card.className = 'card command-card';
+    card.open = false;
 
     const head = document.createElement('summary');
     head.className = 'card-head';
-
+    const primary = document.createElement('div');
+    primary.className = 'card-line card-primary';
+    primary.append(icon('#i-terminal', 'icon card-icon'));
+    const label = document.createElement('span');
+    label.className = 'card-kind';
+    label.textContent = 'Cmd';
     const reason = document.createElement('span');
     reason.className = 'card-why';
     reason.textContent = why || command;
-    head.append(reason);
+    const error = document.createElement('span');
+    error.className = 'card-error';
+    primary.append(label, reason, error);
+
+    const trigger = document.createElement('div');
+    trigger.className = 'card-line card-trigger';
+    const spacer = document.createElement('span');
+    spacer.className = 'card-spacer';
+    const action = document.createElement('span');
+    action.className = 'card-kind';
+    action.textContent = 'Exe';
+    const preview = document.createElement('code');
+    preview.className = 'card-preview';
+    preview.textContent = command;
+    trigger.title = command;
+    trigger.append(spacer, action, preview);
+    head.append(primary, trigger);
 
     /*
      * The one badge that came back.
@@ -724,7 +844,7 @@
       const badge = document.createElement('span');
       badge.className = 'card-badge';
       badge.textContent = unconfirmed === 'trusted' ? S.agentUnconfirmedTrusted : S.agentUnconfirmedAuto;
-      head.append(badge);
+      primary.append(badge);
     }
     /*
      * Kept for `addResult`, which otherwise folds a step away the moment it
@@ -735,40 +855,46 @@
      */
     card.__unconfirmed = Boolean(unconfirmed);
 
+    const detail = document.createElement('div');
+    detail.className = 'command-detail';
+    const input = document.createElement('div');
+    input.className = 'card-input';
+    const inputHead = document.createElement('span');
+    inputHead.className = 'detail-label';
+    inputHead.textContent = 'IN';
     const code = document.createElement('code');
     code.className = 'command';
     code.textContent = command;
-
-    card.append(head, code);
+    input.append(inputHead, code);
+    detail.append(input);
+    card.append(head, detail);
     /*
      * Three tones, because a refusal is not a request. Green ran on its own,
      * orange is waiting on the user, red was turned down and never ran -- the
      * distinction the badges used to draw in words, drawn in the one place the
      * eye already sweeps down.
      */
-    return appendStep(
-      card,
-      verdict === 'auto' || unconfirmed ? 'ran' : verdict === 'refused' ? 'blocked' : 'needs'
-    );
+    card.__error = error;
+    card.__detail = detail;
+    card.__why = why || command;
+    return appendStep(card, '', false);
   }
 
   function addResult(card, result) {
     const failed = result.exitCode !== 0 || result.timedOut;
 
-    const head = document.createElement('div');
-    head.className = 'result-head';
-    const label = document.createElement('span');
-    label.className = 'exit' + (failed ? ' bad' : '');
-    label.textContent = result.timedOut ? S.agentTimedOut : S.agentExit + ' ' + result.exitCode;
-    head.append(label);
-    if (result.truncated) {
-      const extra = document.createElement('span');
-      extra.textContent = '· ' + S.agentTruncated;
-      head.append(extra);
+    const outputRow = card.__outputRow || document.createElement('div');
+    const output = card.__output || document.createElement('pre');
+    if (!card.__outputRow) {
+      outputRow.className = 'result-row';
+      const outputLabel = document.createElement('span');
+      outputLabel.className = 'detail-label';
+      outputLabel.textContent = 'OUT';
+      output.className = 'output';
+      outputRow.append(outputLabel, output);
+      card.__outputRow = outputRow;
+      card.__output = output;
     }
-
-    const output = document.createElement('pre');
-    output.className = 'output';
     output.textContent = result.output || '';
 
     follow(() => {
@@ -787,8 +913,37 @@
        * Settling the card before the rows go in means it reaches its final height
        * in the layout it is inserted into, rather than growing afterwards.
        */
-      card.open = failed || Boolean(card.__unconfirmed);
-      card.append(head, output);
+      card.open = false;
+      if (failed && card.__error) card.__error.textContent = result.timedOut ? S.agentTimedOut : S.agentExit + ' ' + result.exitCode;
+      const row = stepOf(card);
+      if (row) {
+        row.classList.toggle('ran', !failed);
+        row.classList.toggle('blocked', failed);
+      }
+      if (failed && responseStep) responseStep.classList.add('blocked');
+      if (card.__detail) card.__detail.append(outputRow);
+      else card.append(outputRow);
+    });
+  }
+
+  /** Repaints one OUT row while its command is still running. */
+  function streamResult(card, text) {
+    followLater(() => {
+      if (!card.__outputRow) {
+        const row = document.createElement('div');
+        row.className = 'result-row';
+        const label = document.createElement('span');
+        label.className = 'detail-label';
+        label.textContent = 'OUT';
+        const output = document.createElement('pre');
+        output.className = 'output';
+        row.append(label, output);
+        card.__outputRow = row;
+        card.__output = output;
+        card.__detail.append(row);
+      }
+      card.__output.textContent = text || '';
+      card.open = true;
     });
   }
 
@@ -805,6 +960,46 @@
     undone: { label: 'memoryUndone', tone: 'muted' }
   };
 
+  /** A two-line local event that opens its backing file when either line is used. */
+  function linkedEvent(iconId, kind, whyText, value, activate) {
+    const row = document.createElement('div');
+    row.className = 'linked-event';
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+
+    const primary = document.createElement('div');
+    primary.className = 'card-line card-primary';
+    primary.append(icon(iconId, 'icon card-icon'));
+    const label = document.createElement('span');
+    label.className = 'card-kind';
+    label.textContent = kind;
+    const why = document.createElement('span');
+    why.className = 'card-why';
+    why.textContent = whyText;
+    primary.append(label, why);
+
+    const target = document.createElement('div');
+    target.className = 'card-line card-trigger';
+    const spacer = document.createElement('span');
+    spacer.className = 'card-spacer';
+    const action = document.createElement('span');
+    action.className = 'card-kind';
+    action.textContent = kind;
+    const preview = document.createElement('span');
+    preview.className = 'card-preview';
+    preview.textContent = value;
+    target.append(spacer, action, preview);
+    row.append(primary, target);
+
+    row.onclick = activate;
+    row.onkeydown = (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      activate();
+    };
+    return appendStep(row, '', false);
+  }
+
   /**
    * One line of memory, reported after the fact.
    *
@@ -815,45 +1010,10 @@
    */
   function memoryCard(event) {
     const state = memoryOutcomes[event.outcome] || memoryOutcomes.failed;
-    const row = document.createElement('div');
-    // Grey on the rail: writing a line to a local note changes nothing on the
-    // machine, whatever the outcome tone says about how the write itself went.
-    row.className = 'memory-row ' + state.tone;
-    if (event.token) row.dataset.token = event.token;
-
-    row.append(icon('#i-memory', 'icon memory-icon'));
-
-    const label = document.createElement('span');
-    label.className = 'memory-label';
-    label.textContent = state.label ? S[state.label] : S.memoryRemembered;
-
-    const scope = document.createElement('span');
-    scope.className = 'memory-scope';
-    scope.textContent = event.scope === 'global' ? S.memoryScopeGlobal : S.memoryScopeServer;
-
-    const text = document.createElement('span');
-    text.className = 'memory-text';
-    text.textContent = event.text;
-
-    const actions = document.createElement('span');
-    actions.className = 'memory-actions';
-    if (!replaying && event.outcome === 'ok' && event.token) {
-      const undo = document.createElement('button');
-      undo.className = 'memory-action';
-      undo.type = 'button';
-      undo.textContent = S.memoryUndo;
-      undo.onclick = () => { undo.disabled = true; post('undoMemory', { token: event.token }); };
-      actions.append(undo);
-    }
-    const open = document.createElement('button');
-    open.className = 'memory-action';
-    open.type = 'button';
-    open.textContent = S.memoryOpen;
-    open.onclick = () => post('openMemory', { scope: event.scope });
-    actions.append(open);
-
-    row.append(label, scope, text, actions);
-    return appendStep(row);
+    const why = state.label ? S[state.label] : S.memoryRemembered;
+    return linkedEvent('#i-memory', 'Memory', why, event.text, () => {
+      post('openMemory', { scope: event.scope });
+    });
   }
 
   /**
@@ -865,42 +1025,7 @@
    * the glyph and where the buttons go.
    */
   function trustedCard(event) {
-    const row = document.createElement('div');
-    // Grey on the rail, like memory: the machine was not touched by this.
-    row.className = 'memory-row ok';
-
-    row.append(icon('#i-trust', 'icon memory-icon'));
-
-    const label = document.createElement('span');
-    label.className = 'memory-label';
-    label.textContent = S.trustAdded;
-
-    const text = document.createElement('span');
-    text.className = 'memory-text';
-    text.textContent = event.dir;
-
-    const actions = document.createElement('span');
-    actions.className = 'memory-actions';
-    // Undoing is removing it, which is what the window's delete button does --
-    // so this is that button, reachable at the moment it is wanted rather than
-    // two clicks away in a list the user has no reason to be looking at yet.
-    if (!replaying) {
-      const undo = document.createElement('button');
-      undo.className = 'memory-action';
-      undo.type = 'button';
-      undo.textContent = S.memoryUndo;
-      undo.onclick = () => { undo.disabled = true; post('removeTrust', { dir: event.dir }); };
-      actions.append(undo);
-    }
-    const open = document.createElement('button');
-    open.className = 'memory-action';
-    open.type = 'button';
-    open.textContent = S.memoryOpen;
-    open.onclick = () => post('openTrust');
-    actions.append(open);
-
-    row.append(label, text, actions);
-    return appendStep(row);
+    return linkedEvent('#i-trust', 'Trust', S.trustAdded, event.dir, () => post('openTrust'));
   }
 
   /**
@@ -945,37 +1070,24 @@
   function skillCard(event) {
     const state = skillOutcomes[event.outcome] || skillOutcomes.unreadable;
     const row = document.createElement('div');
-    row.className = 'memory-row ' + state.tone;
-    row.append(icon('#i-skill', 'icon memory-icon'));
+    row.className = 'compact-event skill-event ' + state.tone;
+    row.append(icon('#i-skill', 'icon card-icon'));
 
     const label = document.createElement('span');
-    label.className = 'memory-label';
-    label.textContent = state.label ? S[state.label] : S.skillLoaded;
+    label.className = 'card-kind';
+    label.textContent = 'Skill';
+
+    const why = document.createElement('span');
+    why.className = 'card-why';
+    why.textContent = event.why || (state.label ? S[state.label] : S.skillLoaded);
 
     const name = document.createElement('span');
-    name.className = 'memory-scope';
+    name.className = 'card-preview';
     name.textContent = event.id;
-
-    const text = document.createElement('span');
-    text.className = 'memory-text';
-    // The file only when it is not the main one: naming SKILL.md on every row
-    // would be repeating the shape of the feature rather than saying anything.
-    text.textContent = [
-      event.file && event.file !== 'SKILL.md' ? event.file : '',
-      event.truncated ? S.skillTruncated : ''
-    ].filter(Boolean).join(' · ');
-
-    const actions = document.createElement('span');
-    actions.className = 'memory-actions';
-    const open = document.createElement('button');
-    open.className = 'memory-action';
-    open.type = 'button';
-    open.textContent = S.skillOpen;
-    open.onclick = () => post('openSkill', { id: event.id });
-    actions.append(open);
-
-    row.append(label, name, text, actions);
-    return appendStep(row);
+    row.append(label, why, name);
+    row.title = event.id;
+    row.onclick = () => post('openSkill', { id: event.id });
+    return appendStep(row, '', false);
   }
 
   // -- permission dialog ----------------------------------------------------
@@ -1129,6 +1241,75 @@
     });
   }
 
+  function fileCard(data) {
+    const card = document.createElement('details');
+    card.className = 'card file-card';
+    const head = document.createElement('summary');
+    head.className = 'card-head';
+    const primary = document.createElement('div');
+    primary.className = 'card-line card-primary';
+    primary.append(icon('#i-edit', 'icon card-icon'));
+    const kind = document.createElement('span');
+    kind.className = 'card-kind';
+    kind.textContent = data.kind === 'write' ? 'Write' : data.kind === 'append' ? 'Append' : 'Edit';
+    const why = document.createElement('span');
+    why.className = 'card-why';
+    why.textContent = data.why || (data.kind === 'append' ? S.agentFileAppend : data.exists ? S.agentFileReplace : S.agentFileNew);
+    const path = document.createElement('code');
+    path.className = 'card-preview';
+    path.textContent = data.path;
+    primary.append(kind, why);
+
+    const trigger = document.createElement('div');
+    trigger.className = 'card-line card-trigger';
+    const spacer = document.createElement('span');
+    spacer.className = 'card-spacer';
+    const action = document.createElement('span');
+    action.className = 'card-kind';
+    action.textContent = kind.textContent;
+    trigger.title = data.path;
+    trigger.append(spacer, action, path);
+    head.append(primary, trigger);
+    card.append(head, fileDetail(data));
+    return appendStep(card, '', false);
+  }
+
+  function fileDetail(data) {
+    const detail = document.createElement('div');
+    detail.className = 'file-detail';
+    const name = document.createElement('code');
+    name.className = 'file-detail-name';
+    name.textContent = data.path;
+    detail.append(name);
+    const change = (tone, text) => {
+      const row = document.createElement('div');
+      row.className = 'file-detail-change ' + tone;
+      const content = String(text || '');
+      const lines = content ? content.replace(/\n$/, '').split('\n') : [''];
+      const first = data.line || 1;
+      row.style.setProperty('--line-digits', String(String(first + Math.max(0, lines.length - 1)).length));
+      lines.forEach((line, index) => {
+        const entry = document.createElement('div');
+        entry.className = 'file-detail-line';
+        const mark = document.createElement('span');
+        mark.textContent = tone === 'del' ? '−' : '+';
+        mark.setAttribute('aria-hidden', 'true');
+        const number = document.createElement('span');
+        number.className = 'file-detail-lines';
+        number.textContent = content ? String(first + index) : '';
+        number.setAttribute('aria-hidden', 'true');
+        const code = document.createElement('code');
+        fillCode(code, line, data.path);
+        entry.append(mark, number, code);
+        row.append(entry);
+      });
+      detail.append(row);
+    };
+    if (data.kind === 'edit') change('del', data.before);
+    change('add', data.kind === 'edit' ? data.after : data.preview);
+    return detail;
+  }
+
   // -- transfers ------------------------------------------------------------
 
   const sizeUnits = ['B', 'KB', 'MB', 'GB'];
@@ -1166,9 +1347,9 @@
    * the thread down several times a second, and the interesting thing about a
    * transfer is where it has got to, not the trail of where it has been.
    *
-   * A replayed conversation reaches this with no ticks to follow -- they are
-   * deliberately not recorded -- so the bars stay hidden and the view is the one
-   * line that still means something afterwards: what went where.
+   * A replayed conversation receives only the final tick. Intermediate frames
+   * are deliberately not recorded, but the completed file and byte totals are,
+   * so the same finished bars remain visible without growing the chat log.
    */
   function transferView(data) {
     const view = document.createElement('div');
@@ -1216,9 +1397,8 @@
   /** Opens the card: a progress bar nobody can see is not progress. */
   function addTransfer(card, data) {
     return follow(() => {
-      card.open = true;
       const view = transferView(data);
-      card.append(view);
+      (card.__detail || card).append(view);
       return view;
     });
   }
@@ -1239,21 +1419,44 @@
    */
   function transferCard(event) {
     const card = document.createElement('details');
-    card.className = 'card';
-    card.open = true;
+    card.className = 'card transfer-card';
+    card.open = false;
     card.__unconfirmed = true;
 
     const head = document.createElement('summary');
     head.className = 'card-head';
-    const label = document.createElement('span');
-    label.className = 'card-why';
-    // The bare verb: the view inside says which files and where to, and saying
-    // it twice would only push the bars further down.
-    label.textContent = event.kind === 'upload' ? S.agentUpload : S.agentDownload;
-    head.append(label);
-    card.append(head);
+    const kindText = event.kind === 'upload' ? 'Upload' : 'Download';
+    const primary = document.createElement('div');
+    primary.className = 'card-line card-primary';
+    primary.append(icon(event.kind === 'upload' ? '#i-upload' : '#i-download', 'icon card-icon'));
+    const kind = document.createElement('span');
+    kind.className = 'card-kind';
+    kind.textContent = kindText;
+    const why = document.createElement('span');
+    why.className = 'card-why';
+    why.textContent = event.why || (event.kind === 'upload' ? S.agentUpload : S.agentDownload);
+    primary.append(kind, why);
 
-    return appendStep(card, 'ran');
+    const trigger = document.createElement('div');
+    trigger.className = 'card-line card-trigger';
+    const spacer = document.createElement('span');
+    spacer.className = 'card-spacer';
+    const action = document.createElement('span');
+    action.className = 'card-kind';
+    action.textContent = kindText;
+    const preview = document.createElement('code');
+    preview.className = 'card-preview';
+    preview.textContent = (event.sources || []).join(', ') + ' → ' + event.target;
+    trigger.title = preview.textContent;
+    trigger.append(spacer, action, preview);
+    head.append(primary, trigger);
+
+    const detail = document.createElement('div');
+    detail.className = 'transfer-detail';
+    card.__detail = detail;
+    card.append(head, detail);
+
+    return appendStep(card, '', false);
   }
 
   function askConfirm(data) {
@@ -1983,8 +2186,8 @@
     replaying = true;
     try {
       entries.forEach((entry) => {
-        if (entry.kind === 'user') turn(entry.text, 'user');
-        else if (entry.event) handleEvent(entry.event);
+        if (entry.kind === 'user') turn(entry.text || '', 'user', undefined, entry.images, entry.time);
+        else if (entry.event) handleEvent(entry.event, entry.time);
       });
     } finally {
       replaying = false;
@@ -1992,7 +2195,18 @@
     setRunning(false);
   }
 
-  function handleEvent(event) {
+  function handleEvent(event, time) {
+    /*
+     * A stored timestamp is an explicit response boundary. Live events do not
+     * pass one here, so their streamed fragments still share the current model
+     * response; replayed entries do, including a prose-only reply that follows
+     * a tool batch without a reasoning event between them. Resetting here keeps
+     * that reply from inheriting the batch's already-consumed timeline point.
+     */
+    if (replaying && time !== undefined && time !== null) {
+      responseDotTaken = false;
+      responseStep = null;
+    }
     switch (event.type) {
       case 'thinking':
         // Anything still half-written belongs to an attempt that did not finish:
@@ -2000,6 +2214,8 @@
         // replaces it is about to be streamed from the start.
         dropDelta();
         settleReasoning();
+        responseDotTaken = false;
+        responseStep = null;
         // A replayed thread is a record, not a run: nothing in it is still thinking.
         if (replaying) break;
         /*
@@ -2008,14 +2224,14 @@
          * earlier. Off, it is the only thing there is, so it stays.
          */
         beginThinking();
-        if (!showReasoning) startThinking();
         setRunning(true);
         break;
       case 'delta':
         appendDelta(event.text);
         break;
       case 'reasoning':
-        appendReasoning(event.text);
+        if (!reason) { responseDotTaken = false; responseStep = null; }
+        appendReasoning(event.text, time);
         break;
       case 'retry':
         // Both belong to the attempt that failed. What replaces them is about to
@@ -2051,6 +2267,13 @@
         dropDelta();
         settleReasoning();
         openCard = commandCard(event.command, event.why, event.verdict, event.unconfirmed);
+        // A batch of tool calls is still one response from the model.
+        if (!responseDotTaken) {
+          responseStep = stepOf(openCard);
+          addTimelineDot(responseStep, time);
+          responseStep.classList.add('response');
+          responseDotTaken = true;
+        }
         openTransfer = null;
         break;
       case 'refused':
@@ -2086,23 +2309,64 @@
         settleReasoning();
         // The bubble the answer was streamed into is already on screen; it only
         // needs rendering once more, on the whole text rather than on a prefix.
-        if (!settleDelta(event.text)) turn(event.text, 'assistant');
+        {
+          const timeline = !responseDotTaken;
+          const response = settleDelta(event.text, timeline) || turn(event.text, 'assistant', timeline, undefined, time);
+          if (timeline) responseStep = stepOf(response);
+          responseDotTaken = true;
+        }
         break;
       case 'file':
-        if (openCard) addFile(openCard, event);
+        // File tools are announced by a command event first. The file row is a
+        // better record of that operation, so replace the provisional command
+        // rather than showing both descriptions of the same edit.
+        if (openCard && openCard.classList.contains('command-card')) {
+          if (!event.why) event.why = openCard.__why;
+          const responsePoint = stepOf(openCard).querySelector('.step-dot');
+          const row = stepOf(openCard);
+          if (row) row.remove();
+          openCard = null;
+          const file = fileCard(event);
+          if (responsePoint) {
+            const fileRow = stepOf(file);
+            fileRow.prepend(responsePoint);
+            fileRow.classList.add('response');
+            responseStep = fileRow;
+          }
+          break;
+        }
+        fileCard(event);
         break;
       case 'transfer':
         // A transfer arrives with no command card in front of it, so it opens
         // one. Reusing an open card when there is one keeps a transfer that
         // really did follow a command in the same step as that command.
         clearThinking();
-        if (!openCard) openCard = transferCard(event);
+        if (openCard && openCard.classList.contains('command-card')) {
+          if (!event.why) event.why = openCard.__why;
+          const responsePoint = stepOf(openCard).querySelector('.step-dot');
+          const row = stepOf(openCard);
+          if (row) row.remove();
+          openCard = transferCard(event);
+          if (responsePoint) {
+            const transferRow = stepOf(openCard);
+            transferRow.prepend(responsePoint);
+            transferRow.classList.add('response');
+            responseStep = transferRow;
+          }
+        } else if (!openCard) {
+          openCard = transferCard(event);
+        }
         openTransfer = addTransfer(openCard, event);
         break;
       case 'transferProgress':
         if (openTransfer) follow(() => paintProgress(openTransfer, event.progress));
         break;
+      case 'commandOutput':
+        if (openCard) streamResult(openCard, event.output);
+        break;
       case 'result':
+        if ((event.exitCode !== 0 || event.timedOut) && responseStep) responseStep.classList.add('blocked');
         if (openCard) addResult(openCard, event);
         openCard = null;
         openTransfer = null;
@@ -2168,7 +2432,7 @@
       return;
     }
     if (data.type === 'user') {
-      turn(data.text, 'user');
+      turn(data.text || '', 'user', undefined, data.images);
       // A new message is a new round, counted from here whether or not the first
       // step has reported anything yet.
       round = { prompt: 0, completion: 0, requests: 0 };
@@ -2259,14 +2523,96 @@
     return $('send').classList.contains('running');
   }
 
+  const pendingImages = [];
+  const supportedImages = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+  const maxPastedImages = 20;
+  const maxPastedImageBytes = 30 * 1024 * 1024;
+
+  function paintPastedImages() {
+    const tray = $('composerImages');
+    tray.replaceChildren();
+    pendingImages.forEach((image, index) => {
+      const item = document.createElement('figure');
+      item.className = 'composer-image';
+      item.title = image.name;
+      const preview = previewButton(imageUrl(image), image.name, 'composer-image-open');
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'composer-image-remove';
+      remove.textContent = '×';
+      remove.title = S.agentRemoveImage || '';
+      remove.setAttribute('aria-label', remove.title);
+      remove.onclick = () => {
+        pendingImages.splice(index, 1);
+        paintPastedImages();
+        if (!isRunning()) setRunning(false);
+      };
+      item.append(preview, remove);
+      tray.append(item);
+    });
+    tray.hidden = pendingImages.length === 0;
+  }
+
+  function readPastedImage(file, sequence) {
+    if (!supportedImages.has(file.type)) {
+      note(S.agentImagePasteUnsupported || 'Only JPEG, PNG, GIF and WebP images are supported.', 'warn');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const comma = result.indexOf(',');
+      if (comma < 0) return;
+      pendingImages.push({
+        mediaType: file.type,
+        data: result.slice(comma + 1),
+        size: file.size,
+        name: file.name || ((S.agentPastedImage || 'Pasted image') + ' ' + sequence)
+      });
+      paintPastedImages();
+      if (!isRunning()) setRunning(false);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function pasteImages(event) {
+    const files = Array.from((event.clipboardData && event.clipboardData.items) || [])
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    if (!files.length) return;
+    event.preventDefault();
+    const room = Math.max(0, maxPastedImages - pendingImages.length);
+    if (files.length > room) {
+      note((S.agentImagePasteLimit || 'Up to {0} images can be sent at once.')
+        .replace('{0}', maxPastedImages), 'warn');
+    }
+    let bytes = pendingImages.reduce((sum, image) => sum + (image.size || 0), 0);
+    let tooLarge = false;
+    files.slice(0, room).forEach((file, index) => {
+      if (bytes + file.size > maxPastedImageBytes) {
+        tooLarge = true;
+        return;
+      }
+      bytes += file.size;
+      readPastedImage(file, pendingImages.length + index + 1);
+    });
+    if (tooLarge) {
+      note(S.agentImagePasteTooLarge || 'The pasted images are too large to send together.', 'warn');
+    }
+  }
+
   function send() {
     const input = $('input');
     const text = input.value.trim();
-    if (!text) return;
+    if (!text && !pendingImages.length) return;
+    const images = pendingImages.map((image) => ({ data: image.data }));
     input.value = '';
+    pendingImages.splice(0);
+    paintPastedImages();
     autoGrow();
     setRunning(false);
-    post('send', { text: text });
+    post('send', { text: text, images: images });
   }
 
   function submit() {
@@ -2276,6 +2622,7 @@
 
   $('send').onclick = submit;
   $('input').addEventListener('input', autoGrow);
+  $('input').addEventListener('paste', pasteImages);
   // Enabled only when there is something to send, which is also what tells the
   // reader that Enter would do nothing yet.
   $('input').addEventListener('input', () => { if (!isRunning()) setRunning(false); });
@@ -2341,6 +2688,10 @@
   panels.forEach((name) => {
     $(name).onclick = (event) => { if (event.target === $(name)) closePanels(); };
   });
+  $('imagePreview').onclick = (event) => {
+    if (event.target === $('imagePreview')) closeImagePreview();
+  };
+  $('imagePreviewClose').onclick = closeImagePreview;
 
   /*
    * Esc, in the order the things it could mean are stacked on screen.
@@ -2352,7 +2703,13 @@
    * to stop -- from anywhere in the panel, the composer included.
    */
   document.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape' || pending !== null) return;
+    if (event.key !== 'Escape') return;
+    if (!$('imagePreview').hidden) {
+      closeImagePreview();
+      event.preventDefault();
+      return;
+    }
+    if (pending !== null) return;
     if (openPanelId()) {
       closePanels();
       event.preventDefault();

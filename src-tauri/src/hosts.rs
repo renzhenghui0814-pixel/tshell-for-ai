@@ -150,7 +150,10 @@ pub fn judge(hosts: &KnownHosts, endpoint: &str, key: &PresentedKey) -> Verdict 
         return Verdict::Unknown;
     };
 
-    if pinned.iter().any(|known| known.fingerprint == key.fingerprint) {
+    if pinned
+        .iter()
+        .any(|known| known.fingerprint == key.fingerprint)
+    {
         return Verdict::Trusted;
     }
 
@@ -229,7 +232,10 @@ pub fn load() -> Result<KnownHosts, LoadError> {
     // refused on the strength of the one field we are sure we understand.
     let probe: serde_json::Value =
         serde_json::from_str(&text).map_err(|error| LoadError::Unreadable(error.to_string()))?;
-    let found = probe.get("version").and_then(|value| value.as_u64()).unwrap_or(0) as u32;
+    let found = probe
+        .get("version")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0) as u32;
     if found > VERSION {
         return Err(LoadError::FromTheFuture(found));
     }

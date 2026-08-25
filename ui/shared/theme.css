@@ -137,8 +137,8 @@
   /*
    * -- fills that are not the accent ---------------------------------------
    *
-   * The user's own message in the chat thread, and the bar a transfer fills.
-   * Both were `--ac` and both are now their own token.
+   * The user's own message, inline Markdown emphasis, and transfer progress.
+   * All default to the accent but can now move independently from it.
    *
    * Not a tidying: the accent means "focused" -- the ring on the field you are
    * typing in, the border of the column that will take the next tab. Neither of
@@ -153,6 +153,7 @@
    */
   --chat-user: #6E7CF7;
   --chat-user-tx: #0B0E16;
+  --markdown: #6E7CF7;
   --progress: #6E7CF7;
 
   /*
@@ -292,6 +293,7 @@
 
   --chat-user: #5A5FE0;
   --chat-user-tx: #ffffff;
+  --markdown: #5A5FE0;
   --progress: #5A5FE0;
 
   --term-cursor: #5A5FE0;

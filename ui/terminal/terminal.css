@@ -23,7 +23,20 @@ body {
 }
 
 .xterm { height: 100%; padding: 0; }
-.xterm .xterm-viewport, .xterm .xterm-screen { background: var(--vscode-editor-background) !important; }
+
+/*
+ * The background a terminal shows comes from xterm itself: it writes the
+ * scheme's `background` -- or the window theme's, when the scheme leaves that
+ * slot unset -- onto `.xterm-scrollable-element` as an inline style.
+ *
+ * Forcing the viewport underneath it to `--vscode-editor-background` with
+ * `!important` used to quietly paint over any scheme that brought its own
+ * background: the swatch in Settings changed, the preview changed, the open
+ * terminal did not. Transparent lets the inline colour through, and
+ * `#terminal`'s own `--vscode-editor-background` is still there for the case
+ * where nothing reaches the viewport at all.
+ */
+.xterm .xterm-viewport, .xterm .xterm-screen { background: transparent; }
 
 /*
  * No native scrollbar anywhere on this page.

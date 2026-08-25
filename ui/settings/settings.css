@@ -511,9 +511,20 @@ h2 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+/* The fill editor is two semantic columns, read top-to-bottom: grounds on the
+ * left and interaction/content colours on the right. */
+#palette-surface.palette-swatches {
+  grid-auto-flow: column;
+  grid-template-rows: repeat(5, minmax(0, auto));
+}
+
 /* Two columns of a chip, a phrase and a hex field need about 250px each. */
 @media (max-width: 640px) {
   .swatches.palette-swatches { grid-template-columns: minmax(0, 1fr); }
+  #palette-surface.palette-swatches {
+    grid-auto-flow: row;
+    grid-template-rows: none;
+  }
 }
 
 .palette-fields {

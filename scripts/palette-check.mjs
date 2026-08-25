@@ -100,16 +100,16 @@ for (const token of palette.tokens) {
  * And one table of splits, in the same two files.
  *
  * A token that was split is read out of older files under its old name and
- * given to both of its heirs. Both sides do it, because either may be the first
+ * given to its surviving heirs. Both sides do it, because either may be the first
  * to read a given file, and the two drifting apart means a palette that means
  * one thing when Rust loads it and another when the page does.
  */
 const rustSplits = (() => {
   const source = read('src-tauri/src/theme.rs');
-  const table = source.match(/const SPLIT: \[\(&str, \[&str; 2\]\); \d+\] = \[([\s\S]*?)\];/);
+  const table = source.match(/const SPLIT: \[\(&str, &\[&str\]\); \d+\] = \[([\s\S]*?)\];/);
   if (!table) throw new Error('theme.rs has no SPLIT table');
-  return [...table[1].matchAll(/\("([^"]+)",\s*\["([^"]+)",\s*"([^"]+)"\]\)/g)]
-    .map((m) => m[1] + '=' + m[2] + ',' + m[3]);
+  return [...table[1].matchAll(/\("([^"]+)",\s*&\[([^\]]+)\]\)/g)]
+    .map((m) => m[1] + '=' + [...m[2].matchAll(/"([^"]+)"/g)].map((heir) => heir[1]).join(','));
 })();
 
 const jsSplits = Object.keys(palette.splits).map((was) => was + '=' + palette.splits[was].join(','));
@@ -139,20 +139,17 @@ for (const was of Object.keys(palette.splits)) {
  * the caller rather than in the palette.
  */
 const SURFACES = [
-  '--bg-input', '--bg-code', '--bg-base', '--bg-elev',
-  '--bg-tab', '--bg-card', '--bg-dialog', '--bg-menu'
+  '--bg-input', '--bg-base', '--bg-elev', '--bg-tab', '--bg-dialog', '--bg-menu'
 ];
 
 /*
- * Both levels of readable text on every one of the eight, rather than on the
- * four that happened to be listed when there were six surfaces. Splitting them
- * is what made this necessary: an unlisted surface used to be one nobody could
- * edit on its own, and now every one of them is a separate decision that can be
- * taken to somewhere `--tx-dim` cannot be read.
+ * Both levels of readable text on every editable ground. Internal fixed
+ * surfaces are intentionally not palette decisions anymore.
  */
 const PAIRS = [
   ...SURFACES.map((ground) => ['--tx', ground]),
   ...SURFACES.map((ground) => ['--tx-dim', ground]),
+  ['--markdown', '--bg-base'],
   ['--ac', '--bg-base'], ['--ok', '--bg-base'], ['--warn', '--bg-base'],
   ['--err', '--bg-base'], ['--info', '--bg-base'],
   ['--ac-tx', '--ac'], ['--err-tx', '--err'], ['--chat-user-tx', '--chat-user']

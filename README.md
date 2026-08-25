@@ -1,7 +1,7 @@
 # tshell
 
-AI assistant working in your own SSH terminal, with SSH/SFTP sessions and
-dual-pane file transfer. No server-side setup.
+AI assistant working in your own SSH or local terminal, with SSH/SFTP sessions
+and dual-pane file transfer. No server-side setup.
 
 Windows / Linux / macOS desktop application, built on Tauri v2 with a Rust
 backend. 
@@ -39,6 +39,7 @@ src-tauri/          Rust: the whole backend, and the only thing that touches the
     config.rs       servers, groups, normalisation, atomic read/write
     secrets.rs      the system keychain, and the fallback when there isn't one
     ssh.rs          one channel per session; bytes to the terminal
+    local.rs        local shells through a pseudo-terminal (ConPTY on Windows)
     hosts.rs        host keys: pinned on first use, judged, asked about
     transfer.rs     both sides behind one abstraction; the transfer job
     preview.rs      chunked text and DBF
@@ -58,6 +59,20 @@ ui/                 the pages -- plain HTML/CSS/JS, no build step
   servers/ terminal/ transfer/ chat/ settings/
   vendor/           xterm, the icon, and strings.json
 ```
+
+## Local terminals (Windows)
+
+Alongside SSH servers, a group can contain local terminals. Use the group menu
+to add one, then choose **CMD**, **PowerShell**, or **Visual Studio Developer
+Prompt**. The latter automatically looks for the Visual Studio 2013 developer
+environment and can also be given a `vcvarsall.bat` or `VsDevCmd.bat` path and
+an x86/x64 architecture.
+
+Local sessions use ConPTY and render in the same terminal pane as an SSH
+session. The AI assistant follows the same safety boundary in both cases: it
+types commands into the visible terminal session rather than using a separate
+hidden command channel. A default working directory may be set per local
+terminal.
 
 ## The rules that hold it together
 
