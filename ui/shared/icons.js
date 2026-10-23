@@ -72,7 +72,13 @@
      * hues whose only requirement is to stay apart from each other.
      */
 
-    /* A folder. The one shape in the set nobody has to be taught. */
+    /* A folder. The one shape in the set nobody has to be taught.
+     *
+     * Solid, like the rest of these ten, and outlined nowhere. It is the one
+     * kind that is a container rather than a document, so it does not carry a
+     * mark -- the silhouette is the whole statement, which is also why it is
+     * the one glyph in the list that a full fill can carry without needing
+     * anything knocked out of it. */
     'file-dir':
       '<path fill="currentColor" stroke="none" d="M2.4 4.3a1.2 1.2 0 0 1 1.2-1.2h3.1' +
       'l1.7 1.8h4.4a1.2 1.2 0 0 1 1.2 1.2v6.6a1.2 1.2 0 0 1-1.2 1.2H3.6' +

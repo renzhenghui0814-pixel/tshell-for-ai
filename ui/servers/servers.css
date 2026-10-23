@@ -245,13 +245,20 @@ details[open] > .group-head .chevron { transform: rotate(90deg); }
 
 .server-main { min-width: 0; cursor: pointer; }
 
-/* Every service belongs to the same tree, so every kind uses the same accent tile. */
+/*
+ * The glyph, on its own: no tile behind it.
+ *
+ * The accent square said "every one of these is a service, whatever kind it is"
+ * -- one colour for the whole tree. What it also did was put twelve solid blocks
+ * of the accent down the left edge of the panel, which is more blue than a list
+ * of names needs to say that. The glyph carries the same meaning by itself, at
+ * the ink the rest of this panel's quiet detail is written in, and the row keeps
+ * the 22px box so nothing else on the line moves.
+ */
 .server-icon {
   justify-self: center;
   width: 22px;
   height: 22px;
-  border-radius: 5px;
-  background: var(--ac);
   display: grid;
   place-items: center;
 }
@@ -260,7 +267,7 @@ details[open] > .group-head .chevron { transform: rotate(90deg); }
 .server-icon .local-term-glyph {
   width: 15px;
   height: 15px;
-  color: var(--ac-tx);
+  color: var(--tx-dim);
 }
 
 .server-name {

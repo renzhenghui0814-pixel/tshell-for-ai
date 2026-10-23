@@ -11,7 +11,7 @@
   // Bumped whenever this file changes. Run `__tshellTransferBuild` in the
   // webview devtools console to see which version is actually loaded, instead
   // of guessing whether an edit took effect.
-  window.__tshellTransferBuild = 9;
+  window.__tshellTransferBuild = 10;
 
   const $ = (id) => document.getElementById(id);
   const post = (type, payload) => vscode.postMessage(Object.assign({ type: type }, payload || {}));
@@ -26,6 +26,13 @@
    * of nothing between two things the eye wants side by side.
    */
   const COL_MAX = { name: 720, size: 220, mod: 320 };
+  /* The track widths that are not one of the three, and the vertical bar. Both
+   * are in transfer.css and shared/components.css; they are read here rather
+   * than guessed so a fit lands inside the pane it is fitting. */
+  const COL_ICON = 24;
+  const COL_GAP = 10;
+  const COL_GUTTER = 10;
+  const SCROLLBAR_W = 10;
 
   let state = Object.assign(
     { split: 0, logHeight: 0, sort: {}, hidden: {}, cols: {} },
@@ -126,6 +133,11 @@
       dropIndex: -1,
       sort: state.sort[side] || { key: 'name', dir: 1 },
       cols: Object.assign({}, COL_DEFAULTS, state.cols[side]),
+      /* True once a grip has been dragged: those widths belong to a person and
+       * are not refitted. See `fitColumns`. */
+      fixed: Boolean(state.cols[side]),
+      /* What this listing needs, in pixels, measured once per listing. */
+      need: null,
       showHidden: side in state.hidden ? state.hidden[side] : Boolean(boot.showHiddenFiles),
       typeBuffer: '',
       typeTimer: null,
@@ -190,6 +202,96 @@
     pane.el.pane.style.setProperty('--w-name', pane.cols.name + 'px');
     pane.el.pane.style.setProperty('--w-size', pane.cols.size + 'px');
     pane.el.pane.style.setProperty('--w-mod', pane.cols.mod + 'px');
+  }
+
+  /*
+   * Text width in a given font. A canvas rather than a hidden span, because
+   * measuring by laying out a span is a reflow per string and this runs over
+   * every name in the listing.
+   */
+  const measureText = (function () {
+    const context = document.createElement('canvas').getContext('2d');
+    return function (text, font) {
+      context.font = font;
+      return context.measureText(String(text)).width;
+    };
+  }());
+
+  /** The row's font, spelled the way the canvas wants it. */
+  function rowFont(pane, weight) {
+    const styles = getComputedStyle(pane.el.list);
+    return [styles.fontStyle, weight, styles.fontSize, styles.fontFamily].join(' ');
+  }
+
+  /*
+   * What the three columns have to be able to hold, measured from the listing.
+   *
+   * Two shortcuts, both true rather than lazy. The stamps are all one locale's
+   * rendering of one date format, so one of them is as wide as any of them --
+   * and `toLocaleString` is not cheap, which matters in a directory of fifty
+   * thousand entries. Sizes are monotone in their own digits: the largest file
+   * formats to the longest string, so the widest column is the one the largest
+   * file needs.
+   *
+   * Names have no such shortcut and are measured one by one.
+   */
+  function measureListing(pane) {
+    const normal = rowFont(pane, 400);
+    const heavy = rowFont(pane, 500);
+    let name = 0;
+    let largest = 0;
+    for (const entry of pane.entries) {
+      const width = measureText(entry.name, entry.type === 'directory' ? heavy : normal);
+      if (width > name) name = width;
+      if (entry.type !== 'directory' && entry.size > largest) largest = entry.size;
+    }
+    const stamped = pane.entries.find((entry) => entry.modifiedAt);
+    pane.need = {
+      name: name,
+      size: measureText(formatSize(largest), normal),
+      mod: measureText(formatStamp(stamped ? stamped.modifiedAt : Date.now()), normal)
+    };
+  }
+
+  /*
+   * The widths, fitted to the listing instead of assumed.
+   *
+   * They used to be three constants -- 200 / 86 / 148 -- and the name track was
+   * the one that hurt. Two thirds of it sat empty after a folder called `src`,
+   * pushing the size column a third of a pane away from the name it belongs to;
+   * and the three together were wider than the pane on a window of any ordinary
+   * size, so the time column was what fell off the right-hand edge. Both are
+   * the same cause: a width chosen for a filename nobody in this listing has.
+   *
+   * So the listing is measured and the columns get what it needs. The name takes
+   * whatever is left over, up to the widest name -- a long name should spend the
+   * room rather than truncate into an empty pane -- and it is the column that
+   * gives way when there is not enough, because it is the only one of the three
+   * that is still useful in part.
+   *
+   * A pane left with no name wide enough to fill it does not stretch the track:
+   * the row ends where its content ends, and the space to the right of the last
+   * column stays empty, the way `ls -l` ends. Nothing else answers the question
+   * "how far apart are a name and its size" better than that.
+   */
+  function fitColumns(pane) {
+    if (pane.fixed || !pane.need) return;
+    const list = pane.el.list;
+    // A long listing loses the width of its scrollbar; taken out up front, so
+    // the fit does not depend on whether the bar is there yet.
+    const scrolls = pane.entries.length * ROW_H > list.clientHeight;
+    const room =
+      list.clientWidth - COL_ICON - COL_GAP * 3 - COL_GUTTER * 2 - (scrolls ? SCROLLBAR_W : 0);
+    const clamp = (value, max) => Math.max(COL_MIN, Math.min(max, Math.ceil(value)));
+    const size = clamp(pane.need.size + 2, COL_MAX.size);
+    const mod = clamp(pane.need.mod + 2, COL_MAX.mod);
+    const forName = room - size - mod;
+    pane.cols = {
+      name: clamp(Math.min(pane.need.name + 2, forName), COL_MAX.name),
+      size: size,
+      mod: mod
+    };
+    applyColumnWidths(pane);
   }
 
   function updateSortHeader(pane) {
@@ -433,6 +535,22 @@
       });
       // The grip sits on top of the header cell, which sorts on click.
       grip.addEventListener('click', (event) => event.stopPropagation());
+      /*
+       * Double-click: back to fitting the listing.
+       *
+       * The grips are the only way to set a width, so they are also the way to
+       * unset one -- otherwise one drag would freeze this pane against every
+       * later listing, and there is no menu anywhere that could put it back.
+       */
+      grip.addEventListener('dblclick', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!pane.fixed) return;
+        pane.fixed = false;
+        delete state.cols[pane.side];
+        saveState();
+        fitColumns(pane);
+      });
     });
 
     let scrollPending = false;
@@ -656,8 +774,15 @@
   $('logResizer').addEventListener('mousedown', (event) => { resizing = 'log'; event.preventDefault(); });
   window.addEventListener('mouseup', () => {
     if (columnDrag) {
-      state.cols[columnDrag.pane.side] = columnDrag.pane.cols;
-      saveState();
+      const pane = columnDrag.pane;
+      // A click that moved nothing is not a chosen width: dragging is what
+      // makes these numbers the user's, and an accidental click on a grip
+      // should leave the pane fitting itself.
+      if (pane.cols[columnDrag.key] !== columnDrag.startWidth) {
+        pane.fixed = true;
+        state.cols[pane.side] = pane.cols;
+        saveState();
+      }
       columnDrag = null;
     }
     resizing = null;
@@ -676,6 +801,10 @@
       const width = Math.max(180, Math.min(window.innerWidth - 187, event.clientX));
       state.split = width;
       $('panes').style.setProperty('--split', width + 'px');
+      // Both panes changed width, so both are refitted -- arithmetic on numbers
+      // already measured, which is why it can happen on every mousemove.
+      fitColumns(panes.local);
+      fitColumns(panes.remote);
     } else {
       const height = Math.max(80, Math.min(window.innerHeight - 160, window.innerHeight - event.clientY));
       state.logHeight = height;
@@ -872,6 +1001,8 @@
       ? new Set(Array.from(pane.selected).filter((path) => keep.has(path)))
       : new Set();
     sortRows(pane);
+    measureListing(pane);
+    fitColumns(pane);
     if (!samePath) { pane.lead = 0; pane.anchor = 0; pane.el.list.scrollTop = 0; }
     else { pane.lead = clampIndex(pane, pane.lead); pane.anchor = clampIndex(pane, pane.anchor); }
     pane.dropIndex = -1;
@@ -1056,7 +1187,12 @@
     startSweeps(field, field ? field.value : '');
   }, true);
 
-  window.addEventListener('resize', () => { render(panes.local); render(panes.remote); });
+  window.addEventListener('resize', () => {
+    fitColumns(panes.local);
+    fitColumns(panes.remote);
+    render(panes.local);
+    render(panes.remote);
+  });
 
   // -- boot ---------------------------------------------------------------
 

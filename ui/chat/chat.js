@@ -52,6 +52,10 @@
       el.title = label;
       el.setAttribute('aria-label', label);
     });
+    // The home table's notes are set from script rather than by the attributes
+    // above -- they carry counts and mode words -- so they are painted from
+    // here too, after the labels the attributes cover are in place.
+    renderHome();
   }
 
   /**
@@ -96,7 +100,7 @@
 
   function append(node) {
     return follow(() => {
-      $('empty').hidden = true;
+      showEmpty(false);
       thread.append(node);
       return node;
     });
@@ -1270,7 +1274,14 @@
     trigger.title = data.path;
     trigger.append(spacer, action, path);
     head.append(primary, trigger);
-    card.append(head, fileDetail(data));
+    const detail = fileDetail(data);
+    card.append(head, detail);
+    // The shell has no size until the details opens; the first paint inside a
+    // closed card measures zero and would leave both bars hidden. This is the
+    // one event that says the box has just become measurable.
+    card.addEventListener('toggle', () => {
+      if (card.open && detail.__paint) detail.__paint();
+    });
     return appendStep(card, '', false);
   }
 
@@ -1281,9 +1292,19 @@
     name.className = 'file-detail-name';
     name.textContent = data.path;
     detail.append(name);
+    const body = document.createElement('div');
+    body.className = 'file-detail-body';
+    const scroller = document.createElement('div');
+    scroller.className = 'file-detail-scroll';
+    const contentBox = document.createElement('div');
+    contentBox.className = 'file-detail-content';
     const change = (tone, text) => {
       const row = document.createElement('div');
       row.className = 'file-detail-change ' + tone;
+      // The bar is the visual state; this is the same state for a reader who
+      // cannot see colour, now that the `+`/`-` glyphs are gone.
+      row.setAttribute('role', 'group');
+      row.setAttribute('aria-label', tone === 'del' ? S.agentFileRemoved : S.agentFileAdded);
       const content = String(text || '');
       const lines = content ? content.replace(/\n$/, '').split('\n') : [''];
       const first = data.line || 1;
@@ -1291,23 +1312,144 @@
       lines.forEach((line, index) => {
         const entry = document.createElement('div');
         entry.className = 'file-detail-line';
+        /*
+         * The bar and the number are one sticky cell. If they were separate
+         * columns the eight-pixel gap between them would be transparent, and
+         * code sliding under the gutter would show through it.
+         */
+        const gutter = document.createElement('span');
+        gutter.className = 'file-detail-gutter';
+        gutter.setAttribute('aria-hidden', 'true');
         const mark = document.createElement('span');
-        mark.textContent = tone === 'del' ? '−' : '+';
-        mark.setAttribute('aria-hidden', 'true');
+        mark.className = 'file-detail-mark';
         const number = document.createElement('span');
         number.className = 'file-detail-lines';
         number.textContent = content ? String(first + index) : '';
-        number.setAttribute('aria-hidden', 'true');
+        gutter.append(mark, number);
         const code = document.createElement('code');
         fillCode(code, line, data.path);
-        entry.append(mark, number, code);
+        entry.append(gutter, code);
         row.append(entry);
       });
-      detail.append(row);
+      contentBox.append(row);
     };
     if (data.kind === 'edit') change('del', data.before);
     change('add', data.kind === 'edit' ? data.after : data.preview);
+    scroller.append(contentBox);
+    body.append(scroller);
+    overlayScrollbars(body, scroller);
+    detail.__paint = body.__paint;
+    detail.append(body);
     return detail;
+  }
+
+  /*
+   * Scrollbars drawn over the code, not beside it.
+   *
+   * A native bar reserves ten pixels out of the scroller -- to the right of a
+   * vertical one and above a horizontal one -- so the tinted rows stop short
+   * of the card's edge and the empty gutter is the seam the eye sees. These
+   * are siblings of the scroller in the shell, absolute against its visible
+   * edges, and take no layout space: the diff reaches the border, and the bar
+   * is painted on top of the last ten pixels only while it is being looked at.
+   *
+   * The geometry is recomputed on scroll, on pointer entry and when the
+   * `<details>` opens; those are the moments the box can have changed under
+   * the bars. No observer is left behind when a conversation is cleared.
+   */
+  function overlayScrollbars(shell, scroller) {
+    const vertical = document.createElement('div');
+    vertical.className = 'file-detail-bar vertical';
+    vertical.setAttribute('aria-hidden', 'true');
+    const vthumb = document.createElement('div');
+    vthumb.className = 'file-detail-thumb';
+    vertical.append(vthumb);
+
+    const horizontal = document.createElement('div');
+    horizontal.className = 'file-detail-bar horizontal';
+    horizontal.setAttribute('aria-hidden', 'true');
+    const hthumb = document.createElement('div');
+    hthumb.className = 'file-detail-thumb';
+    horizontal.append(hthumb);
+
+    shell.append(vertical, horizontal);
+
+    /*
+     * The box has two pixels of inset on each side for the thumb, so the travel
+     * is the bar minus four; the thumb itself is at least 24px so a very long
+     * diff still leaves something to grab.
+     */
+    function paint() {
+      const maxY = scroller.scrollHeight - scroller.clientHeight;
+      const maxX = scroller.scrollWidth - scroller.clientWidth;
+
+      if (maxY > 1 && scroller.clientHeight > 0) {
+        vertical.hidden = false;
+        const track = vertical.clientHeight - 4;
+        const size = Math.min(track, Math.max(24, Math.round(track * scroller.clientHeight / scroller.scrollHeight)));
+        vthumb.style.height = size + 'px';
+        const span = track - size;
+        vthumb.style.transform = 'translateY(' +
+          (span > 0 ? Math.round((scroller.scrollTop / maxY) * span) : 0) + 'px)';
+      } else {
+        vertical.hidden = true;
+      }
+
+      if (maxX > 1 && scroller.clientWidth > 0) {
+        horizontal.hidden = false;
+        const track = horizontal.clientWidth - 4;
+        const size = Math.min(track, Math.max(24, Math.round(track * scroller.clientWidth / scroller.scrollWidth)));
+        hthumb.style.width = size + 'px';
+        const span = track - size;
+        hthumb.style.transform = 'translateX(' +
+          (span > 0 ? Math.round((scroller.scrollLeft / maxX) * span) : 0) + 'px)';
+      } else {
+        horizontal.hidden = true;
+      }
+    }
+
+    function drag(thumb, bar, axis) {
+      thumb.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        const start = axis === 'y' ? event.clientY : event.clientX;
+        const origin = axis === 'y' ? scroller.scrollTop : scroller.scrollLeft;
+        const track = (axis === 'y' ? bar.clientHeight : bar.clientWidth) - 4;
+        const size = axis === 'y' ? thumb.offsetHeight : thumb.offsetWidth;
+        const span = track - size;
+        const max = axis === 'y'
+          ? scroller.scrollHeight - scroller.clientHeight
+          : scroller.scrollWidth - scroller.clientWidth;
+        thumb.setPointerCapture(event.pointerId);
+        thumb.classList.add('dragging');
+        shell.classList.add('dragging');
+
+        const move = (moveEvent) => {
+          const delta = (axis === 'y' ? moveEvent.clientY : moveEvent.clientX) - start;
+          const next = span > 0 ? origin + (delta / span) * max : origin;
+          if (axis === 'y') scroller.scrollTop = next;
+          else scroller.scrollLeft = next;
+        };
+        const end = () => {
+          thumb.classList.remove('dragging');
+          shell.classList.remove('dragging');
+          thumb.removeEventListener('pointermove', move);
+          thumb.removeEventListener('pointerup', end);
+          thumb.removeEventListener('pointercancel', end);
+        };
+        thumb.addEventListener('pointermove', move);
+        thumb.addEventListener('pointerup', end);
+        thumb.addEventListener('pointercancel', end);
+      });
+    }
+
+    drag(vthumb, vertical, 'y');
+    drag(hthumb, horizontal, 'x');
+    scroller.addEventListener('scroll', paint, { passive: true });
+    shell.addEventListener('pointerenter', paint);
+    // `fileCard` owns the `<details>` and calls this when it opens; the shell
+    // is not in the card yet when it is built.
+    shell.__paint = paint;
+    requestAnimationFrame(paint);
   }
 
   // -- transfers ------------------------------------------------------------
@@ -1555,6 +1697,9 @@
 
   // -- history --------------------------------------------------------------
 
+  /** How many of the newest conversations the home screen lists. */
+  const RECENT_LIMIT = 5;
+
   function openHistory() {
     openPanel('historyPanel', 'history');
   }
@@ -1598,6 +1743,53 @@
 
     row.append(open, remove);
     return row;
+  }
+
+  /*
+   * One of the five rows on the home screen.
+   *
+   * A row and not a link inside one: the whole line is the target. No delete
+   * button here -- unlike the history window, this is the way back into a
+   * conversation, and a trash can on the screen people click fastest is a trap.
+   */
+  function recentRow(item) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'recent-row';
+
+    const title = document.createElement('span');
+    title.className = 'recent-title';
+    title.textContent = item.title || item.serverName;
+    const meta = document.createElement('span');
+    meta.className = 'recent-meta';
+    meta.textContent = [item.serverName, when(item.updatedAt)].filter(Boolean).join(' · ');
+    row.title = title.textContent;
+
+    row.append(title, meta);
+    row.onclick = () => {
+      post('loadChat', { id: item.id });
+      // The row is about to go away with the home state. Without this the
+      // keyboard stays on a button inside a hidden subtree, and the next
+      // keystroke goes nowhere the user can see.
+      $('input').focus();
+    };
+    return row;
+  }
+
+  /*
+   * The five newest, in the order Rust sends them (newest first).
+   *
+   * Painted from the same message as the history window rather than asked for
+   * again, so the home screen and the window can never disagree about which
+   * conversations are recent. The list hides itself rather than drawing an
+   * empty heading: on a first run there is nothing here but the card.
+   */
+  function paintRecent(items) {
+    const recent = items.slice(0, RECENT_LIMIT);
+    const list = $('recentList');
+    list.replaceChildren();
+    recent.forEach((item) => list.append(recentRow(item)));
+    $('recent').hidden = recent.length === 0;
   }
 
   /*
@@ -1723,6 +1915,9 @@
     list.replaceChildren();
     $('historyEmpty').hidden = items.length > 0;
     items.forEach((item) => list.append(historyRow(item, current)));
+    // The home screen's five rows are the head of this same list. One source,
+    // so a delete in the window is gone from the home screen too.
+    paintRecent(items);
   }
 
   // -- memory, skill and model windows --------------------------------------
@@ -2173,7 +2368,7 @@
     // It describes the last request of the conversation being cleared away, and
     // there has not been one in the new conversation yet.
     $('composerTransport').hidden = true;
-    $('empty').hidden = false;
+    showEmpty(true);
   }
 
   /**
@@ -2513,6 +2708,11 @@
       closeConfirm();
       setUsage(null, { prompt: 0, completion: 0, requests: 0 });
       setRunning(false);
+      /*
+       * The conversation just set aside is now the newest row on the home
+       * screen, so the list the pane opened with is one entry out of date.
+       */
+      post('history');
     }
   });
 
@@ -2627,6 +2827,60 @@
   // reader that Enter would do nothing yet.
   $('input').addEventListener('input', () => { if (!isRunning()) setRunning(false); });
   $('newChat').onclick = () => post('newChat');
+
+  /*
+   * The home table.
+   *
+   * Four rows of facts about the assistant as it is configured right now, and
+   * they are read from the two places that already know: the bootstrap (host,
+   * counts, model) and the toolbar's live state (`currentMode`, `thinkState`,
+   * the model chip). Reading the toolbar rather than the bootstrap for the two
+   * that can change is what keeps this table from disagreeing with the control
+   * that sets them -- a status table whose mode row is one switch behind the
+   * switch beside it is the one thing it must never be.
+   *
+   * Counts do not live-update: tools, skills and memory come from Rust once per
+   * pane, and changing them happens in Settings, not here.
+   */
+  const MODE_WORD = { ask: 'modeAsk', auto: 'modeAuto', trust: 'modeTrust' };
+  const MODE_NOTE = { ask: 'agentHomeAsk', auto: 'agentHomeAuto', trust: 'agentHomeTrust' };
+
+  function renderHome() {
+    const mode = MODE_WORD[currentMode] ? currentMode : 'ask';
+    const thinking = !!(thinkState && thinkState.enabled);
+    $('procHost').textContent = boot.host || '';
+    $('procModel').textContent = $('model').textContent || '—';
+    $('procThinking').textContent = S[thinking ? 'agentHomeThinkOn' : 'agentHomeThinkOff'] || '';
+    $('procMode').textContent = S[MODE_WORD[mode]] || mode;
+    $('procModeNote').textContent = S[MODE_NOTE[mode]] || '';
+    $('procTools').textContent = String(boot.tools || 0);
+    $('procFacts').textContent = (S.agentHomeFacts || '{0}').replace('{0}', String(boot.facts || 0));
+    $('procSkills').textContent = (S.agentHomeSkills || '{0}').replace('{0}', String(boot.skills || 0));
+  }
+
+  function showEmpty(visible) {
+    $('empty').hidden = !visible;
+  }
+
+  /*
+   * A suggestion fills the box; it does not send.
+   *
+   * Half of what makes an example useful is that it can be edited into what the
+   * reader actually meant, and a home page that spends money the moment it is
+   * clicked is a home page that has to be clicked carefully. The caret lands at
+   * the end, where the next word goes.
+   */
+  document.querySelectorAll('[data-starter]').forEach((button) => {
+    button.onclick = () => {
+      const box = $('input');
+      box.value = S[button.dataset.starter] || button.textContent || '';
+      autoGrow();
+      setRunning(false);
+      box.focus();
+      box.setSelectionRange(box.value.length, box.value.length);
+    };
+  });
+
   /** The toolbar's live settings, drawn from whatever the extension last said. */
   function applyAiState(state) {
     if (state.thinking && typeof state.thinking === 'object') applyThinkState(state.thinking);
@@ -2639,6 +2893,10 @@
       chip.title = (S.agentModelTitle || '') + ': ' + state.model;
       chip.setAttribute('aria-label', chip.title);
     }
+    // The table above the box is a view of these three values, so it is
+    // repainted here rather than anywhere else -- one place, no second copy to
+    // drift.
+    renderHome();
   }
 
   /*
@@ -2649,6 +2907,7 @@
    */
   $('think').onclick = () => { openPanel('thinkPanel'); paintThinkList(); };
   $('history').onclick = openHistory;
+  $('recentAll').onclick = openHistory;
   $('historyClose').onclick = closeHistory;
 
   $('model').onclick = () => openPanel('modelPanel', 'modelList');
@@ -2729,9 +2988,15 @@
   });
 
   applyStrings();
-  $('emptyMark').append(window.tshellMark());
   applyAiState({ thinking: boot.thinking || {}, mode: boot.mode || 'ask', model: boot.model || '' });
   setRunning(false);
   autoGrow();
   post('ready');
+  /*
+   * The home screen opens with five conversations under the card, and they are
+   * the same list the history window asks for. Asking once here means the
+   * card is complete before the first click rather than a glyph's round trip
+   * later.
+   */
+  post('history');
 }());

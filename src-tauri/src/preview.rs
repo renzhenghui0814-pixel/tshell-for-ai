@@ -13,6 +13,9 @@
 use encoding_rs::{Encoding, GB18030, UTF_8};
 use serde::Serialize;
 
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
+
 use crate::ssh;
 use crate::transfer::{self, Transfers};
 
@@ -154,6 +157,122 @@ pub async fn text(
         done: bytes.is_empty() || next_offset >= size,
         next_offset,
         size,
+    })
+}
+
+// ------------------------------------------------------------------ image ---
+
+/// How big a picture may be before it is described rather than drawn.
+///
+/// The bytes cross the IPC boundary as base64 and then live in the webview for
+/// as long as the tab does, so the cost of a preview is roughly twice the file.
+/// Thirty-two megabytes is ten times the largest screenshot and still leaves
+/// the window able to open the next tab.
+pub const IMAGE_LIMIT: u64 = 32 * 1024 * 1024;
+
+/*
+ * The picture kinds this window can draw, decided by the bytes rather than the
+ * name.
+ *
+ * By the bytes because the name is the user's: a `.png` that is really a PDF
+ * would reach the page as a `data:` URL the renderer refuses, and a broken
+ * picture reads on screen as a bug in tshell rather than as a fact about the
+ * file. It also means a picture with the wrong extension still opens.
+ *
+ * SVG is deliberately not here. It is text, it is editable, and this pane
+ * already has a better view of it than a picture box does.
+ *
+ * The lengths are checked where a kind needs more than four bytes; everything
+ * below compares the first bytes it is given, so a two-byte file cannot panic
+ * on a twelve-byte signature.
+ */
+pub fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        return Some("image/png");
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    // `BM`, and nothing else begins with it among the kinds here.
+    if bytes.starts_with(b"BM") && bytes.len() >= 14 {
+        return Some("image/bmp");
+    }
+    // An icon, or a cursor: 00 00 01 00 / 00 00 02 00.
+    if bytes.len() >= 4 && bytes[0] == 0 && bytes[1] == 0 && bytes[3] == 0 && (bytes[2] == 1 || bytes[2] == 2) {
+        return Some("image/x-icon");
+    }
+    // The one ISO-BMFF brand worth claiming. `ftyp` is shared with mp4 and
+    // friends, so the brand is what decides; HEIC is left out rather than
+    // offered to a renderer that may not have it.
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" && (&bytes[8..12] == b"avif" || &bytes[8..12] == b"avis")
+    {
+        return Some("image/avif");
+    }
+    None
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageFile {
+    /// Empty when this is not a picture the window can draw, or one too large.
+    pub mime: &'static str,
+    /// The base64 payload of a `data:` URL. Empty unless `mime` is set.
+    pub data: String,
+    pub size: u64,
+    /// True when the file *is* a picture and was not sent because of its size.
+    /// The page says so rather than falling back to "not a text file", which is
+    /// both true and beside the point.
+    pub too_big: bool,
+}
+
+pub async fn image(
+    transfers: &Transfers,
+    pane: &str,
+    side: &str,
+    target: &ssh::Target,
+    path: &str,
+) -> Result<ImageFile, String> {
+    let size = transfer::stat(transfers, pane, side, target, path)
+        .await?
+        .size;
+
+    // Enough for every signature above and no more: the answer for a JPEG is in
+    // its third byte, and this read happens for every binary file the pane
+    // opens, picture or not.
+    let head = transfer::read_bytes(transfers, pane, side, target, path, 0, 16).await?;
+    let mime = match image_mime(&head) {
+        Some(mime) => mime,
+        None => {
+            return Ok(ImageFile {
+                mime: "",
+                data: String::new(),
+                size,
+                too_big: false,
+            })
+        }
+    };
+
+    if size > IMAGE_LIMIT {
+        return Ok(ImageFile {
+            mime: "",
+            data: String::new(),
+            size,
+            too_big: true,
+        });
+    }
+
+    let bytes = transfer::read_bytes(transfers, pane, side, target, path, 0, size as usize).await?;
+    Ok(ImageFile {
+        mime,
+        data: BASE64.encode(&bytes),
+        size,
+        too_big: false,
     })
 }
 
@@ -405,5 +524,42 @@ mod tests {
         assert_eq!(format_value(b"T", &flag, UTF_8), "true");
         assert_eq!(format_value(b"f", &flag, UTF_8), "false");
         assert_eq!(format_value(b"?", &flag, UTF_8), "?");
+    }
+
+    #[test]
+    fn a_picture_is_known_by_its_bytes() {
+        assert_eq!(
+            image_mime(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0]),
+            Some("image/png")
+        );
+        assert_eq!(image_mime(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
+        assert_eq!(image_mime(b"GIF89a\x01\x00"), Some("image/gif"));
+        assert_eq!(image_mime(b"RIFF\x24\x00\x00\x00WEBPVP8 "), Some("image/webp"));
+        // A BMP header is 14 bytes, so the signature alone is not enough.
+        assert_eq!(image_mime(b"BM\x36\x00\x00\x00\x00\x00\x00\x00\x36\x00\x00\x00"), Some("image/bmp"));
+        assert_eq!(image_mime(&[0, 0, 1, 0, 1, 0]), Some("image/x-icon"));
+        assert_eq!(
+            image_mime(b"\x00\x00\x00\x20ftypavif\x00\x00\x00\x00"),
+            Some("image/avif")
+        );
+    }
+
+    /// The name is the user's; the bytes are the file's. A PDF called `logo.png`
+    /// must not become a broken picture on screen.
+    #[test]
+    fn a_name_that_claims_to_be_a_picture_does_not_make_one() {
+        assert_eq!(image_mime(b"%PDF-1.7\n"), None);
+        assert_eq!(image_mime(b"<?xml version=\"1.0\"?><svg/>"), None);
+        // MP4 shares `ftyp` with the brand check above and must not slip through.
+        assert_eq!(image_mime(b"\x00\x00\x00\x20ftypisom\x00\x00\x00\x00"), None);
+    }
+
+    /// The read is of a prefix, so a buffer shorter than a signature is a normal
+    /// input rather than a panic.
+    #[test]
+    fn a_short_file_is_not_a_picture() {
+        for prefix in [&b""[..], &b"\x89PN"[..], &b"BM"[..], &b"RIFF"[..], &b"\x00\x00\x01"[..]] {
+            assert_eq!(image_mime(prefix), None);
+        }
     }
 }

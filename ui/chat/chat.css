@@ -152,28 +152,298 @@ button:disabled { opacity: .38; cursor: default; }
  */
 .thread > * { flex: none; }
 
-.empty { margin: auto; padding: 24px; color: var(--vscode-descriptionForeground); text-align: center; max-width: 42ch; line-height: 1.6; }
-.empty-text { margin: 0; }
+/*
+ * The home state: a process table for the assistant.
+ *
+ * Four rows of facts -- model, permission mode, tool count, remembered facts --
+ * plus the machine it is standing on and three sentences worth starting from.
+ * Everything in it is real: the counts come from Rust with the panel, and the
+ * mode and model are the same values the toolbar shows, repainted from the same
+ * message.
+ *
+ * Card, not plain text, because the thing being described is a running process
+ * rather than a page: a frame, an aligned key column and hairlines are the
+ * vocabulary of `htop` and `systemctl status`, which is the company this panel
+ * keeps.
+ *
+ * Nothing here animates but `opacity` and `transform`. The rows rise once when
+ * the pane opens, and the status dot keeps a slow heartbeat -- two composited
+ * properties, no canvas, no timers, and the rows are visible even if the
+ * animation never runs.
+ */
+.empty {
+  margin: auto;
+  padding: 24px 20px;
+  max-width: 60ch;
+}
+
+.proc {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  /*
+   * `--bg-card`, the token for a card inside a panel, rather than the window
+   * ground this used to borrow. `--bg-elev` is the surface *behind* the panel:
+   * in the light half it is the grey one, so the card read as a recess there.
+   * `--bg-card` is an alias of `--bg-tab`, the surface the palette editor calls
+   * the tab in front, which is the same decision -- so a colour the user picks
+   * in Settings reaches this card.
+   */
+  background: var(--bg-card);
+  overflow: hidden;
+  max-width: 100%;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--tx-dim);
+}
+
+.proc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+
+.proc-name { color: var(--tx); font-weight: 600; white-space: nowrap; }
+
+.proc-host { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /*
- * The mark above the help text.
+ * The heartbeat. `--brand` and not `--ac`: this is the application's own mark
+ * sitting in the row, and the ring it throws off is the only thing on this
+ * screen that moves on its own.
  *
- * `--brand`, which is the one token in theme.css with the same value in both
- * halves: this is the application's own logo, not a label for the assistant,
- * and the logo does not darken when the user picks the light theme -- see the
- * note on the token. A role token would, and would stop it matching the icon
- * in the taskbar.
- *
- * Sized in `em` off the panel's own text so it stays in proportion when the
- * window is small, and capped in px so it does not become a poster on a wide
- * one. `height: auto` on the svg with the width set is what keeps the blocks
- * square; the viewBox is 17 wide by 15 tall and forcing both axes would shear
- * every one of them.
+ * The ring is a pseudo-element scaled and faded rather than the dot's own
+ * `box-shadow` animated: a shadow change repaints every frame, while a scaled
+ * layer is work the compositor does on its own. It is the same reason nothing
+ * else in this file animates anything but `opacity` and `transform`.
  */
-.empty-mark { margin: 0 0 20px; display: flex; justify-content: center; }
-/* Two colours, both written by the mark itself -- there is nothing here to
- * inherit. See `tshellMark` in shared/icons.js. */
-.empty-mark svg { width: min(8.5em, 116px); height: auto; }
+.proc-beat {
+  position: relative;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brand);
+}
+
+.proc-beat::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1px solid var(--brand);
+  opacity: 0;
+  animation: proc-beat 3.2s ease-out infinite;
+}
+
+@keyframes proc-beat {
+  0% { transform: scale(1); opacity: .7; }
+  70%, 100% { transform: scale(2.6); opacity: 0; }
+}
+
+.proc-rows { padding: 6px 12px 8px; }
+
+.proc-row {
+  display: grid;
+  /* `minmax(0, auto)` on the note, not `auto`: in a pane narrower than the
+   * table the note is the part that can be cut, and a track sized by its own
+   * text cannot be. */
+  grid-template-columns: 52px minmax(0, 1fr) minmax(0, auto);
+  gap: 10px;
+  align-items: baseline;
+  animation: proc-rise .34s ease backwards;
+}
+
+/* Staggered, so the table is read rather than flashed. */
+.proc-row:nth-child(1) { animation-delay: .04s; }
+.proc-row:nth-child(2) { animation-delay: .1s; }
+.proc-row:nth-child(3) { animation-delay: .16s; }
+.proc-row:nth-child(4) { animation-delay: .22s; }
+
+@keyframes proc-rise {
+  from { opacity: 0; transform: translateY(3px); }
+}
+
+.proc-row .k { color: var(--tx-dim); }
+
+.proc-row .v {
+  color: var(--tx);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.proc-row .n {
+  color: var(--tx-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.proc-try {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 12px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--line);
+}
+
+.proc-arrow { margin-right: -.3em; }
+
+/*
+ * The suggestions. Buttons, because they are -- clicking one puts the sentence
+ * in the box below -- drawn as bare text so the row stays a row of the table
+ * rather than becoming a toolbar.
+ */
+.proc-chip {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--tx-dim);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color .16s ease;
+}
+
+.proc-chip:hover { color: var(--tx); }
+
+.proc-chip:focus-visible {
+  outline: none;
+  color: var(--tx);
+  border-radius: 3px;
+  box-shadow: 0 0 0 2px var(--ac-ring);
+}
+
+/*
+ * The two moving things are decoration. A reader who asked for less motion gets
+ * the same table, drawn once: the rows are already visible without their
+ * animation, and the dot simply stops throwing a ring.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .proc-row { animation: none; }
+  .proc-beat::after { animation: none; }
+  .proc-chip { transition: none; }
+}
+
+/* -- recent conversations -------------------------------------------------- */
+
+/*
+ * The last five conversations, under the home card.
+ *
+ * Not a second history window: a row is a title and a machine-and-time, the
+ * whole row is the target, and there is no delete here -- the home screen is
+ * where a conversation is started, not managed. The list hides itself when
+ * there is nothing to show, so a first run leaves only the card.
+ */
+.recent { margin-top: 18px; }
+.recent[hidden] { display: none; }
+
+.recent-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 12px 5px;
+  color: var(--tx-dim);
+  font-size: var(--fs-xs);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.recent-label { flex: 1 1 auto; min-width: 0; }
+
+/*
+ * Quiet, but a real target: the composer already carries the history glyph, so
+ * this is the same door with the whole list behind it, not the only way in.
+ */
+.recent-all {
+  flex: none;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--tx-dim);
+  font: inherit;
+  font-size: var(--fs-xs);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.recent-all:hover { color: var(--tx); }
+.recent-all:focus-visible { outline: none; border-radius: 3px; box-shadow: 0 0 0 2px var(--ac-ring); }
+
+.recent-list { display: flex; flex-direction: column; }
+
+/*
+ * One row, one target. The title gives way first: the machine and the time are
+ * what tell two chats apart, and the title is repeated in the thread when it
+ * opens.
+ */
+.recent-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  width: 100%;
+  min-height: 0;
+  padding: 7px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  border-radius: 0;
+  background: transparent;
+  color: var(--tx);
+  font: inherit;
+  text-align: left;
+  white-space: normal;
+  transition: background-color .12s ease, color .12s ease;
+}
+
+.recent-row:last-child { border-bottom: 0; }
+.recent-row:hover { background: var(--hover); }
+
+.recent-row:focus-visible {
+  outline: none;
+  border-radius: var(--r-sm);
+  box-shadow: 0 0 0 2px var(--ac-ring);
+}
+
+.recent-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+/*
+ * The machine and the time never give way unless the panel is genuinely too
+ * narrow for both, and then they give way together. `flex` rather than a grid
+ * track: a percentage max-width on a grid item is resolved during track
+ * sizing, where it is circular, and the column collapsed to a few characters
+ * even with room to spare.
+ */
+.recent-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 60%;
+  overflow: hidden;
+  color: var(--tx-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .recent-row { transition: none; }
+}
+
 
 /* -- timeline ------------------------------------------------------------ */
 
@@ -221,12 +491,13 @@ button:disabled { opacity: .38; cursor: default; }
 .step-dot:hover { transform: scale(1.55); box-shadow: 0 0 0 3px color-mix(in srgb, var(--step-dot, var(--vscode-descriptionForeground)) 24%, transparent); }
 
 /* Conversation content is drawn directly on the panel ground.  Differentiation
- * comes from type, colour, rails and borders, never from a second surface. */
+ * comes from type, colour, rails and borders, never from a second surface --
+ * except a file diff, whose green or red wash is the state of the line rather
+ * than a decorative panel behind it. */
 .thread .turn.assistant .bubble,
 .thread .card,
 .thread .command-detail,
 .thread .file-detail,
-.thread .file-detail-change,
 .thread .memory-row,
 .thread .command,
 .thread .output,
@@ -730,19 +1001,148 @@ button:disabled { opacity: .38; cursor: default; }
 .file-card .card-head { padding: 0; background: transparent; }
 .file-card .card-head:hover { background: transparent; color: var(--tx); }
 /* Match command output: a large diff stays one compact timeline item and
- * scrolls inside its own frame instead of stretching the whole conversation. */
-.file-detail { display: none; max-height: 320px; margin-top: 2px; overflow: auto; }
+ * scrolls inside its own frame instead of stretching the whole conversation.
+ *
+ * The path sits above the scroller and never moves; the code and its gutter
+ * move under it. Inside the scroller the gutter -- bar and line number -- is
+ * sticky, so a long line can slide sideways while the state and the number
+ * stay against the left edge. Native bars are hidden (see below) so there is
+ * no reserved gutter between the rows and the card's border. */
+.file-detail { display: none; position: relative; margin-top: 2px; }
 .file-card[open] .file-detail { display: block; }
-.file-detail-name { display: block; padding: 5px 7px; color: var(--tx-dim); font-family: var(--font-mono); font-size: var(--fs-sm); }
-.file-detail-change { border-top: 1px solid var(--hairline); font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 1.35; }
-.file-detail-line { display: grid; grid-template-columns: .8em calc(var(--line-digits, 2) * 1ch) minmax(0, 1fr); column-gap: 2px; min-width: 0; }
-.file-detail-line > span:first-child { padding: 1px 0; color: var(--tx-dim); text-align: center; user-select: none; }
-.file-detail-change.del .file-detail-line > span:first-child { color: var(--err); }
-.file-detail-change.add .file-detail-line > span:first-child { color: var(--ok); }
-.file-detail-change.del { background: color-mix(in srgb, var(--err) 12%, transparent); }
-.file-detail-change.add { background: color-mix(in srgb, var(--ok) 12%, transparent); }
-.file-detail-lines { min-width: 0; padding: 1px 0; overflow: hidden; color: var(--tx-dim); text-align: right; font: inherit; opacity: .8; user-select: none; }
-.file-detail-line > code { min-width: 0; padding: 1px 5px; overflow: auto; color: var(--tx); font: inherit; white-space: pre-wrap; word-break: break-word; }
+.file-detail-name {
+  display: block;
+  padding: 5px 7px;
+  color: var(--tx-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+.file-detail-body { position: relative; }
+.file-detail-scroll { max-height: 320px; overflow: auto; scrollbar-width: none; }
+.file-detail-scroll::-webkit-scrollbar { width: 0; height: 0; }
+
+/*
+ * One width for the whole diff, not one per change block.
+ *
+ * The wrapper is as wide as the longest line in either half; each block then
+ * fills it. Without this the deleted block's tint stops at its own longest
+ * line, so after scrolling sideways the red background ends well before the
+ * green one, as if the deletion were only half as wide as the insertion.
+ *
+ * The change block's own background must be a solid composite of the theme's
+ * soft colour over the panel ground, rather than the translucent colour alone,
+ * because the sticky gutter has to paint over the code that slides beneath it.
+ * `background: inherit` on the rows and the gutter carries the same composite.
+ *
+ * `line-height` is an integer on purpose. Fractional line boxes put a hairline
+ * seam between two adjacent rows' bars; sixteen pixels makes them touch.
+ */
+.file-detail-content { width: max-content; min-width: 100%; }
+
+.file-detail-change {
+  border-top: 1px solid var(--hairline);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 16px;
+  background: linear-gradient(var(--diff-tint), var(--diff-tint)) var(--bg-base);
+}
+
+.file-detail-change.add { --diff-tint: var(--ok-soft); }
+.file-detail-change.del { --diff-tint: var(--err-soft); }
+
+/*
+ * One row: a sticky gutter (bar and number) and the code. `max-content` on the
+ * code column is what makes the block scroll sideways instead of wrapping;
+ * `white-space: pre` preserves the highlighter's spans and the indentation.
+ */
+.file-detail-line {
+  display: grid;
+  grid-template-columns: max-content max-content;
+  align-items: stretch;
+  background: inherit;
+}
+
+.file-detail-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 3px calc(var(--line-digits, 2) * 1ch);
+  column-gap: 8px;
+  align-items: stretch;
+  padding-right: 8px;
+  background: inherit;
+  user-select: none;
+}
+
+.file-detail-mark { width: 3px; background: var(--ok); }
+.file-detail-change.del .file-detail-mark { background: var(--err); }
+
+.file-detail-lines {
+  padding: 0;
+  color: var(--tx-dim);
+  text-align: right;
+  font: inherit;
+  opacity: .8;
+}
+
+.file-detail-line > code {
+  padding: 0 8px 0 0;
+  color: var(--tx);
+  font: inherit;
+  white-space: pre;
+  word-break: normal;
+  user-select: text;
+}
+
+/*
+ * The diff's own scrollbars, drawn over the last ten pixels of the code.
+ *
+ * They are siblings of the scroller, absolute in the shell, so they stay at
+ * the visible edges while the content moves under them. Hidden until the
+ * pointer is over the diff (or the thumb is being dragged), the same rule the
+ * native bars in this window follow; what is different is that they take no
+ * width, so the diff itself is flush with the card's border.
+ */
+.file-detail-bar {
+  position: absolute;
+  z-index: 2;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .12s ease;
+}
+
+.file-detail-body:hover .file-detail-bar,
+.file-detail-body.dragging .file-detail-bar { opacity: 1; }
+.file-detail-bar[hidden] { display: none; }
+
+.file-detail-bar.vertical { top: 0; right: 0; bottom: 0; width: 10px; }
+.file-detail-bar.horizontal { left: 0; right: 0; bottom: 0; height: 10px; }
+
+.file-detail-thumb {
+  position: absolute;
+  border-radius: var(--r-pill);
+  background: var(--scroll);
+  /* Not a target until the bar is actually showing; an invisible six-pixel
+   * strip at the edge of the code would otherwise eat the click. */
+  pointer-events: none;
+  cursor: grab;
+}
+
+.file-detail-body:hover .file-detail-thumb,
+.file-detail-body.dragging .file-detail-thumb { pointer-events: auto; }
+
+.file-detail-thumb:hover,
+.file-detail-thumb.dragging { background: var(--scroll-hover); }
+
+.file-detail-thumb.dragging { cursor: grabbing; }
+.file-detail-bar.vertical .file-detail-thumb { left: 2px; width: 6px; }
+.file-detail-bar.horizontal .file-detail-thumb { top: 2px; height: 6px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .file-detail-bar { transition: none; }
+}
 
 .transfer-card { overflow: visible; background: transparent; border-color: transparent; }
 .transfer-card .card-head { padding: 0; background: transparent; }

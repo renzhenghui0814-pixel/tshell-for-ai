@@ -73,6 +73,10 @@ body {
 
 .badge[hidden] { display: none; }
 
+/* The size of a picture is not a warning. Same pill, the ink the rest of the
+   strip is written in -- the amber is kept for the badge that is one. */
+.badge.dim { background: var(--bg-elev); color: var(--tx-dim); }
+
 .spacer { flex: none; }
 
 /* The save button says whether there is anything to save. */
@@ -362,6 +366,61 @@ body {
 }
 
 .grid th.at { z-index: 3; }
+
+/* -- a picture ------------------------------------------------------------- */
+
+/*
+ * Centred, and never larger than the pane.
+ *
+ * `object-fit: contain` with a percentage maximum rather than a fixed pixel
+ * size: a screenshot is 1920 wide and a favicon is 16, and both should arrive
+ * the right way up inside whatever the tab happens to be. Nothing is scaled up
+ * past its own size, because a 16px icon blown to 800px is a preview of the
+ * browser's resampling, not of the picture.
+ *
+ * The checkerboard is drawn in CSS rather than shipped as a texture, and it goes
+ * on the picture rather than on the pane -- a transparent PNG has to be told
+ * apart from a dark photograph, but a screen of empty squares around a small
+ * icon is a screen of noise. On the `<img>` its own transparent pixels show it,
+ * and nothing else does.
+ */
+.image {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: var(--bg-base);
+}
+
+.image[hidden] { display: none; }
+
+.image img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  background-color: var(--bg-base);
+  background-image:
+    linear-gradient(45deg, var(--hover) 25%, transparent 25%, transparent 75%, var(--hover) 75%),
+    linear-gradient(45deg, var(--hover) 25%, transparent 25%, transparent 75%, var(--hover) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+  /* A hairline keeps a picture that happens to be the same colour as the panel
+     from looking like it failed to load. */
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+/*
+ * The strip while a picture is up.
+ *
+ * Set on the body rather than with `[hidden]` on each control: `.fontsize` and
+ * `.c-select` carry their own `display`, and an author rule beats the one the
+ * attribute relies on, so the attribute would do nothing at all.
+ */
+body.picture .fontsize,
+body.picture .c-select,
+body.picture #find { display: none; }
 
 /* -- the line at the bottom ------------------------------------------------ */
 
