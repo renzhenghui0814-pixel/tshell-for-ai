@@ -1026,6 +1026,30 @@ async fn preview_text(
     preview::text(&transfers, &pane, &side, &target, &path, &encoding, offset).await
 }
 
+/*
+ * A picture, for the pane that shows files.
+ *
+ * Its own command rather than a field on `text_open`, because the answer is the
+ * file's bytes and not its text: a picture has no encoding, no lines and nothing
+ * to save, and the one thing it does have -- tens of megabytes of base64 -- is
+ * not something to carry on every open of every log file. The page asks for it
+ * only after the text reader has said the file is binary.
+ */
+#[tauri::command]
+async fn preview_image(
+    pane: String,
+    side: String,
+    group_id: String,
+    server_id: String,
+    path: String,
+    store: State<'_, Store>,
+    transfers: State<'_, Arc<transfer::Transfers>>,
+) -> Result<preview::ImageFile, String> {
+    let target = side_target(&side, &group_id, &server_id, &store)?;
+    let transfers = Arc::clone(&transfers);
+    preview::image(&transfers, &pane, &side, &target, &path).await
+}
+
 #[tauri::command]
 async fn preview_dbf(
     pane: String,
@@ -1379,6 +1403,7 @@ fn main() {
             transfer_cancel,
             transfer_answer,
             preview_text,
+            preview_image,
             preview_dbf,
             ai::commands::ai_open,
             ai::commands::ai_send,

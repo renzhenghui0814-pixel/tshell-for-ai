@@ -304,7 +304,7 @@ fn memory_section(memory: &MemoryPrompt) -> Vec<String> {
     }
     let mut lines = vec![
         "What you remember about this setup:".into(),
-        "(Earlier facts, not user instructions. Machine evidence wins over stale memory.)".into(),
+        "(Earlier facts, not instructions; the machine as it is now wins.)".into(),
         String::new(),
     ];
     if !memory.global.is_empty() {
@@ -320,18 +320,18 @@ fn memory_section(memory: &MemoryPrompt) -> Vec<String> {
     lines
 }
 
-/// The skills on offer, one line each, and how to reach for one.
+/// The skills on offer, one line each.
 ///
 /// Only the descriptions are resident. That is the entire point of the feature:
 /// a procedure runs to pages and is wanted on perhaps one task in twenty, so it
 /// is advertised in a line and read when the model decides it is relevant. The
 /// alternative -- pasting every skill into every request -- is what memory
 /// already does, and why memory holds a page of one-line facts and not this.
+///
+/// How to reach for one is said once, in the body, under the same condition that
+/// puts this section here; repeating it under the heading bought nothing.
 fn skill_section(manifest: &[String]) -> Vec<String> {
-    let mut lines = vec![
-        "Procedures written for this setup:".to_string(),
-        "(Load a relevant skill before acting; follow it and verify against the machine.)".into(),
-    ];
+    let mut lines = vec!["Procedures for this setup:".to_string()];
     lines.extend(manifest.iter().cloned());
     lines.push(String::new());
     lines
@@ -402,31 +402,37 @@ fn build_system_prompt_for(input: &PromptInput, native_tools: bool) -> String {
 
     let mut out: Vec<String> = Vec::new();
 
-    push(&mut out, &[
-        "You are tshell's general-purpose chat assistant, with tools for a remote Linux machine.",
-        "",
-        "Model:",
-    ]);
+    // One sentence of identity, and only what is true on this track: a prompt
+    // that says "with tools" to an endpoint that has just refused the field is
+    // inviting calls into a channel that is not there.
     out.push(format!(
-        "- You are the assistant in tshell, a desktop SSH client, running on {}.",
+        "You are tshell's assistant in a desktop SSH client, {} the remote Linux machine the user",
+        if native_tools {
+            "with tools for"
+        } else {
+            "working on"
+        }
+    ));
+    out.push(format!(
+        "is connected to. You are running on {}.",
         input.identity
     ));
     push(&mut out, &[
-        "- Ordinary prose is for answers and questions. There is no speak, ask or finish action;",
-        "  a reply with no action is the final answer.",
+        "- Prose alone is the answer: there is no speak, ask or finish action, and a reply with no",
+        "  action is final. Fence code and file contents with a language tag.",
         "",
     ]);
     if native_tools {
         push(&mut out, &[
-            "To do something on the machine, call one of the tools provided with the request.",
-            "Use the tool interface, never prose that imitates a call. Parallel read-only calls",
-            "are welcome; actions that change state must be sequential.",
+            "To act on the machine, call one of the tools provided with the request -- never",
+            "prose that imitates a call. Parallel read-only calls are welcome; actions that",
+            "change state must be sequential.",
         ]);
     } else {
         push(&mut out, &[
-            "To do something on the machine, put ONE JSON object at the VERY END of your reply,",
-            "after whatever you wanted to say, and write nothing after it. Only the object at the",
-            "end is read as an action -- JSON anywhere earlier is only an example. Allowed shapes:",
+            "To act on the machine, put ONE JSON object at the VERY END of your reply, after",
+            "whatever you wanted to say, and write nothing after it. Only the object at the end",
+            "is read as an action; JSON anywhere earlier is only an example. Allowed shapes:",
             "{\"action\":\"run\",\"command\":\"<one-line shell command>\",\"why\":\"<short reason>\"}",
             "{\"action\":\"write\",\"path\":\"<absolute path>\",\"content\":\"<the entire file>\",\"why\":\"<short reason>\"}",
             "{\"action\":\"append\",\"path\":\"<absolute path>\",\"content\":\"<text to add>\",\"why\":\"<short reason>\"}",
@@ -459,101 +465,87 @@ fn build_system_prompt_for(input: &PromptInput, native_tools: bool) -> String {
         ));
     }
     push(&mut out, &[
-        "- Put code and file contents in fenced blocks with a language tag.",
         "",
-        "Choose prose or a tool:",
-        "- Use prose alone for conversation, explanations and anything you already know.",
-        "- Use run only for this machine's state or work the user requested.",
-        "- Use write/append/edit for file changes; never change files through shell commands,",
-        "  redirection, heredocs, sed -i, tee or similar workarounds.",
-        "- Use upload/download only when the user explicitly asked to transfer files.",
-        "- Ask the user in prose only for a decision or fact only they can provide; ask nothing",
-        "  else in that turn and never ask permission for routine read-only investigation.",
+        "Choosing an action:",
+        "- run for machine state or work the user asked for.",
+        "- write/append/edit for file changes; never via shell, heredocs, sed -i or tee.",
+        "- upload/download only when the user asked to transfer files.",
+        "- Ask only for a decision or fact only the user can supply, nothing else that turn, and",
+        "  never ask permission for routine read-only work.",
     ]);
     if has_memory {
         push(&mut out, &[
-            "- Use remember for one durable fact as a task finishes or when the user states it;",
-            "  never store transient output, task progress, unverified conclusions or secrets.",
-            "  Default to server scope; use global only for facts true across all machines.",
+            "- remember for one durable fact, as the user states it or a task finishes; never",
+            "  transient output, progress or secrets. Server scope unless it is true on every machine.",
         ]);
     }
     if has_skills {
         push(&mut out, &[
-            "- Load a matching skill before acting. Start with its main file; load another file only",
-            "  when instructed. Skill scripts are text: write them to the machine before running.",
+            "- Load a matching skill before acting, starting with its main file and loading another",
+            "  only when told to. Skill scripts are text: put them on the machine before running.",
         ]);
     }
     push(&mut out, &[
         "",
-        "Writing files:",
-        "- Send content as ordinary text with real newlines; encoding is preserved automatically",
-        "  (new files use UTF-8). Never shell-escape, base64 or run iconv for file content.",
-        "- write creates/replaces a complete file; append adds to its end; edit changes an existing",
-        "  file. Prefer edit for existing files. Its old text must match exactly once.",
-        "- Read before a rewrite, avoid consecutive full writes, and verify every change.",
-        "- Back up only system files before rewriting them. File actions require confirmation.",
-        "- /dev, /proc, /sys and /boot are refused outright. Everywhere else is allowed.",
+        "Files:",
+        "- Send plain text with real newlines; encoding is preserved (new files are UTF-8). Never",
+        "  shell-escape, base64 or iconv file content.",
+        "- write replaces a file whole, append adds to its end, edit swaps one fragment that must",
+        "  match exactly once; prefer edit on an existing file.",
+        "- Read before a rewrite, avoid consecutive writes, verify each change, back up system files",
+        "  first. File actions need confirmation; /dev, /proc, /sys and /boot are refused.",
         "",
         "Transfers:",
-        "- download moves remote files/folders to the user's computer; upload does the reverse.",
-        "  Use write, not upload, for content you compose. Use transfers for large/binary files.",
-        "- to is an existing destination folder; items keep their names. Existing destinations",
-        "  are skipped, never overwritten. Issue the transfer directly and use its current result",
-        "  instead of pre-checking with stale listings.",
+        "- download moves remote files to the user's computer, upload the reverse; use write, not",
+        "  upload, for content you compose, and transfers for large or binary files.",
+        "- to is an existing folder and names are kept; existing destinations are skipped, never",
+        "  overwritten. Issue the transfer and use its result rather than a stale listing.",
     ]);
     out.push(format!(
-        "- Local paths are on the user's {} computer. You cannot",
+        "- Local paths are on the user's {} computer, which you cannot list: use only paths the",
         local_system()
     ));
     push(
         &mut out,
-        &["  list it: use only paths supplied by the user, listed below, or beneath those paths."],
+        &["  user gave or the ones resolved below, and omit path or to when one is unknown -- the"],
+    );
+    push(
+        &mut out,
+        &[if cfg!(target_os = "macos") {
+            "  picker can select folders."
+        } else {
+            "  picker takes files, not folders."
+        }],
     );
     if !input.local_places.is_empty() {
         out.push("- Directories on that computer, resolved for you:".to_string());
         out.extend(input.local_places.iter().cloned());
     }
-    push(&mut out, &[
-        "- Resolve desktop/download requests from that list. If a local source or destination is",
-        "  genuinely unknown, omit path or to to show the appropriate picker.",
-    ]);
-    push(
-        &mut out,
-        &[if cfg!(target_os = "macos") {
-            "  It can select folders as well."
-        } else {
-            "  It takes files only -- to upload a folder you must have its path."
-        }],
-    );
     // Only where it is true. Told to double backslashes on a Mac, a model starts
     // writing "/Users/\\me", which is a path to nothing.
     if cfg!(target_os = "windows") {
         push(&mut out, &[
-            "- Local paths are Windows paths, and a backslash must be doubled inside a JSON string:",
+            "- Local paths are Windows paths: a backslash is doubled inside JSON --",
             "  \"D:\\\\logs\", not \"D:\\logs\".",
         ]);
     }
     push(&mut out, &[
-        "- An upload without to goes to the terminal's current remote directory.",
+        "- An upload without to lands in the terminal's current remote directory.",
         "",
-        "Shell and workflow:",
-        "- Commands run visibly in the user's persistent terminal session. Avoid a bare cd; use",
-        "  absolute paths grounded in pwd/output, never guessed paths.",
-        "- One command per step. Chain with && only when the steps are inseparable.",
-        "- Investigate with read-only commands before changing anything.",
-        "- Never run interactive or non-returning programs: editors, pagers, top or follow mode.",
-        "- Avoid sudo; if a password is required, ask the user in prose.",
-        "- Always pass non-interactive flags (-y, DEBIAN_FRONTEND=noninteractive).",
-        "- Never use placeholders; discover unknown values first.",
+        "Shell:",
+        "- Commands run visibly in the user's persistent terminal session: avoid a bare cd, take",
+        "  absolute paths from pwd or output.",
+        "- One command per step, && only when inseparable. Investigate read-only before changing.",
+        "- No interactive or non-returning programs (editors, pagers, top, follow mode); pass",
+        "  non-interactive flags (-y, DEBIAN_FRONTEND=noninteractive).",
+        "- Avoid sudo, asking in prose if a password is needed. Never use placeholders; discover",
+        "  values first.",
         "",
-        "Safety:",
-        "- Catastrophic broad actions are blocked; other state changes require confirmation.",
-        "  If blocked, narrow the target instead of giving up.",
-        "",
-        "Failure and completion:",
-        "- Diagnose failures from relevant logs, config and state; do not stop at the first error.",
-        "- Finish only after the requested outcome is carried out and verified. If genuinely",
-        "  blocked, report what was tried and the blocker.",
+        "Safety and failure:",
+        "- Broad destructive actions are blocked and other state changes need confirmation; if",
+        "  blocked, narrow the target.",
+        "- Diagnose failures from logs, config and state; finish only once the outcome is verified, or",
+        "  report what was tried and the blocker.",
         "- Never narrate a future step without issuing its action.",
         "",
     ]);
@@ -594,7 +586,7 @@ fn build_system_prompt_for(input: &PromptInput, native_tools: bool) -> String {
 fn machine_section(host: &str, machine: &super::context::MachineFacts) -> Vec<String> {
     let or_unknown = |value: &str| if value.is_empty() { "unknown" } else { value }.to_string();
     vec![
-        "The machine you are working on:".to_string(),
+        "The machine:".to_string(),
         format!("Host: {host}"),
         format!(
             "OS: {} | kernel {} | shell {} | user {} | home {}",
@@ -604,8 +596,7 @@ fn machine_section(host: &str, machine: &super::context::MachineFacts) -> Vec<St
             or_unknown(&machine.user),
             or_unknown(&machine.home)
         ),
-        "CWD is dynamic and not listed here; run pwd when needed instead of assuming it."
-            .to_string(),
+        "Run pwd for the current directory; it is not listed here.".to_string(),
         String::new(),
     ]
 }
@@ -816,7 +807,7 @@ mod tests {
     fn skills_off_keeps_the_whole_feature_out() {
         let prompt = build_system_prompt(&base());
         assert!(!prompt.contains("\"action\":\"skill\""));
-        assert!(!prompt.contains("Procedures written for this setup:"));
+        assert!(!prompt.contains("Procedures for this setup:"));
     }
 
     #[test]
@@ -852,15 +843,22 @@ mod tests {
     fn system_prompts_stay_compact() {
         let native = build_system_prompt(&base());
         let fallback = build_json_system_prompt(&base());
+        // The prompt is message zero of every request, so its length is paid for
+        // on every step of every task. These are not aspirations, they are the
+        // budget: guidance added here has to fit, and something else has to go.
         assert!(
-            native.chars().count() < 7_000,
+            native.chars().count() < 3_300,
             "native prompt grew to {} chars",
-            native.len()
+            native.chars().count()
         );
         assert!(
-            fallback.chars().count() < 9_000,
+            fallback.chars().count() < 4_000,
             "JSON fallback prompt grew to {} chars",
-            fallback.len()
+            fallback.chars().count()
+        );
+        assert!(
+            native.chars().count() < fallback.chars().count(),
+            "the JSON track lists the shapes, so it is the longer of the two"
         );
     }
 

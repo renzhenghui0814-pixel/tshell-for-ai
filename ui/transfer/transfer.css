@@ -362,14 +362,20 @@ button:focus-visible,
 /* File kind colours, taken from the theme's chart palette so they follow it. */
 /*
  * File kinds, on the syntax hues rather than the interface's semantic ones. A
- * folder being blue and an archive purple is a taxonomy, not a judgement -- the
- * red here means "binary", and borrowing --err for it would put the colour of
- * failure on every .so in the tree.
+ * folder being yellow and an archive purple is a taxonomy, not a judgement --
+ * the red here means "binary", and borrowing --err for it would put the colour
+ * of failure on every .so in the tree.
+ *
+ * Yellow for a folder because that is the one shape with a colour the world
+ * already agreed on; nothing has to be learned to read it. `--syn-blue` was
+ * where the folder used to be, and the drum -- the one glyph here that is not a
+ * page with a mark on it -- takes it, which is the other colour the world has
+ * already agreed on: a database is blue everywhere it is drawn.
  */
-.ic-dir { color: var(--syn-blue); }
+.ic-dir { color: var(--syn-yellow); }
 .ic-code { color: var(--syn-green); }
 .ic-markup { color: var(--syn-orange); }
-.ic-data { color: var(--syn-yellow); }
+.ic-data { color: var(--syn-blue); }
 .ic-archive { color: var(--syn-purple); }
 .ic-binary { color: var(--syn-red); }
 .ic-image { color: var(--syn-teal); }
@@ -430,18 +436,49 @@ button:focus-visible,
 
 .transfer-panel.open { display: grid; }
 
+/*
+ * Two lines per bar: the words, then the bar underneath them across the whole
+ * row.
+ *
+ * The words used to sit either side of the bar, in `auto` tracks, and an `auto`
+ * track is sized by its own text. So when the remaining time went from "10s" to
+ * "9s" the right-hand column lost a few pixels and the bar -- the `1fr` between
+ * the two -- gained them. It happened once a second, on both rows, with the
+ * file name moving the left-hand column on every file and the cancel button
+ * appearing in the right-hand one. A track that is nobody's width cannot be
+ * moved by anybody's text, which is what the second row is for: the bar is the
+ * full width of the panel and its edges are the panel's edges.
+ */
 .bar-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "label meta"
+    "track track";
+  column-gap: 10px;
+  row-gap: 5px;
   align-items: center;
   font-size: 12px;
   color: var(--vscode-descriptionForeground);
 }
 
-.bar-row .label { color: var(--vscode-foreground); white-space: nowrap; }
-.bar-row .label.name { min-width: 0; max-width: 30ch; overflow: hidden; text-overflow: ellipsis; }
-.bar-row .meta { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.bar-row .label {
+  grid-area: label;
+  color: var(--vscode-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The current file's name is the one text here that can be any length at all,
+ * so it is the one that gets cut rather than pushing the rest of the row. */
+.bar-row .label.name { min-width: 0; }
+.bar-row .meta {
+  grid-area: meta;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.bar-row .track { grid-area: track; }
 
 /*
  * Both of these are spans, so they must be blockified explicitly: an inline box

@@ -173,6 +173,27 @@
 .c-btn-ghost:hover { color: var(--tx); background: var(--hover); }
 
 /*
+ * A pill, for a control that is a phrase rather than a command -- the
+ * assistant's starter suggestions. Same box, same borders, same height; only
+ * the radius and the padding change, because a sentence in a rounded rectangle
+ * reads as a form control and the same sentence in a pill reads as something
+ * you could say.
+ *
+ * The lift on hover is one pixel of `transform`. It is the cheapest motion
+ * there is -- the compositor does it without a repaint -- and it is what makes
+ * a row of these feel like they are waiting to be picked up.
+ */
+.c-btn-pill {
+  border-radius: var(--r-pill);
+  padding: 0 12px;
+  transition: background-color .12s ease, border-color .12s ease, color .12s ease,
+    transform .12s ease;
+}
+
+.c-btn-pill:hover { transform: translateY(-1px); }
+.c-btn-pill:active { transform: none; }
+
+/*
  * Icon-only. 28px square, which is under the 44px touch guideline on purpose:
  * this is a pointer-driven desktop application with no touch target in it, and
  * a 44px grid would make the title bar twice its height for no one's benefit.

@@ -39,6 +39,8 @@
   var findbar = $('findbar');
   var findInput = $('findInput');
   var saveButton = $('save');
+  var imageBox = $('image');
+  var imageFile = $('image-file');
 
   /*
    * The height of one line, read from the stylesheet rather than repeated here.
@@ -67,13 +69,18 @@
     nextOffset: 0,
     total: 0,
     /*
-     * 'text' or 'table'. A DBF has only the second -- it is records read by
-     * field, and there is no text underneath to fall back to. A CSV has both,
-     * and opens as a table because that is what someone opening a CSV is
-     * looking at; its text is a mode away and editable there.
+     * 'text', 'table' or 'image'. A DBF has only the second -- it is records
+     * read by field, and there is no text underneath to fall back to. A CSV has
+     * both, and opens as a table because that is what someone opening a CSV is
+     * looking at; its text is a mode away and editable there. A picture has only
+     * the third.
      */
     mode: 'text',
-    table: { fields: [], rows: [], next: 0, done: true, loading: false }
+    table: { fields: [], rows: [], next: 0, done: true, loading: false },
+    /* A picture: its size once it has drawn, and whether it was refused for
+     * being too large to send. */
+    shot: null,
+    imageTooBig: false
   };
 
   var lineEls = [];
@@ -199,11 +206,21 @@
   function setMode(mode) {
     doc.mode = mode;
     var table = mode === 'table';
+    var image = mode === 'image';
     $('grid').hidden = !table;
-    scroll.hidden = table;
+    imageBox.hidden = !image;
+    scroll.hidden = table || image;
     // Find works on the text, and in a table there is none on screen. Left open
     // it would be a search box over a document that is not being shown.
-    if (table && !findbar.hidden) closeFind();
+    if ((table || image) && !findbar.hidden) closeFind();
+    /*
+     * The strip's controls are all about reading text: an encoding, a size, a
+     * search. Over a picture none of them means anything, and the size buttons
+     * are the worst of them -- they would look like they worked. On the body
+     * rather than on each control, because `.fontsize` and `.c-select` set their
+     * own `display` and an author rule outranks `[hidden]`.
+     */
+    document.body.classList.toggle('picture', image);
     if (table) drawTable();
     settle();
   }
@@ -355,12 +372,21 @@
     }
 
     if (file.readOnly === 'binary') {
-      // Nothing to show and nothing that showing it would help with.
+      /*
+       * A binary file may be a picture, and a picture is the one binary file
+       * with something to show.
+       *
+       * The page does not decide that: it asks, and Rust answers with the bytes
+       * when they carry a signature it knows and with an empty mime when they
+       * do not. That is the same reader that called this file binary a moment
+       * ago, which is why the two can never disagree about what it is.
+       */
       input.value = '';
       doc.lines = [];
       doc.painted = [];
       fitRows(0);
-      say(t('editorBinary'), true);
+      setMode('image');
+      post('editorImage', {});
       settle();
       return;
     }
@@ -389,12 +415,62 @@
     setMode(doc.language === 'csv' ? 'table' : 'text');
   }
 
+  /** The answer to `editorImage`: a picture, a refusal, or neither. */
+  function showedImage(image) {
+    doc.shot = null;
+    doc.imageTooBig = !!image.tooBig;
+
+    /*
+     * No mime and no size refusal means the bytes are not a picture this window
+     * can draw. That is the file being binary, which is what this pane said
+     * before it knew pictures existed -- so it goes back to saying it, in the
+     * surface it used to say it in.
+     */
+    if (!image.mime && !image.tooBig) {
+      setMode('text');
+      say(t('editorBinary'), true);
+      return;
+    }
+
+    // Read-only either way, which is what keeps the save button and the caret
+    // out of a buffer there is nothing to edit in.
+    doc.readOnly = 'binary';
+    setMode('image');
+    if (image.tooBig) {
+      say(t('editorImageTooBig'), true);
+      settle();
+      return;
+    }
+    say('');
+    imageFile.src = 'data:' + image.mime + ';base64,' + image.data;
+    settle();
+  }
+
+  /*
+   * The size the picture turned out to be, once it has drawn.
+   *
+   * From the decoded image rather than from the file's header: the bytes have
+   * already been through the renderer, so this is the answer for the picture
+   * that is on screen rather than a second opinion about the file.
+   */
+  imageFile.addEventListener('load', function () {
+    doc.shot = { width: imageFile.naturalWidth, height: imageFile.naturalHeight };
+    settle();
+  });
+
   /** Another slice of a file that is only being shown. */
   function grew(chunk) {
     doc.streaming = false;
     if (chunk.binary) {
-      say(t('editorBinary'), true);
-      doc.done = true;
+      /*
+       * The stream says this is not text after all -- which cannot follow a
+       * "too large" verdict from the same reader, but is the answer if it ever
+       * does. A binary file may be a picture, so the question is asked the same
+       * way it is asked from `show`.
+       */
+      post('editorImage', {});
+      setMode('image');
+      settle();
       return;
     }
     // Appended through the value rather than rebuilt, so the browser keeps the
@@ -442,18 +518,34 @@
     return !doc.readOnly && input.value !== doc.saved;
   }
 
+  /** What the badge says about a picture: its size, or why there is not one. */
+  function imageBadge() {
+    if (doc.imageTooBig) return t('editorImageTooBig');
+    // Nothing yet, which is the moment between asking and the picture drawing.
+    return doc.shot ? doc.shot.width + ' × ' + doc.shot.height : '';
+  }
+
   /** Everything the strip says about the file, worked out in one place. */
   function settle() {
     $('where').textContent = doc.path;
     $('where').title = doc.path;
 
     var badge = $('badge');
-    var reason = doc.readOnly === 'tooBig' ? t('editorTooBig')
+    /*
+     * The badge answers "what about this file" in the order the answers are
+     * worth having. A picture's answer is its size, because that is the only
+     * fact about it the strip can offer -- it is not read-only, not binary and
+     * not too large, it is 1920 by 1080.
+     */
+    var reason = doc.mode === 'image' ? imageBadge()
+      : doc.readOnly === 'tooBig' ? t('editorTooBig')
       : doc.readOnly === 'binary' ? t('editorBinary')
       : doc.readOnly ? t('editorReadOnly')
       : '';
     badge.textContent = reason;
     badge.hidden = !reason;
+    // The picture's size is a fact about the file, not a caution about it.
+    badge.classList.toggle('dim', doc.mode === 'image' && !doc.imageTooBig);
 
     var kind = tableKind();
     var button = $('mode');
@@ -965,6 +1057,11 @@
     if (message.type === 'editorFile') { show(message.file); return; }
     if (message.type === 'editorMore') { grew(message.chunk || {}); return; }
     if (message.type === 'editorTable') { grewTable(message.chunk || {}); return; }
+    if (message.type === 'editorImage') {
+      if (!message.image) { say(t(message.error) || message.error || t('editorBinary'), true); return; }
+      showedImage(message.image);
+      return;
+    }
     if (message.type === 'editorEncoding') {
       // Accepted, so the next save writes what is being read.
       doc.encoding = message.encoding || doc.encoding;

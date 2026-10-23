@@ -1065,6 +1065,13 @@ pub struct PanelBootstrap {
     pub model: String,
     pub thinking: Value,
     pub enabled: bool,
+    /// How many tools the model is offered in this configuration. Memory and
+    /// skills add one each, so this is also the answer to "are they on".
+    pub tools: usize,
+    /// Skills in the manifest -- enabled, and carrying a description.
+    pub skills: usize,
+    /// Remembered facts across both scopes.
+    pub facts: usize,
     /// The conversation being resumed, when one is.
     pub entries: Vec<ChatEntry>,
     pub usage: Option<ChatUsage>,
@@ -1119,6 +1126,29 @@ pub fn open_panel(
     let settings = config.settings.ai.clone();
     let language = config.settings.language;
 
+    /*
+     * The home screen's counts, worked out here because this is the one place
+     * that holds the settings and the stores at the same time.
+     *
+     * They are the same numbers the prompt and the tool table are built from,
+     * not a second opinion about them: a panel that advertised a capability the
+     * model was never given would be worse than a panel that showed nothing, and
+     * the two would drift apart the first time a switch changed.
+     */
+    let skill_manifest = if settings.skills.enabled {
+        stores.skills.manifest(&settings.skills.disabled)
+    } else {
+        Vec::new()
+    };
+    let facts = if settings.memory.enabled {
+        count_facts(&stores.memory.read(MemoryScope::Global, None))
+            + count_facts(&stores.memory.read(MemoryScope::Server, Some(&server_id)))
+    } else {
+        0
+    };
+    let tools = super::tools::tool_specs(settings.memory.enabled, !skill_manifest.is_empty()).len();
+    let skills = skill_manifest.len();
+
     let agent = Arc::new(AgentShell::fresh(
         settings.agent.output_budget.max(DEFAULT_OUTPUT_BUDGET),
     ));
@@ -1170,10 +1200,18 @@ pub fn open_panel(
         model: model_label(&settings, language),
         thinking: thinking_view(&settings),
         enabled: settings.enabled,
+        tools,
+        skills,
+        facts,
         entries: Vec::new(),
         usage: None,
     };
     (panel, bootstrap)
+}
+
+/// Facts in one memory file: one per line, with the blanks not counted.
+fn count_facts(text: &str) -> usize {
+    text.lines().filter(|line| !line.trim().is_empty()).count()
 }
 
 impl Panel {

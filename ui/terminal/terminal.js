@@ -78,10 +78,6 @@
        * whatever is behind the cursor rather than whatever the window is: a
        * scheme with its own background would otherwise punch a window-coloured
        * hole through the character the cursor is sitting on.
-       *
-       * The cursor is a bar now and nothing reads this, but the value is the
-       * answer to a question the style asks, not one the theme does: put the
-       * block back and the hole comes with it.
        */
       cursorAccent: background,
       selectionBackground: colors.selection || token('--term-select'),
@@ -123,15 +119,31 @@
   const term = new Terminal({
     cursorBlink: true,
     /*
-     * A bar, not the default block. `cursorWidth` is only read for this style
-     * -- a block's width is the cell's -- and it is floored to a whole number
-     * of CSS pixels, so 2 is the one step between a hairline and the cell. It
-     * arrives as an inset box-shadow on the DOM renderer's cursor element,
-     * which is the renderer in use: only addon-fit is vendored alongside
-     * xterm, so there is no canvas or WebGL renderer to disagree about it.
+     * A block, not a bar.
+     *
+     * A bar is what a text caret means everywhere else in this window, and in a
+     * terminal it is also the one shape that cannot answer the question a cursor
+     * is asked: a two-pixel line beside a glyph and a two-pixel line between two
+     * glyphs look the same, so a terminal that is reading the keyboard and one
+     * that is not look the same too -- until you type and find out where the
+     * character went. The block is the cell the next character lands in, which
+     * is the whole of what a cursor has to say here, and it is the shape the
+     * scheme preview in the settings panel has been drawing all along
+     * (`.scheme-preview .caret`).
+     *
+     * `cursorWidth` went with it: xterm reads it for a bar only, and a block's
+     * width is the cell's. The renderer in use is the DOM one -- only addon-fit
+     * is vendored alongside xterm, so there is no canvas or WebGL renderer to
+     * disagree about how a cell is drawn.
      */
-    cursorStyle: 'bar',
-    cursorWidth: 2,
+    cursorStyle: 'block',
+    /*
+     * Hollow when the pane is not focused, which is the other half of the same
+     * answer: a filled cell means the next keystroke lands here, and an outline
+     * means it does not. The default, and written down because a cursor whose
+     * only two states are "on" and "off" is the complaint that put this here.
+     */
+    cursorInactiveStyle: 'outline',
     convertEol: true,
     fontFamily: fontFamily(),
     fontSize: appearance.fontSize || 13,

@@ -2021,6 +2021,21 @@
         return;
 
       /*
+       * The picture, for the pane that shows files.
+       *
+       * Asked for only after the text reader has said the file is binary, and
+       * answered with an empty mime when it is binary and not a picture -- so
+       * the decision about what a file is stays in one place, on the side that
+       * can see the bytes. What crosses back is a `data:` URL's payload, which
+       * is why this is a separate command and not a field on `text_open`.
+       */
+      case 'editorImage':
+        invoke('preview_image', editorArgs(pane, {}))
+          .then(function (image) { send(id, { type: 'editorImage', image: image }); })
+          .catch(function (error) { send(id, { type: 'editorImage', error: reason(error) }); });
+        return;
+
+      /*
        * A file too large to edit is read through the preview commands, which
        * have streamed files of any size since the file panel had a preview.
        * Writing a second chunked reader for the same job is how two readers end
@@ -2520,7 +2535,12 @@
           host: boot.host,
           thinking: boot.thinking,
           mode: boot.mode,
-          model: boot.model
+          model: boot.model,
+          // Counts for the home screen, worked out by the side that owns the
+          // tool table and the stores. See `open_panel` in bridge.rs.
+          tools: boot.tools,
+          skills: boot.skills,
+          facts: boot.facts
         }
       });
       // Attached only once the pane exists, so nothing Rust pushes arrives

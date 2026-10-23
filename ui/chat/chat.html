@@ -35,14 +35,74 @@
   -->
   <div class="thread" id="thread" tabindex="0">
     <!--
-      The mark goes in on its own element rather than inside the paragraph:
-      applyStrings() sets `textContent` on everything carrying `data-i18n`, so
-      anything sharing that node would be wiped the moment the language is
-      applied. chat.js fills `#emptyMark` from window.tshellMark().
+      The home state is a process table, because that is what this panel is
+      about: something running on this machine, with a model behind it, a
+      permission mode in front of it, and a list of what it is allowed to touch.
+
+      Every row is a fact the shell handed the page when the pane opened, or a
+      setting the toolbar below it already shows -- never a description of the
+      product. The key column is deliberately not translated: `model`, `mode`,
+      `tools` and `memory` are the schema, the same four words in either
+      language, and a table whose keys move when the language changes is not a
+      table. The values and the notes beside them are.
+
+      The bottom row is the only thing here you can press, and it fills the box
+      below rather than sending it -- see the note in chat.js.
     -->
     <div class="empty" id="empty">
-      <div class="empty-mark" id="emptyMark"></div>
-      <p class="empty-text" data-i18n="agentEmpty"></p>
+      <div class="proc">
+        <div class="proc-head">
+          <span class="proc-beat" aria-hidden="true"></span>
+          <span class="proc-name">tshell agent</span>
+          <span class="proc-host" id="procHost"></span>
+        </div>
+        <div class="proc-rows">
+          <div class="proc-row">
+            <span class="k">model</span>
+            <span class="v" id="procModel"></span>
+            <span class="n" id="procThinking"></span>
+          </div>
+          <div class="proc-row">
+            <span class="k">mode</span>
+            <span class="v" id="procMode"></span>
+            <span class="n" id="procModeNote"></span>
+          </div>
+          <div class="proc-row">
+            <span class="k">tools</span>
+            <span class="v" id="procTools"></span>
+            <span class="n" data-i18n="agentHomeTools"></span>
+          </div>
+          <div class="proc-row">
+            <span class="k">memory</span>
+            <span class="v" id="procFacts"></span>
+            <span class="n" id="procSkills"></span>
+          </div>
+        </div>
+        <div class="proc-try">
+          <span class="proc-arrow" aria-hidden="true">›</span>
+          <button type="button" class="proc-chip" data-starter="agentStarterDisk" data-i18n="agentStarterDisk"></button>
+          <button type="button" class="proc-chip" data-starter="agentStarterService" data-i18n="agentStarterService"></button>
+          <button type="button" class="proc-chip" data-starter="agentStarterScripts" data-i18n="agentStarterScripts"></button>
+        </div>
+      </div>
+
+      <!--
+        The last five conversations. It sits under the card rather than in the
+        thread because it is an entrance, not a message: the whole row loads
+        that conversation, and the header's "all" opens the same history window
+        the toolbar's glyph does.
+
+        Hidden until there is something in it -- a first run shows the card and
+        nothing else -- and kept inside `.empty` so it disappears with the home
+        state the moment a conversation starts.
+      -->
+      <div class="recent" id="recent" hidden>
+        <div class="recent-head">
+          <span class="recent-label" data-i18n="agentRecent"></span>
+          <button type="button" class="recent-all" id="recentAll" data-i18n="agentRecentAll"></button>
+        </div>
+        <div class="recent-list" id="recentList"></div>
+      </div>
     </div>
   </div>
 
