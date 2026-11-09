@@ -259,7 +259,7 @@
     }
     if (message.type === 'output') term.write(message.data || '');
     if (message.type === 'hardClear') term.reset();
-    if (message.type === 'clipboardText' && message.text) vscode.postMessage({ type: 'input', data: message.text });
+    if (message.type === 'clipboardText' && message.text) term.paste(message.text);
     if (message.type === 'connected') {
       if (message.clear) {
         term.reset();
